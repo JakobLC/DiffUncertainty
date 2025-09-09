@@ -5,8 +5,8 @@ defaults:
   - data_augmentations: tta_augmentations
 exp_name: "Softmax-Debug"
 version: null
-data_input_dir: "/nvme/GTA"
-save_dir: "/nvme/GTA"
+data_input_dir: "/home/jloch/Desktop/diff/luzern/values_datasets/GTA"
+save_dir: "/home/jloch/Desktop/diff/luzern/values/uncertainty_modeling/saves"
 seed: 123
 max_epochs: 300
 batch_size: 6

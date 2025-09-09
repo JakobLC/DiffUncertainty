@@ -26,6 +26,8 @@ To create the dataset that we used to get our experimental results, with cropped
 
 ```
 python save_cropped_nodules.py -s <path to save dir>
+
+python save_cropped_nodules.py -s /home/jloch/Desktop/diff/luzern/values_datasets/lidc/
 ```
 
 This will create the subfolders images and labels with the corresponding cropped nodules and annotations in them.
@@ -39,6 +41,8 @@ summarized in a csv file (id_ood.csv). To create this csv file (necessary for la
 
 ```
 python id_ood.py -d <path to cropped nodules>
+
+python id_ood.py -d /home/jloch/Desktop/diff/luzern/values_datasets/lidc/
 ```
 
 ## Generating split files for first training cycle
@@ -51,6 +55,8 @@ pool for active learning experiments, run
 
 ```
 python splits_first_cycle.py -d <path to cropped nodules> -f <metadata feature for splitting, e.g. malignancy>
+
+python splits_first_cycle.py -d /home/jloch/Desktop/diff/luzern/values_datasets/lidc/ -f textures
 ```
 
 or 

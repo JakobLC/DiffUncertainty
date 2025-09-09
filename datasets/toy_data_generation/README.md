@@ -20,6 +20,7 @@ pip install .
 
 ```
 python dataset_generation_benchmark.py --base_save_path <path to save dir> --dataset_name <name of the dataset>
+python dataset_generation_benchmark.py --base_save_path /home/jloch/Desktop/diff/luzern/values_datasets --dataset_name Case_1
 ```
 
 Here, base_save_path is the directory where you want to store the dataset. A subfolder with the dataset name will be 

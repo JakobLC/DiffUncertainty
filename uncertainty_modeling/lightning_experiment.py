@@ -174,10 +174,10 @@ class LightningExperiment(pl.LightningModule):
 
     def forward_ssn(self, batch: dict, target: torch.Tensor, val: bool = False):
         if self.current_epoch < self.pretrain_epochs:
-            mean = self.forward(batch["data"], mean_only=True)
+            mean, cov_failed_flag = self.forward(batch["data"], mean_only=True)
             samples = mean.rsample([self.n_aleatoric_samples])
         else:
-            distribution = self.forward(batch["data"])
+            distribution, cov_failed_flag = self.forward(batch["data"])
             samples = distribution.rsample([self.n_aleatoric_samples])
         samples = samples.view(
             [
@@ -372,7 +372,7 @@ class LightningExperiment(pl.LightningModule):
             )
 
         log = {"validation/val_loss": val_loss, "validation/val_dice": val_dice}
-        self.log_dict(log, prog_bar=False, on_step=False, on_epoch=True, logger=True)
+        self.log_dict(log, prog_bar=False, on_step=False, on_epoch=True, logger=True, batch_size=self.hparams.batch_size)
 
         return val_loss
 

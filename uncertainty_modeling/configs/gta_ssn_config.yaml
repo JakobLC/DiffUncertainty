@@ -1,19 +1,23 @@
 #@package _global_
 defaults:
+  - _self_ # this config
   - datamodule: gta_torch_config
   - model: hrnet_config_ssn
   - data_augmentations: tta_augmentations
-exp_name: "Softmax-Debug"
+exp_name: "ssn-test" # OLD: "Softmax-Debug"
 version: null
-data_input_dir: "/nvme/GTA"
-save_dir: "/nvme/GTA"
+data_input_dir: "/home/jloch/Desktop/diff/luzern/values_datasets/GTA"
+save_dir: "/home/jloch/Desktop/diff/luzern/values/uncertainty_modeling/saves"
 seed: 123
 max_epochs: 300
+pretrain_epochs: 5
 batch_size: 6
 # same as in semantic segmentation repo
 learning_rate: 0.0001
 weight_decay: 0.0005
-gpus: '1'
+devices: '1'
+accelerator: 'gpu'
+precision: 32
 optimizer:
   _target_: torch.optim.RMSprop
   lr: ${learning_rate}

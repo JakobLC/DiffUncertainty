@@ -1,4 +1,7 @@
 import os
+import sys
+from pathlib import Path
+sys.path.append(Path(__file__).parent.parent.as_posix())
 
 import hydra.utils
 import numpy as np
@@ -9,7 +12,13 @@ import random
 import pytorch_lightning as pl
 from omegaconf import DictConfig, OmegaConf, open_dict
 from uncertainty_modeling.lightning_experiment import LightningExperiment
-
+import warnings
+# warnings.filterwarnings("error")
+warnings.filterwarnings(
+    "ignore",
+    message=".*upsample_bilinear2d_backward_out_cuda does not have a deterministic implementation.*",
+    category=UserWarning,
+)
 
 def pl_cli():
     parser = ArgumentParser()
@@ -30,7 +39,7 @@ def set_seed(seed):
     os.environ["PYTHONHASHSEED"] = str(seed)
 
 
-@hydra.main(config_path="configs", config_name="softmax_config")
+@hydra.main(version_base=None, config_path="configs", config_name="softmax_config")
 def main(cfg_hydra: DictConfig):
     """Uses the pl.Trainer to fit & test the model
 

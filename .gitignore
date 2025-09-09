@@ -136,3 +136,6 @@ outputs/
 
 # pretrained weights
 *.pth
+
+# new additions (Jakob)
+uncertainty_modeling/saves

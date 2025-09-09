@@ -584,15 +584,14 @@ class HighResolutionNet(nn.Module):
             distribution = td.LowRankMultivariateNormal(
                 loc=mean, cov_factor=cov_factor, cov_diag=cov_diag
             )
+            cov_failed_flag = False
         except:
-            print(
-                "Covariance became not invertible using independent normals for this batch!"
-            )
+            cov_failed_flag = True
             distribution = td.Independent(
                 td.Normal(loc=mean, scale=torch.sqrt(cov_diag)), 1
             )
 
-        return distribution
+        return distribution, cov_failed_flag
 
     def forward(self, x, mean_only=False):
         x_size = x.size(2), x.size(3)
@@ -660,15 +659,16 @@ class HighResolutionNet(nn.Module):
         x = torch.cat([x0, x1, x2, x3], 1)
 
         if self.ssn:
-            return self.hrnet_ssn(x, x_size, mean_only)
+            x, cov_failed_flag = self.hrnet_ssn(x, x_size, mean_only)
         else:
+            cov_failed_flag = False
             x = self.last_layer(x)
 
             x = F.interpolate(
                 x, size=x_size, mode="bilinear", align_corners=ALIGN_CORNERS
             )
 
-        return x
+        return x, cov_failed_flag
 
     def init_weights(self):
         print("=> init weights from normal distribution")
@@ -709,24 +709,20 @@ class HighResolutionNet(nn.Module):
                 if v.shape == model_dict[k].shape
             }
             shape_mismatch = (set(model_dict) - set(pretrained_dict)) - no_match
-
+            total = len(model_dict)
             # log info about weights which are not found and weights which have a shape mismatch
             if len(no_match):
                 num = len(no_match)
                 if num >= 5:
                     no_match = list(no_match)[:5]
                     no_match.append("...")
-                print(
-                    "No pretrained Weights found for {} layers: {}".format(
-                        num, no_match
-                    )
-                )
+                print(f"No pretrained Weights found for {num}/{total} layers: {no_match}")
             if len(shape_mismatch):
                 num = len(shape_mismatch)
                 if num >= 5:
                     shape_mismatch = list(shape_mismatch)[:5]
                     shape_mismatch.append("...")
-                print("Shape Mismatch for {} layers: {}".format(num, shape_mismatch))
+                print(f"Shape Mismatch for {num}/{total} layers: {shape_mismatch}")
 
             # load weights
             model_dict.update(pretrained_dict)

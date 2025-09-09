@@ -11,6 +11,8 @@ First, you need to download the datasets. The GTA dataset is available
 The cityscapes dataset is available [here](https://www.cityscapes-dataset.com). 
 Note, that you have to ask for access and create an account in order to download the cityscapes dataset.
 
+https://download.visinf.tu-darmstadt.de/data/from_games/data/01_images.zip
+
 To make sure the datasets are compatible with the scripts for preprocessing and the dataloader for later training, 
 you should save them in one directory like this:
 
@@ -83,12 +85,16 @@ To preprocess the data, i.e. crop the images and convert the label maps to only 
 
 ```
 python preprocess_gta_cityscapes.py -d <path to gta dataset, e.g. /home/user/GTA/OriginalData> --dataset gta
+
+python preprocess_gta_cityscapes.py -d /home/jloch/Desktop/diff/luzern/values_datasets/GTA/OriginalData --dataset gta
 ```
 
 and 
 
 ```
 python preprocess_gta_cityscapes.py -d <path to cityscapes dataset, e.g. /home/user/GTA/CityScapesOriginalData> --dataset cityscapes
+
+python preprocess_gta_cityscapes.py -d /home/jloch/Desktop/diff/luzern/values_datasets/GTA/CityscapesOriginalData --dataset cityscapes
 ```
 
 for the GTA and the cityscapes dataset respectively. This will create a preprocessed folder with images and labels.
@@ -105,6 +111,8 @@ generated randomly. To create the split file for the initial training cycle, run
 
 ```
 python gta_cs_splits_first_cycle.py -d <path to both datasets with preprocessed data, e.g. /home/user/GTA>
+
+python gta_cs_splits_first_cycle.py -d /home/jloch/Desktop/diff/luzern/values_datasets/GTA/
 ```
 
 You can also specify a different directory for the original dataset if your preprocessed data is stored in a different
