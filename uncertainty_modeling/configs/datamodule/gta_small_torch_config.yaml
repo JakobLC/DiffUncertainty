@@ -2,11 +2,11 @@ _target_: uncertainty_modeling.data.torch_dataloader.BaseDataModule   # Base Dat
 num_classes: 24
 ignore_index: 255
 num_workers: 10
-batch_size: 6
-val_batch_size: 6
+batch_size: 16
+val_batch_size: 16
 data_fold_id: 0
 augmentations: ${AUGMENTATIONS}
 dataset:
   _target_: uncertainty_modeling.data.cityscapes_dataset.Cityscapes_dataset
   # splits_path: "/nvme/GTA_small/splits/firstCycle/splits.pkl"
-  splits_path: "/path/to/GTA_small/splits/firstCycle/splits.pkl"
+  splits_path: "/home/jloch/Desktop/diff/luzern/values_datasets/GTA_small/splits/firstCycle/splits.pkl"

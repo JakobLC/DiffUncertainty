@@ -87,6 +87,7 @@ To preprocess the data, i.e. crop the images and convert the label maps to only 
 python preprocess_gta_cityscapes.py -d <path to gta dataset, e.g. /home/user/GTA/OriginalData> --dataset gta
 
 python preprocess_gta_cityscapes.py -d /home/jloch/Desktop/diff/luzern/values_datasets/GTA/OriginalData --dataset gta
+python preprocess_gta_cityscapes_small.py -d /home/jloch/Desktop/diff/luzern/values_datasets/GTA/OriginalData -s /home/jloch/Desktop/diff/luzern/values_datasets/GTA_small/OriginalData/ --dataset gta
 ```
 
 and 
@@ -94,7 +95,8 @@ and
 ```
 python preprocess_gta_cityscapes.py -d <path to cityscapes dataset, e.g. /home/user/GTA/CityScapesOriginalData> --dataset cityscapes
 
-python preprocess_gta_cityscapes.py -d /home/jloch/Desktop/diff/luzern/values_datasets/GTA/CityscapesOriginalData --dataset cityscapes
+python preprocess_gta_cityscapes.py -d /home/jloch/Desktop/diff/luzern/values_datasets/GTA/CityScapesOriginalData --dataset cityscapes
+python preprocess_gta_cityscapes_small.py -d /home/jloch/Desktop/diff/luzern/values_datasets/GTA/CityScapesOriginalData -s /home/jloch/Desktop/diff/luzern/values_datasets/GTA_small/CityScapesOriginalData/ --dataset cityscapes
 ```
 
 for the GTA and the cityscapes dataset respectively. This will create a preprocessed folder with images and labels.
@@ -113,6 +115,7 @@ generated randomly. To create the split file for the initial training cycle, run
 python gta_cs_splits_first_cycle.py -d <path to both datasets with preprocessed data, e.g. /home/user/GTA>
 
 python gta_cs_splits_first_cycle.py -d /home/jloch/Desktop/diff/luzern/values_datasets/GTA/
+python gta_cs_splits_first_cycle.py -d /home/jloch/Desktop/diff/luzern/values_datasets/GTA_small/ -o /home/jloch/Desktop/diff/luzern/values_datasets/GTA/
 ```
 
 You can also specify a different directory for the original dataset if your preprocessed data is stored in a different

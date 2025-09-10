@@ -681,7 +681,7 @@ class HighResolutionNet(nn.Module):
 
     def load_weights(self, pretrained):
         if os.path.isfile(pretrained):
-            pretrained_dict = torch.load(pretrained, map_location={"cuda:0": "cpu"})
+            pretrained_dict = torch.load(pretrained, map_location={"cuda:0": "cpu"}, weights_only=True)
             print("Loading pretrained weights {}".format(pretrained))
 
             # some preprocessing

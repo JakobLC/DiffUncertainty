@@ -1,19 +1,19 @@
 # @package _global_
 defaults:
   - _self_
-  - datamodule: gta_torch_config
+  - datamodule: gta_small_torch_config
   - model: hrnet_config_ssn
-  - data_augmentations: tta_augmentations
+  - data_augmentations: tta_small_augmentations
 
-exp_name: "ssn-test"   # OLD: "Softmax-Debug"
+exp_name: "gta-snn-small"   # OLD: "Softmax-Debug"
 version: null
 
-data_input_dir: "/home/jloch/Desktop/diff/luzern/values_datasets/GTA"
+data_input_dir: "/home/jloch/Desktop/diff/luzern/values_datasets/GTA_small"
 save_dir: "/home/jloch/Desktop/diff/luzern/values/uncertainty_modeling/saves"
 
 seed: 123
 pretrain_epochs: 5
-batch_size: 6
+batch_size: 16
 
 # training hyperparams
 learning_rate: 0.0001
@@ -23,7 +23,7 @@ optimizer:
   _target_: torch.optim.RMSprop
   lr: ${learning_rate}
   weight_decay: ${weight_decay}
-  momentum: 0.6
+  momentum: 0.85 # 0.6 w BS 6 approximate. m_new=1-B_old/B_new*(1-m_old)=1-6/16*(1-0.6)=0.85
   # alpha: 0.9
 
 lr_scheduler:

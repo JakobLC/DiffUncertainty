@@ -14,18 +14,10 @@ from omegaconf import DictConfig, OmegaConf, open_dict
 from uncertainty_modeling.lightning_experiment import LightningExperiment
 import warnings
 # warnings.filterwarnings("error")
-warnings.filterwarnings(
-    "ignore",
-    message=".*upsample_bilinear2d_backward_out_cuda does not have a deterministic implementation.*",
-    category=UserWarning,
-)
-
-def pl_cli():
-    parser = ArgumentParser()
-    parser = pl.Trainer.add_argparse_args(parser)
-    hparams, _ = parser.parse_known_args()
-    return hparams
-
+warnings.filterwarnings("ignore", message=".*upsample_bilinear2d_backward_out_cuda does not have a deterministic implementation.*", category=UserWarning)
+warnings.filterwarnings("ignore", message=r".*For seamless cloud uploads and versioning, try installing*", category=UserWarning)
+warnings.filterwarnings("ignore", message="Detected call of `lr_scheduler.step()` before `optimizer.step()`", category=UserWarning)
+torch.set_float32_matmul_precision('medium')
 
 def set_seed(seed):
     print(f"SETTING GLOBAL SEED TO {seed}")
@@ -47,10 +39,6 @@ def main(cfg_hydra: DictConfig):
         hparams ([Namespace]): hparams
         nested_dict ([dict], optional): Subset of hparams for saving. Defaults to None.
     """
-    config = pl_cli()
-    config = OmegaConf.create(vars(config))
-    with open_dict(cfg_hydra):
-        config.merge_with(cfg_hydra)
     config = cfg_hydra
     # Use Environment Variables if accessible
     if "DATASET_LOCATION" in os.environ.keys():
@@ -72,16 +60,15 @@ def main(cfg_hydra: DictConfig):
 
     logger = hydra.utils.instantiate(config.logger, version=config.version)
     progress_bar = hydra.utils.instantiate(config.progress_bar)
-    trainer = pl.Trainer.from_argparse_args(
-        Namespace(**config),
-        logger=logger,
+    trainer = pl.Trainer(
+        **config.trainer,
+        #logger=logger,
         profiler="simple",
         callbacks=progress_bar,
         deterministic="warn",
         gradient_clip_val=gradient_clip_val,
         gradient_clip_algorithm=gradient_clip_algorithm,
     )
-
     dm = hydra.utils.instantiate(
         config.datamodule,
         data_input_dir=config.data_input_dir,

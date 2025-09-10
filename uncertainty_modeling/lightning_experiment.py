@@ -16,7 +16,7 @@ import pytorch_lightning as pl
 
 import torchvision
 from omegaconf import DictConfig, OmegaConf
-from torchmetrics.functional.classification import dice
+from evaluation.metrics.dice_old_torchmetrics import dice
 
 import uncertainty_modeling.models.ssn_unet3D_module
 from loss_modules import SoftDiceLoss
@@ -102,6 +102,18 @@ class LightningExperiment(pl.LightningModule):
                 lr=self.learning_rate,
                 weight_decay=self.weight_decay,
             )
+        class DebugOptimizer(torch.optim.Optimizer):
+            def __init__(self, optimizer):
+                # Store the real optimizer
+                self.optimizer = optimizer
+
+            def step(self, *args, **kwargs):
+                raise RuntimeError(">>> DebugOptimizer caught a call to optimizer.step() <<<")
+
+            def __getattr__(self, name):
+                # Forward everything else to the real optimizer
+                return getattr(self.optimizer, name)
+        optimizer = DebugOptimizer(optimizer)
         # scheduler dictionary which defines scheduler and how it is used in the training loop
         if self.lr_scheduler_conf:
             max_steps = self.trainer.datamodule.max_steps()
