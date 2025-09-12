@@ -8,7 +8,6 @@ import pylidc as pl
 import pylidc.utils
 from tqdm import tqdm
 
-
 def main_cli():
     parser = ArgumentParser()
     parser.add_argument(
@@ -17,6 +16,12 @@ def main_cli():
         type=str,
         help="Path to the folder where the cropped nodules will be stored",
         required=True,
+    )
+    parser.add_argument(
+        "-large",
+        action="store_true",
+        help="If set, saves 128x128 images instead of 64x64.",
+        default=False,
     )
     args = parser.parse_args()
     return args
@@ -53,6 +58,7 @@ def append_metadata(metadata_nod, nod, first=False):
             metadata_nod[feature].append(None)
 
 
+
 def save_nodules(args: Namespace):
     # Set up the paths to store the data
     save_path = Path(args.save_path)
@@ -62,11 +68,19 @@ def save_nodules(args: Namespace):
     os.makedirs(images_save_dir, exist_ok=True)
     os.makedirs(labels_save_dir, exist_ok=True)
 
+    if args.large:
+        vs = 63.0/127.0
+        assert not "small" in args.save_path, "You are trying to save large images in a folder with 'small' in the name."
+    else:
+        vs = 1.0
+        assert "small" in args.save_path, "You are trying to save small images in a folder without 'small' in the name."
+
     scans = pl.query(pl.Scan)
     all_metadata = []
-    global_idx = 0
-    for scan in tqdm(scans):
+    
+    for scan in tqdm(scans, total=scans.count(), desc="Processing scans"):
         nods = scan.cluster_annotations()
+        local_nod_idx = 0
         for nod_idx, nod in enumerate(nods):
             if has_large_mask(nod):
                 continue
@@ -74,20 +88,28 @@ def save_nodules(args: Namespace):
             masks = []
             for ann_idx in range(4):
                 if ann_idx == 0:
-                    image_size = 64
                     vol, mask, irp_pts = nod[ann_idx].uniform_cubic_resample(
-                        image_size - 1, return_irp_pts=True
+                        side_length = 63,
+                        voxel_size=vs,
+                        raw_z_sampling=True,
+                        return_irp_pts=True,
+                        verbose=False
                     )
                     metadata_nod["Patient ID"] = str(nod[0].scan.patient_id)
                     metadata_nod["Scan ID"] = str(nod[0].scan.id).zfill(4)
                     append_metadata(metadata_nod, nod[ann_idx], first=True)
                 if ann_idx < len(nod):
                     mask = nod[ann_idx].uniform_cubic_resample(
-                        image_size - 1, resample_vol=False, irp_pts=irp_pts
+                        side_length = 63,
+                        voxel_size=vs,
+                        raw_z_sampling=True,
+                        resample_vol=False, 
+                        irp_pts=irp_pts,
+                        verbose=False
                     )
                     annotation = nod[ann_idx]
                 else:
-                    mask = np.zeros([64, 64, 64])
+                    mask = np.zeros(vol.shape)
                     annotation = None
                 masks.append(mask)
                 if ann_idx > 0:
@@ -100,7 +122,7 @@ def save_nodules(args: Namespace):
                 image_slice = vol[:, :, slice_idx]
                 image_save_path = (
                     images_save_dir
-                    / f"{str(nod[0].scan.id).zfill(4)}_{str(global_idx).zfill(3)}.npy"
+                    / f"{str(nod[0].scan.id).zfill(4)}_{str(local_nod_idx).zfill(3)}.npy"
                 )
                 np.save(image_save_path, image_slice)
                 seg_paths = []
@@ -108,16 +130,16 @@ def save_nodules(args: Namespace):
                     label_slice = masks[rater][:, :, slice_idx]
                     segmentation_save_path = (
                         labels_save_dir
-                        / f"{str(nod[0].scan.id).zfill(4)}_{str(global_idx).zfill(3)}_{str(rater).zfill(2)}_mask.npy"
+                        / f"{str(nod[0].scan.id).zfill(4)}_{str(local_nod_idx).zfill(3)}_{str(rater).zfill(2)}_mask.npy"
                     )
                     np.save(segmentation_save_path, label_slice.astype(np.intc))
                     seg_paths.append(segmentation_save_path)
                 metadata_slice = metadata_nod.copy()
-                metadata_slice["Nodule Index"] = str(global_idx).zfill(3)
+                metadata_slice["Nodule Index"] = str(local_nod_idx).zfill(3)
                 metadata_slice["Image Save Path"] = image_save_path
                 metadata_slice["Segmentation Save Paths"] = seg_paths
                 all_metadata.append(pd.Series(metadata_slice))
-                global_idx += 1
+                local_nod_idx += 1
     metadata = pd.DataFrame(all_metadata)
     metadata.to_csv(save_path / "metadata.csv", index=False)
 

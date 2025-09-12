@@ -27,7 +27,10 @@ To create the dataset that we used to get our experimental results, with cropped
 ```
 python save_cropped_nodules.py -s <path to save dir>
 
-python save_cropped_nodules.py -s /home/jloch/Desktop/diff/luzern/values_datasets/lidc/
+python save_cropped_nodules.py -s /home/jloch/Desktop/diff/luzern/values_datasets/lidc/ -only_save_metadata
+python save_cropped_nodules_2d.py -s /home/jloch/Desktop/diff/luzern/values_datasets/lidc_2d_small/
+python save_cropped_nodules_2d.py -s /home/jloch/Desktop/diff/luzern/values_datasets/lidc_2d/ -large
+f
 ```
 
 This will create the subfolders images and labels with the corresponding cropped nodules and annotations in them.
@@ -43,6 +46,10 @@ summarized in a csv file (id_ood.csv). To create this csv file (necessary for la
 python id_ood.py -d <path to cropped nodules>
 
 python id_ood.py -d /home/jloch/Desktop/diff/luzern/values_datasets/lidc/
+
+python id_ood.py -d /home/jloch/Desktop/diff/luzern/values_datasets/lidc_2d_small/
+python id_ood.py -d /home/jloch/Desktop/diff/luzern/values_datasets/lidc_2d/
+
 ```
 
 ## Generating split files for first training cycle
@@ -56,7 +63,15 @@ pool for active learning experiments, run
 ```
 python splits_first_cycle.py -d <path to cropped nodules> -f <metadata feature for splitting, e.g. malignancy>
 
-python splits_first_cycle.py -d /home/jloch/Desktop/diff/luzern/values_datasets/lidc/ -f textures
+python splits_first_cycle.py -d /home/jloch/Desktop/diff/luzern/values_datasets/lidc/ -f texture
+python splits_first_cycle.py -d /home/jloch/Desktop/diff/luzern/values_datasets/lidc/ -f malignancy
+
+python splits_first_cycle.py -d /home/jloch/Desktop/diff/luzern/values_datasets/lidc_2d/ -f texture
+python splits_first_cycle.py -d /home/jloch/Desktop/diff/luzern/values_datasets/lidc_2d/ -f malignancy
+
+python splits_first_cycle.py -d /home/jloch/Desktop/diff/luzern/values_datasets/lidc_2d_small/ -f texture
+python splits_first_cycle.py -d /home/jloch/Desktop/diff/luzern/values_datasets/lidc_2d_small/ -f malignancy
+
 ```
 
 or 
@@ -77,4 +92,6 @@ you can use the preprocess_datasets_3d script in the datasets folder of this rep
 ```
 cd ..
 python preprocess_datasets_3d.py -d <base path to cropped nodules and labels> -r 4 --dataset lidc
+
+python preprocess_datasets_2d.py -d /home/jloch/Desktop/diff/luzern/values_datasets/lidc_2d_small -r 4 --dataset lidc
 ```

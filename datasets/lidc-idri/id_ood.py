@@ -59,7 +59,7 @@ def calculate_rater_agreement(args: Namespace):
 
         # Filter out columns with None entries, i.e. nodules with empty segmentation masks
         metadata_df = metadata_df[metadata_df[column].notnull()]
-        # Binarize i.i.d and OoD categories
+        # Binarize i.i.d and OoD categoriesg
         metadata_df[column] = metadata_df[column].apply(
             lambda ratings: [
                 1 if rating in features_to_analyse[column][0] else 0

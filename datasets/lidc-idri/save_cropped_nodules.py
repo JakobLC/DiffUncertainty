@@ -8,7 +8,8 @@ import pylidc as pl
 import pylidc.utils
 from medpy.io import save
 from tqdm import tqdm
-
+import warnings
+warnings.filterwarnings("ignore", message="Loading dicom files ... This may take a moment.")
 
 def main_cli():
     parser = ArgumentParser()
@@ -18,6 +19,12 @@ def main_cli():
         type=str,
         help="Path to the folder where the cropped nodules will be stored",
         required=True,
+    )
+    parser.add_argument(
+        "-only_save_metadata",
+        action="store_true",
+        help="If set, only saves the metadata and does not save the images and masks.",
+        default=False,
     )
     args = parser.parse_args()
     return args
@@ -90,11 +97,13 @@ def save_nodules(args: Namespace):
                         / f"{str(nod[0].scan.id).zfill(4)}_{str(nod_idx).zfill(2)}.nii.gz"
                     )
                     assert vol.shape == (64, 64, 64)
-                    save(vol, str(image_save_path))
+                    if not args.only_save_metadata:
+                        save(vol, str(image_save_path))
                     metadata_nod["Patient ID"] = str(nod[0].scan.patient_id)
                     metadata_nod["Scan ID"] = str(nod[0].scan.id).zfill(4)
                     metadata_nod["Nodule Index"] = str(nod_idx).zfill(2)
                     metadata_nod["Image Save Path"] = image_save_path
+                    metadata_nod["Series UID"] = scan.series_instance_uid
 
                 if ann_idx < len(nod):
                     # Resample the other annotations in the same way as the scan
@@ -111,7 +120,8 @@ def save_nodules(args: Namespace):
                     labels_save_dir
                     / f"{str(nod[0].scan.id).zfill(4)}_{str(nod_idx).zfill(2)}_{str(ann_idx).zfill(2)}_mask.nii.gz"
                 )
-                save(mask.astype(np.intc), str(segmentation_save_path))
+                if not args.only_save_metadata:
+                    save(mask.astype(np.intc), str(segmentation_save_path))
                 if ann_idx == 0:
                     metadata_nod["Segmentation Save Paths"] = [segmentation_save_path]
                     append_metadata(metadata_nod, annotation, first=True)
