@@ -197,7 +197,6 @@ def dice(
 
     preds, target = _input_squeeze(preds, target)
     reduce = "macro" if average in ("weighted", "none", None) else average
-
     tp, fp, _, fn = _stat_scores_update(
         preds,
         target,
@@ -317,7 +316,6 @@ def _stat_scores_update(
     if ignore_index is not None and ignore_index < 0 and mode is not None:
         preds, target = _drop_negative_ignored_indices(preds, target, ignore_index, mode)
         _negative_index_dropped = True
-
     preds, target, _ = _input_format_classification(
         preds,
         target,
@@ -327,13 +325,12 @@ def _stat_scores_update(
         top_k=top_k,
         ignore_index=ignore_index,
     )
-
-    if ignore_index is not None and ignore_index >= preds.shape[1]:
-        raise ValueError(f"The `ignore_index` {ignore_index} is not valid for inputs with {preds.shape[1]} classes")
-
     if ignore_index is not None and preds.shape[1] == 1:
         raise ValueError("You can not use `ignore_index` with binary data.")
 
+    if ignore_index is not None and ignore_index >= preds.shape[1]:
+        raise ValueError(f"The `ignore_index` {ignore_index} is not valid for inputs with {preds.shape[1]} classes")
+    
     if preds.ndim == 3:
         if not mdmc_reduce:
             raise ValueError(
@@ -553,7 +550,6 @@ def _input_format_classification(
     # for example, min() is not supported
     if preds.dtype == torch.float16:
         preds = preds.float()
-
     case = _check_classification_inputs(
         preds,
         target,
@@ -563,14 +559,12 @@ def _input_format_classification(
         top_k=top_k,
         ignore_index=ignore_index,
     )
-
     if case in (DataType.BINARY, DataType.MULTILABEL) and not top_k:
         preds = (preds >= threshold).int()
         num_classes = num_classes if not multiclass else 2
 
     if case == DataType.MULTILABEL and top_k:
         preds = select_topk(preds, top_k)
-
     if case in (DataType.MULTICLASS, DataType.MULTIDIM_MULTICLASS) or multiclass:
         if preds.is_floating_point():
             num_classes = preds.shape[1]
@@ -583,7 +577,6 @@ def _input_format_classification(
 
         if multiclass is False:
             preds, target = preds[:, 1, ...], target[:, 1, ...]
-
     if not _check_for_empty_tensors(preds, target):
         if (case in (DataType.MULTICLASS, DataType.MULTIDIM_MULTICLASS) and multiclass is not False) or multiclass:
             target = target.reshape(target.shape[0], target.shape[1], -1)
@@ -591,11 +584,9 @@ def _input_format_classification(
         else:
             target = target.reshape(target.shape[0], -1)
             preds = preds.reshape(preds.shape[0], -1)
-
     # Some operations above create an extra dimension for MC/binary case - this removes it
     if preds.ndim > 2:
         preds, target = preds.squeeze(-1), target.squeeze(-1)
-
     return preds.int(), target.int(), case
 
 def _check_for_empty_tensors(preds: Tensor, target: Tensor) -> bool:
@@ -919,7 +910,7 @@ def _check_num_classes_mc(
                 " See Input Types in Metrics documentation."
             )
         if target.numel() > 0 and num_classes <= target.max():
-            raise ValueError("The highest label in `target` should be smaller than `num_classes`.")
+            raise ValueError(f"The highest label in `target` should be smaller than `num_classes`, found {target.max()}")
         if preds.shape != target.shape and num_classes != implied_classes:
             raise ValueError("The size of C dimension of `preds` does not match `num_classes`.")
 

@@ -1,0 +1,11 @@
+_target_: uncertainty_modeling.data.torch_dataloader.BaseDataModule   # Base Data Module
+num_classes: 2
+ignore_index: -1
+num_workers: 8
+batch_size: 16
+val_batch_size: 16
+data_fold_id: 0
+augmentations: ${AUGMENTATIONS}
+dataset:
+  _target_: uncertainty_modeling.data.lidc2d_dataset.LIDC2DDataset
+  splits_path: "/home/jloch/Desktop/diff/luzern/values_datasets/lidc_2d/splits/texture/firstCycle/splits.pkl"

@@ -16,7 +16,7 @@ import warnings
 # warnings.filterwarnings("error")
 warnings.filterwarnings("ignore", message=".*upsample_bilinear2d_backward_out_cuda does not have a deterministic implementation.*", category=UserWarning)
 warnings.filterwarnings("ignore", message=r".*For seamless cloud uploads and versioning, try installing*", category=UserWarning)
-warnings.filterwarnings("ignore", message="Detected call of `lr_scheduler.step()` before `optimizer.step()`", category=UserWarning)
+#warnings.filterwarnings("ignore", message=".*Detected call of `lr_scheduler.step()` before `optimizer.step()`.*", category=UserWarning)
 torch.set_float32_matmul_precision('medium')
 
 def set_seed(seed):

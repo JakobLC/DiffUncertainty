@@ -174,9 +174,7 @@ class BaseDataModule(LightningDataModule):
             current stage which is given by Pytorch Lightning
         """
         if stage in (None, "fit"):
-            transforms_train = get_augmentations_from_config(self.augmentations.TRAIN)[
-                0
-            ]
+            transforms_train = get_augmentations_from_config(self.augmentations.TRAIN)[0]
             self.DS_train = hydra.utils.instantiate(
                 self.dataset,
                 base_dir=self.data_input_dir,
@@ -184,9 +182,7 @@ class BaseDataModule(LightningDataModule):
                 transforms=transforms_train,
             )
         if stage in (None, "fit", "validate"):
-            transforms_val = get_augmentations_from_config(
-                self.augmentations.VALIDATION
-            )[0]
+            transforms_val = get_augmentations_from_config(self.augmentations.VALIDATION)[0]
             self.DS_val = hydra.utils.instantiate(
                 self.dataset,
                 base_dir=self.data_input_dir,

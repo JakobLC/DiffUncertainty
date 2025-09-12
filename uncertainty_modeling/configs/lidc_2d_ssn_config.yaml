@@ -1,31 +1,43 @@
+# @package _global_
 defaults:
-  - datamodule: lidc_idri_config
-  - model: unet3D_config
-exp_name: "Softmax"
-version: "test"
-data_input_dir: "/home/jloch/Desktop/diff/luzern/values_datasets/lidc"
+  - _self_
+  - datamodule: lidc_2d_torch_config
+  - model: hrnet_config_ssn
+  - data_augmentations: tta_lidc_2d_augmentations
+
+exp_name: "lidc2d-snn"
+version: null
+
+data_input_dir: "/home/jloch/Desktop/diff/luzern/values_datasets/lidc_2d"
 save_dir: "/home/jloch/Desktop/diff/luzern/values/uncertainty_modeling/saves"
+
 seed: 123
-max_epochs: 150
-batch_size: 8
-learning_rate: 3.0e-4
-weight_decay: 10.0e-6
+pretrain_epochs: 5
+batch_size: 16
+
+# training hyperparams
+learning_rate: 0.0001
+weight_decay: 0.0005
 
 optimizer:
   _target_: torch.optim.RMSprop
   lr: ${learning_rate}
   weight_decay: ${weight_decay}
-  momentum: 0.6
+  momentum: 0.85
+
 lr_scheduler:
   _target_: torch.optim.lr_scheduler.PolynomialLR
   power: 0.9
+
 logger:
   _target_: pytorch_lightning.loggers.TensorBoardLogger
   save_dir: ${save_dir}
   name: ${exp_name}
+
 progress_bar:
   _target_: pytorch_lightning.callbacks.TQDMProgressBar
   refresh_rate: 10
+
 trainer:
   max_epochs: 300
   accelerator: gpu
