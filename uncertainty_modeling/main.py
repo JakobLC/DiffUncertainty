@@ -14,9 +14,9 @@ from omegaconf import DictConfig, OmegaConf, open_dict
 from uncertainty_modeling.lightning_experiment import LightningExperiment
 import warnings
 # warnings.filterwarnings("error")
-warnings.filterwarnings("ignore", message=".*upsample_bilinear2d_backward_out_cuda does not have a deterministic implementation.*", category=UserWarning)
+warnings.filterwarnings("ignore", message=r".*upsample_bilinear2d_backward_out_cuda does not have a deterministic implementation.*", category=UserWarning)
 warnings.filterwarnings("ignore", message=r".*For seamless cloud uploads and versioning, try installing*", category=UserWarning)
-#warnings.filterwarnings("ignore", message=".*Detected call of `lr_scheduler.step()` before `optimizer.step()`.*", category=UserWarning)
+warnings.filterwarnings("ignore", message=r".*PyTorch skipping the first value of the learning rate schedule.*", category=UserWarning)
 torch.set_float32_matmul_precision('medium')
 
 def set_seed(seed):
@@ -47,7 +47,6 @@ def main(cfg_hydra: DictConfig):
         config.save_dir = os.environ["EXPERIMENT_LOCATION"]
     if "LSB_JOBID" in os.environ.keys() and config.version is None:
         config.version = os.environ["LSB_JOBID"]
-
     if config.seed is not None:
         set_seed(config.seed)
 
@@ -62,7 +61,7 @@ def main(cfg_hydra: DictConfig):
     progress_bar = hydra.utils.instantiate(config.progress_bar)
     trainer = pl.Trainer(
         **config.trainer,
-        #logger=logger,
+        logger=logger,
         profiler="simple",
         callbacks=progress_bar,
         deterministic="warn",

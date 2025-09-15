@@ -8,5 +8,4 @@ data_fold_id: 0
 augmentations: ${AUGMENTATIONS}
 dataset:
   _target_: uncertainty_modeling.data.lidc2d_dataset.LIDC2DDataset
-  # Adjust shift feature (texture/malignancy) in path if needed
   splits_path: "/home/jloch/Desktop/diff/luzern/values_datasets/lidc_2d_small/splits/texture/firstCycle/splits.pkl"

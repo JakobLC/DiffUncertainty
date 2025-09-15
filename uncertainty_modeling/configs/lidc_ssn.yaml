@@ -1,0 +1,46 @@
+# @package _global_
+defaults:
+  - _self_
+  - datamodule: lidc_2d
+  - model: hrnet_ssn
+  - data_augmentations: tta_lidc_2d
+
+exp_name: "lidc-snn"
+version: null
+
+dataset: "lidc_2d"
+data_input_dir: "/home/jloch/Desktop/diff/luzern/values_datasets/${dataset}"
+save_dir: "/home/jloch/Desktop/diff/luzern/values/saves"
+
+seed: 123
+pretrain_epochs: 5
+batch_size: 16
+
+# training hyperparams
+learning_rate: 0.0001
+weight_decay: 0.0005
+
+optimizer:
+  _target_: torch.optim.RMSprop
+  lr: ${learning_rate}
+  weight_decay: ${weight_decay}
+  momentum: 0.85
+
+lr_scheduler:
+  _target_: torch.optim.lr_scheduler.PolynomialLR
+  power: 0.9
+
+logger:
+  _target_: pytorch_lightning.loggers.TensorBoardLogger
+  save_dir: ${save_dir}
+  name: ${exp_name}
+
+progress_bar:
+  _target_: pytorch_lightning.callbacks.TQDMProgressBar
+  refresh_rate: 10
+
+trainer:
+  max_epochs: 300
+  accelerator: gpu
+  devices: 1
+  precision: 32

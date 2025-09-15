@@ -8,5 +8,4 @@ data_fold_id: 0
 augmentations: ${AUGMENTATIONS}
 dataset:
   _target_: uncertainty_modeling.data.cityscapes_dataset.Cityscapes_dataset
-  # splits_path: "/nvme/GTA/splits/firstCycle/splits.pkl"
-  splits_path: "/home/jloch/Desktop/diff/luzern/values_datasets/GTA/splits/firstCycle/splits.pkl"
+  splits_path: "/home/jloch/Desktop/diff/luzern/values_datasets/gta/splits/firstCycle/splits.pkl"

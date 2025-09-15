@@ -9,7 +9,7 @@ model:
 MODEL:
   NAME: hrnet
   # Set to false, was initially true
-  PRETRAINED: true    
+  PRETRAINED: true
   pretrained_on: ImageNet
   pretrained_path: /home/jloch/Desktop/diff/luzern/values/uncertainty_modeling/models/checkpoints
   PRETRAINED_WEIGHTS: ${MODEL.pretrained_path}/${MODEL.available_weights.${MODEL.pretrained_on}}
