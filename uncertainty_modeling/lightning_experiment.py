@@ -191,8 +191,11 @@ class LightningExperiment(pl.LightningModule):
             val_dice = torch.zeros([self.n_aleatoric_samples])
             sample_labels = torch.argmax(samples, dim=2)
             for idx, sample in enumerate(sample_labels):                
-                val_dice[idx] = dice(sample, target, num_classes=self.model.num_classes,
-                                     ignore_index=self.ignore_index)
+                val_dice[idx] = dice(sample, target, 
+                                     num_classes        = self.model.num_classes,
+                                     ignore_index       = self.ignore_index,
+                                     include_background = self.model.num_classes > 2,
+                                     average            = "micro")
             val_dice = torch.mean(val_dice)
             # one sample batch for visualization
             sample_idx = randrange(self.n_aleatoric_samples)
@@ -313,7 +316,11 @@ class LightningExperiment(pl.LightningModule):
                 torch.exp(log_sample_avg), target
             ) + self.nll_loss(log_sample_avg, target)
             val_dice = dice(
-                torch.exp(log_sample_avg), target, ignore_index=self.ignore_index
+                torch.exp(log_sample_avg), target,
+                num_classes        = self.model.num_classes,
+                ignore_index       = self.ignore_index,
+                include_background = self.model.num_classes > 2,
+                average            = "micro"
             )
         else:
             output = self.forward(batch["data"].float())
@@ -328,42 +335,30 @@ class LightningExperiment(pl.LightningModule):
                     output, target
                 )
 
-            val_dice = dice(output_labels, target, ignore_index=self.ignore_index)
+            val_dice = dice(output_labels, target,
+                            num_classes        = self.model.num_classes,
+                            ignore_index       = self.ignore_index,
+                            include_background = self.model.num_classes > 2,
+                            average            = "micro")
 
         # Visualization of Segmentations
         if batch_idx == 1 and len(batch["seg"].shape) == 3:
-            predicted_segmentation_val = torch.argmax(output, dim=1, keepdim=True)
-            predicted_segmentation_val = torch.squeeze(predicted_segmentation_val, 1)
-            target_segmentation_val = batch["seg"].long()
-            target_segmentation_val = torch.squeeze(target_segmentation_val, 1)
+            pred_seg_val = torch.argmax(output, dim=1, keepdim=True)
+            pred_seg_val = torch.squeeze(pred_seg_val, 1)
+            target_seg_val = batch["seg"].long()
+            target_seg_val = torch.squeeze(target_seg_val, 1)
             # transform the labels to color map for visualization
-            predicted_segmentation_val_color = torch.zeros(
-                (*predicted_segmentation_val.shape, 3), dtype=torch.long
-            )
-            target_segmentation_val_color = torch.zeros(
-                (*target_segmentation_val.shape, 3), dtype=torch.long
-            )
+            pred_seg_val_color = torch.zeros((*pred_seg_val.shape, 3), dtype=torch.long)
+            target_seg_val_color = torch.zeros((*target_seg_val.shape, 3), dtype=torch.long)
             for k, v in cs_labels.trainId2color.items():
-                predicted_segmentation_val_color[
-                    predicted_segmentation_val == k
-                ] = torch.tensor(v)
-                target_segmentation_val_color[
-                    target_segmentation_val == k
-                ] = torch.tensor(v)
-            predicted_segmentation_val_color = torch.swapaxes(
-                predicted_segmentation_val_color, 1, 3
-            )
-            target_segmentation_val_color = torch.swapaxes(
-                target_segmentation_val_color, 1, 3
-            )
-            predicted_segmentation_val_color = torch.swapaxes(
-                predicted_segmentation_val_color, 2, 3
-            )
-            target_segmentation_val_color = torch.swapaxes(
-                target_segmentation_val_color, 2, 3
-            )
+                pred_seg_val_color[pred_seg_val == k] = torch.tensor(v)
+                target_seg_val_color[target_seg_val == k] = torch.tensor(v)
+            pred_seg_val_color = torch.swapaxes(pred_seg_val_color, 1, 3)
+            target_seg_val_color = torch.swapaxes(target_seg_val_color, 1, 3)
+            pred_seg_val_color = torch.swapaxes(pred_seg_val_color, 2, 3)
+            target_seg_val_color = torch.swapaxes(target_seg_val_color, 2, 3)
 
-            grid = torchvision.utils.make_grid(predicted_segmentation_val_color)
+            grid = torchvision.utils.make_grid(pred_seg_val_color)
             # TensorBoard expects images in [0,1] float. Data here may be in [0,255].
             if grid.dtype != torch.float32:
                 grid = grid.float()
@@ -373,7 +368,7 @@ class LightningExperiment(pl.LightningModule):
             self.logger.experiment.add_image(
                 "validation/Val_Predicted_Segmentations", grid, self.current_epoch
             )
-            grid = torchvision.utils.make_grid(target_segmentation_val_color)
+            grid = torchvision.utils.make_grid(target_seg_val_color)
             if grid.dtype != torch.float32:
                 grid = grid.float()
             if grid.max() > 1.0:
