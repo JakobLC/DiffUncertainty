@@ -279,7 +279,7 @@ class LightningExperiment(pl.LightningModule):
         )
         return loss
 
-    def validation_step(self, batch: dict, batch_idx: int) -> torch.Tensor:
+    def validation_step(self, batch: dict, batch_idx: int, dataloader_idx: int = 0) -> torch.Tensor:
         """Perform a validation step, i.e.pass a validation batch through the network, visualize the results in logging
         and calculate loss and dice score for logging
 
@@ -290,13 +290,17 @@ class LightningExperiment(pl.LightningModule):
         Returns:
             val_loss [torch.Tensor]: The computed loss
         """
+        if dataloader_idx == 0:
+            split = "val"
+        else:
+            split = "train"
         target = batch["seg"].long().squeeze(1)
         if type(
             self.model
         ) is uncertainty_modeling.models.ssn_unet3D_module.SsnUNet3D or (
             hasattr(self.model, "ssn") and self.model.ssn
         ):
-            val_loss, output, val_dice = self.forward_ssn(batch, target, val=True)
+            eval_loss, output, eval_dice = self.forward_ssn(batch, target, val=True)
         elif self.aleatoric_loss:
             device = "cuda" if torch.cuda.is_available() else "cpu"
             mu, s = self.forward(batch["data"])
@@ -312,30 +316,32 @@ class LightningExperiment(pl.LightningModule):
             log_sample_avg = torch.logsumexp(all_samples, 0) - torch.log(
                 torch.tensor(self.n_aleatoric_samples)
             )
-            val_loss = self.dice_loss(
+            eval_loss = self.dice_loss(
                 torch.exp(log_sample_avg), target
             ) + self.nll_loss(log_sample_avg, target)
-            val_dice = dice(
+            eval_dice = dice(
                 torch.exp(log_sample_avg), target,
                 num_classes        = self.model.num_classes,
                 ignore_index       = self.ignore_index,
                 include_background = self.model.num_classes > 2,
                 average            = "micro"
             )
+            # use averaged logits for visualization to keep pipeline uniform
+            output = log_sample_avg
         else:
             output = self.forward(batch["data"].float())
             output_softmax = F.softmax(output, dim=1)
             output_labels = torch.argmax(output_softmax, dim=1)
             if self.ignore_index != 0:
-                val_loss = F.cross_entropy(
+                eval_loss = F.cross_entropy(
                     output, target, ignore_index=self.ignore_index
                 )
             else:
-                val_loss = self.dice_loss(output_softmax, target) + self.ce_loss(
+                eval_loss = self.dice_loss(output_softmax, target) + self.ce_loss(
                     output, target
                 )
 
-            val_dice = dice(output_labels, target,
+            eval_dice = dice(output_labels, target,
                             num_classes        = self.model.num_classes,
                             ignore_index       = self.ignore_index,
                             include_background = self.model.num_classes > 2,
@@ -365,22 +371,19 @@ class LightningExperiment(pl.LightningModule):
             # If values are in 0-255 range, scale to 0-1
             if grid.max() > 1.0:
                 grid = grid / 255.0
-            self.logger.experiment.add_image(
-                "validation/Val_Predicted_Segmentations", grid, self.current_epoch
-            )
+            self.logger.experiment.add_image(f"validation/{split}_pred_seg", grid, self.current_epoch)
             grid = torchvision.utils.make_grid(target_seg_val_color)
             if grid.dtype != torch.float32:
                 grid = grid.float()
             if grid.max() > 1.0:
                 grid = grid / 255.0
-            self.logger.experiment.add_image(
-                "validation/Val_Target_Segmentations", grid, self.current_epoch
-            )
+            self.logger.experiment.add_image(f"validation/{split}_target_seg", grid, self.current_epoch)
 
-        log = {"validation/val_loss": val_loss, "validation/val_dice": val_dice}
-        self.log_dict(log, prog_bar=False, on_step=False, on_epoch=True, logger=True, batch_size=self.hparams.batch_size)
+        log = {f"validation/{split}_loss": eval_loss, f"validation/{split}_dice": eval_dice}
+        self.log_dict(log, prog_bar=False, on_step=False, on_epoch=True, logger=True,
+                      batch_size=self.hparams.batch_size, add_dataloader_idx=False)
 
-        return val_loss
+        return eval_loss
 
     def test_step(self, batch: dict, batch_idx: int) -> torch.Tensor:
         """Perform a test step, i.e.pass a test batch through the network, calculate loss and dice score for logging

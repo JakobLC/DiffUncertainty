@@ -9,7 +9,7 @@ import hydra
 from omegaconf import DictConfig
 import numpy as np
 
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, Subset
 from pytorch_lightning import LightningDataModule
 
 import albumentations as A
@@ -130,6 +130,7 @@ class BaseDataModule(LightningDataModule):
         val_batch_size: int,
         num_workers: int,
         augmentations: DictConfig,
+        evaluate_training_data: bool = False,
         tta: bool = False,
         **kwargs,
     ) -> None:
@@ -163,6 +164,10 @@ class BaseDataModule(LightningDataModule):
         self.dataset = dataset
         self.test_split = kwargs.get("test_split", None)
         self.tta = tta
+        # whether to return an additional validation dataloader sampling from training set
+        self.evaluate_training_data = evaluate_training_data
+        # placeholder for optional evaluation dataset based on training data
+        self.DS_train_eval = None
 
     def setup(self, stage: str = None) -> None:
         """
@@ -190,6 +195,23 @@ class BaseDataModule(LightningDataModule):
                 transforms=transforms_val,
                 tta=self.tta,
             )
+            # Optionally build a validation-view of the training set (independent of train dataloader)
+            if self.evaluate_training_data:
+                # create a training dataset instance but with validation transforms
+                DS_train_full_for_eval = hydra.utils.instantiate(
+                    self.dataset,
+                    base_dir=self.data_input_dir,
+                    split="train",
+                    transforms=transforms_val,
+                    tta=self.tta,
+                )
+                # sample a random subset of the training set equal in size to the validation set
+                target_size = min(len(DS_train_full_for_eval), len(self.DS_val))
+                if target_size > 0:
+                    indices = np.random.permutation(len(DS_train_full_for_eval))[:target_size]
+                    self.DS_train_eval = Subset(DS_train_full_for_eval, indices.tolist())
+                else:
+                    self.DS_train_eval = Subset(DS_train_full_for_eval, [])
         if stage in (None, "test"):
             transforms_test = get_augmentations_from_config(self.augmentations.TEST)[0]
             test_split = (
@@ -245,6 +267,22 @@ class BaseDataModule(LightningDataModule):
                 max_steps_val, max_steps_epoch_val
             )
         )
+        
+        if self.evaluate_training_data and self.DS_train_eval is not None:
+            max_steps_train_eval, max_steps_epoch_train_eval = get_max_steps(
+                size_dataset=len(self.DS_train_eval),
+                batch_size=self.val_batch_size,
+                num_devices=self.trainer.num_devices,
+                accumulate_grad_batches=1,
+                num_epochs=self.trainer.max_epochs,
+                drop_last=False,
+            )
+
+            print(
+                "Number of Train-Eval steps: {}  ({} steps per epoch)".format(
+                    max_steps_train_eval, max_steps_epoch_train_eval
+                )
+            )
         return max_steps
 
     def train_dataloader(self) -> DataLoader:
@@ -272,13 +310,25 @@ class BaseDataModule(LightningDataModule):
         DataLoader :
             validation dataloader
         """
-        return DataLoader(
+        val_loader = DataLoader(
             self.DS_val,
             pin_memory=True,
             batch_size=self.val_batch_size,
             num_workers=self.num_workers,
             persistent_workers=True if self.num_workers > 0 else False,
         )
+
+        if self.evaluate_training_data and self.DS_train_eval is not None:
+            train_eval_loader = DataLoader(
+                self.DS_train_eval,
+                pin_memory=True,
+                batch_size=self.val_batch_size,
+                num_workers=self.num_workers,
+                persistent_workers=True if self.num_workers > 0 else False,
+            )
+            return [val_loader, train_eval_loader]
+
+        return val_loader
 
     def test_dataloader(self) -> DataLoader:
         """

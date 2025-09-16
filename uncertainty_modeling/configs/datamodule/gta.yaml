@@ -6,6 +6,7 @@ batch_size: 6
 val_batch_size: 6
 data_fold_id: 0
 augmentations: ${AUGMENTATIONS}
+evaluate_training_data: ${evaluate_training_data}
 dataset:
   _target_: uncertainty_modeling.data.cityscapes_dataset.Cityscapes_dataset
   splits_path: "/home/jloch/Desktop/diff/luzern/values_datasets/gta/splits/firstCycle/splits.pkl"

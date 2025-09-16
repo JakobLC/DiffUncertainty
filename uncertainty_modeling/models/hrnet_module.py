@@ -569,6 +569,7 @@ class HighResolutionNet(nn.Module):
         cov_diag = F.interpolate(
             cov_diag, size=x_size, mode="bilinear", align_corners=ALIGN_CORNERS
         )
+        cov_diag = cov_diag.clamp(min=self.epsilon)
         cov_diag = cov_diag.view((batch_size, -1))
         if mean_only:
             cov_factor = torch.zeros([*cov_diag.shape, self.rank])
@@ -737,5 +738,4 @@ def get_seg_model(cfg, **kwargs):
     model = HighResolutionNet(cfg)
     if cfg.MODEL.PRETRAINED:
         model.load_weights(cfg.MODEL.PRETRAINED_WEIGHTS)
-
     return model

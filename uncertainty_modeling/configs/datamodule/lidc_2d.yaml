@@ -6,6 +6,7 @@ batch_size: 16
 val_batch_size: 16
 data_fold_id: 0
 augmentations: ${AUGMENTATIONS}
+evaluate_training_data: ${evaluate_training_data}
 dataset:
   _target_: uncertainty_modeling.data.lidc2d_dataset.LIDC2DDataset
   splits_path: "/home/jloch/Desktop/diff/luzern/values_datasets/lidc_2d/splits/texture/firstCycle/splits.pkl"

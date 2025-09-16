@@ -10,6 +10,7 @@ from argparse import Namespace, ArgumentParser
 import random
 
 import pytorch_lightning as pl
+from pytorch_lightning.callbacks import ModelCheckpoint
 from omegaconf import DictConfig, OmegaConf, open_dict
 from uncertainty_modeling.lightning_experiment import LightningExperiment
 import warnings
@@ -59,11 +60,20 @@ def main(cfg_hydra: DictConfig):
 
     logger = hydra.utils.instantiate(config.logger, version=config.version)
     progress_bar = hydra.utils.instantiate(config.progress_bar)
+    # Custom checkpoint naming: remove '=' and '-' by using explicit fields
+    checkpoint_cb = ModelCheckpoint(
+        monitor="validation/val_loss",
+        mode="min",
+        filename="epoch{epoch}_step{step}",
+        auto_insert_metric_name=False,
+        save_last=True,
+        save_top_k=1,
+    )
     trainer = pl.Trainer(
         **config.trainer,
         logger=logger,
         profiler="simple",
-        callbacks=progress_bar,
+        callbacks=[progress_bar, checkpoint_cb],
         deterministic="warn",
         gradient_clip_val=gradient_clip_val,
         gradient_clip_algorithm=gradient_clip_algorithm,
@@ -75,8 +85,27 @@ def main(cfg_hydra: DictConfig):
         _recursive_=False,
     )
     dm.prepare_data()
+    # If resuming, do not load pretrained backbone weights when instantiating the model
+    with open_dict(config):
+        try:
+            if ("ckpt_path" in config and config.ckpt_path is not None and str(config.ckpt_path) != "null"):
+                if "MODEL" in config and "PRETRAINED" in config.MODEL:
+                    config.MODEL.PRETRAINED = False
+                if "model" in config and "cfg" in config.model and "MODEL" in config.model.cfg and "PRETRAINED" in config.model.cfg.MODEL:
+                    config.model.cfg.MODEL.PRETRAINED = False
+        except Exception:
+            pass
+
     model = LightningExperiment(config, **config)
-    trainer.fit(model, datamodule=dm)
+    # Allow resuming from a checkpoint by passing `ckpt_path=<path>` on the CLI/hydra
+    ckpt_path = None
+    try:
+        if "ckpt_path" in config and config.ckpt_path is not None and str(config.ckpt_path) != "null":
+            ckpt_path = str(config.ckpt_path)
+    except Exception:
+        ckpt_path = None
+
+    trainer.fit(model, datamodule=dm, ckpt_path=ckpt_path)
 
 
 if __name__ == "__main__":

@@ -7,6 +7,7 @@ defaults:
 
 exp_name: "gta-ssn"
 version: null
+ckpt_path: null
 
 dataset: "gta"
 data_input_dir: "/home/jloch/Desktop/diff/luzern/values_datasets/${dataset}"
@@ -15,6 +16,7 @@ save_dir: "/home/jloch/Desktop/diff/luzern/values/saves"
 seed: 123
 pretrain_epochs: 5
 batch_size: 6
+evaluate_training_data: true
 
 # training hyperparams
 learning_rate: 0.0001
