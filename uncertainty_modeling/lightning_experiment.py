@@ -78,6 +78,7 @@ class LightningExperiment(pl.LightningModule):
         self.nll_loss = torch.nn.NLLLoss()
 
         self.test_datacarrier = DataCarrier3D()
+        self._val_metric_accumulators = {}
 
         if "optimizer" in hparams:
             self.optimizer_conf = hparams.optimizer
@@ -279,6 +280,9 @@ class LightningExperiment(pl.LightningModule):
         )
         return loss
 
+    def on_validation_epoch_start(self) -> None:
+        self._val_metric_accumulators = {}
+
     def validation_step(self, batch: dict, batch_idx: int, dataloader_idx: int = 0) -> torch.Tensor:
         """Perform a validation step, i.e.pass a validation batch through the network, visualize the results in logging
         and calculate loss and dice score for logging
@@ -379,11 +383,60 @@ class LightningExperiment(pl.LightningModule):
                 grid = grid / 255.0
             self.logger.experiment.add_image(f"validation/{split}_target_seg", grid, self.current_epoch)
 
-        log = {f"validation/{split}_loss": eval_loss, f"validation/{split}_dice": eval_dice}
-        self.log_dict(log, prog_bar=False, on_step=False, on_epoch=True, logger=True,
-                      batch_size=self.hparams.batch_size, add_dataloader_idx=False)
+        if isinstance(eval_loss, torch.Tensor):
+            loss_value = eval_loss.detach().float().mean().item()
+        else:
+            loss_value = float(eval_loss)
+        if isinstance(eval_dice, torch.Tensor):
+            dice_value = eval_dice.detach().float().mean().item()
+        else:
+            dice_value = float(eval_dice)
+
+        metrics = self._val_metric_accumulators.setdefault(
+            split, {"loss_sum": 0.0, "dice_sum": 0.0, "count": 0}
+        )
+        metrics["loss_sum"] += loss_value
+        metrics["dice_sum"] += dice_value
+        metrics["count"] += 1
 
         return eval_loss
+
+    def on_validation_epoch_end(self) -> None:
+        accumulators = getattr(self, "_val_metric_accumulators", None)
+        if not accumulators:
+            return
+
+        device = self.device if hasattr(self, "device") else torch.device("cpu")
+        for split, metrics in accumulators.items():
+            count = metrics.get("count", 0)
+            if count == 0:
+                continue
+            avg_loss = metrics["loss_sum"] / count
+            avg_dice = metrics["dice_sum"] / count
+
+            avg_loss_tensor = torch.tensor(avg_loss, device=device)
+            avg_dice_tensor = torch.tensor(avg_dice, device=device)
+
+            self.log(
+                f"validation/{split}_loss",
+                avg_loss_tensor,
+                prog_bar=False,
+                logger=True,
+                on_epoch=True,
+                add_dataloader_idx=False,
+                sync_dist=True,
+            )
+            self.log(
+                f"validation/{split}_dice",
+                avg_dice_tensor,
+                prog_bar=False,
+                logger=True,
+                on_epoch=True,
+                add_dataloader_idx=False,
+                sync_dist=True,
+            )
+
+        self._val_metric_accumulators = {}
 
     def test_step(self, batch: dict, batch_idx: int) -> torch.Tensor:
         """Perform a test step, i.e.pass a test batch through the network, calculate loss and dice score for logging

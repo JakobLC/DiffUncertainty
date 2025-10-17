@@ -2,34 +2,29 @@
 AUGMENTATIONS:
   rotation_limit: 22.5
   scale_limit: [ -0.2, 0.2 ]
-  width: 64
-  height: 64
   # Using ImageNet mean/std so pretrained HRNet normalization matches, even though images are grayscale replicated to 3 channels.
   mean: [ 0.485, 0.456, 0.406 ]
   std: [ 0.229, 0.224, 0.225 ]
   border_mode: 0
   mask_value: 0
+  # list of transform keys that should have magnitude multiplier in [0,1] applied from parent config
+  augment_mult: ${augment_mult}
+  apply_mult: ["HorizontalFlip.p", "Rotate.limit", "RandomScale.scale_limit", "GaussNoise.var_limit"]
   TRAIN:
     - Compose:
         transforms:
           - HorizontalFlip:
-              p: 0.5
+              p: 0.0 #0.5
           - Rotate:
-              limit: ${AUGMENTATIONS.rotation_limit}
+              limit: 0.0 #${AUGMENTATIONS.rotation_limit}
               border_mode: ${AUGMENTATIONS.border_mode}
               mask_value: ${AUGMENTATIONS.mask_value}
           - RandomScale:
               scale_limit: ${AUGMENTATIONS.scale_limit}
-              p: 1.0
-          - PadIfNeeded:
-              min_height: ${AUGMENTATIONS.height}
-              min_width: ${AUGMENTATIONS.width}
-              border_mode: ${AUGMENTATIONS.border_mode}
-              mask_value: ${AUGMENTATIONS.mask_value}
-          - RandomCrop:
-              height: ${AUGMENTATIONS.height}
-              width: ${AUGMENTATIONS.width}
+              p: 0.0 #1.0
           - GaussNoise:
+              #var_limit: [0.2,0.44]
+              p: 0.0 #0.5
           - Normalize:
               mean: ${AUGMENTATIONS.mean}
               std: ${AUGMENTATIONS.std}

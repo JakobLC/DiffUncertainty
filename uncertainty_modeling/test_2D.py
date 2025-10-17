@@ -1,6 +1,7 @@
 import json
 import os
 from argparse import Namespace
+from pathlib import Path
 
 import albumentations
 import cv2
@@ -8,10 +9,14 @@ import hydra
 import numpy as np
 import torch
 from omegaconf import OmegaConf
-from torchmetrics.functional import dice
+#from torchmetrics.functional import dice
 import torch.nn.functional as F
 from tqdm import tqdm
+import sys
+from pathlib import Path
+sys.path.append(Path(__file__).parent.parent.as_posix())
 
+from evaluation.metrics.dice_wrapped import dice
 from uncertainty_modeling.main import set_seed
 from uncertainty_modeling.test_3D import (
     test_cli,
@@ -50,7 +55,7 @@ class Tester:
     def get_checkpoints(checkpoint_paths):
         all_checkpoints = []
         for checkpoint_path in checkpoint_paths:
-            checkpoint = torch.load(checkpoint_path)
+            checkpoint = torch.load(checkpoint_path, weights_only=True)
             checkpoint["hyper_parameters"]["MODEL"]["PRETRAINED"] = False
             conf = OmegaConf.create(checkpoint["hyper_parameters"])
             resolved = OmegaConf.to_container(conf, resolve=True)
@@ -165,7 +170,8 @@ class Tester:
         for rater in ground_truth:
             rater = torch.unsqueeze(rater, 0)
             test_dice = dice(
-                output_softmax, rater, ignore_index=output_softmax.shape[1] - 1
+                output_softmax, rater, ignore_index=output_softmax.shape[1] - 1,
+                is_softmax=True
             )
             all_test_dice.append(test_dice.item())
         metrics_dict["dice"] = np.mean(np.array(all_test_dice))
@@ -213,13 +219,9 @@ class Tester:
             pred_shape[4],
             device=self.device,
         )
-        all_preds["softmax_pred"] = torch.cat(
-            (all_preds["softmax_pred"], extra_dimension), dim=2
-        )
+        all_preds["softmax_pred"] = torch.cat((all_preds["softmax_pred"], extra_dimension), dim=2)
         ignore_index_map = all_preds["gt"] == self.ignore_index
-        all_preds["gt"][all_preds["gt"] == self.ignore_index] = (
-            all_preds["softmax_pred"].shape[2] - 1
-        )
+        all_preds["gt"][all_preds["gt"] == self.ignore_index] = all_preds["softmax_pred"].shape[2] - 1
         image_predictions = [
             all_preds["softmax_pred"][:, i, :, :]
             for i in range(all_preds["softmax_pred"].shape[1])
@@ -283,7 +285,8 @@ class Tester:
             }
             for model in self.models:
                 if model.ssn:
-                    distribution = model.forward(batch["data"].to(self.device))
+                    distribution, cov_failed_flag = model.forward(batch["data"].to(self.device))
+                    assert not cov_failed_flag, "Covariance matrix was not positive definite"
                     output_samples = distribution.sample([self.n_pred])
                     output_samples = output_samples.view(
                         [

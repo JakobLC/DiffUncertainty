@@ -12,7 +12,8 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 import torch.nn as nn
-from torchmetrics.functional import dice
+#from torchmetrics.functional import dice
+from evaluation.metrics.dice_wrapped import dice
 
 from batchgenerators.transforms.abstract_transforms import Compose
 from batchgenerators.transforms.utility_transforms import NumpyToTensor
@@ -85,7 +86,7 @@ def test_cli(config_file: str = None) -> Namespace:
     parser.add_argument(
         "--n_pred",
         type=int,
-        default=1,
+        default=10,
         help="Number of predictions to make by the model",
     )
     parser.add_argument(
@@ -97,7 +98,7 @@ def test_cli(config_file: str = None) -> Namespace:
     parser.add_argument(
         "--test_batch_size",
         type=int,
-        default=12,
+        default=16,
         nargs="?",
         help="Size of the test batches to pass. If specified without number, uses same batch size as used in training.",
     )
@@ -271,7 +272,7 @@ def calculate_test_metrics(
         test_loss = dice_loss(output_softmax, gt_seg) + nll_loss(
             torch.log(output_softmax), gt_seg
         )
-        test_dice = dice(output_softmax, gt_seg, ignore_index=0)
+        test_dice = dice(output_softmax, gt_seg, ignore_index=0, is_softmax=1)
         all_test_loss.append(test_loss.item())
         all_test_dice.append(test_dice.item())
     metrics_dict = {
@@ -291,10 +292,13 @@ def calculate_ged(
     pred_repeat = output_softmax.repeat(
         ground_truth.shape[0], *((output_softmax.ndim - 1) * [1])
     )
+    nc = output_softmax.shape[1]
     dist_gt_pred_2 = 1 - dice(
         pred_repeat,
         gt_repeat,
+        num_classes=nc,
         ignore_index=ignore_index,
+        is_softmax=True
     )
     pred_1_repeat = torch.repeat_interleave(output_softmax, output_softmax.shape[0], 0)
     pred_1_repeat = torch.argmax(pred_1_repeat, dim=1)
@@ -305,6 +309,7 @@ def calculate_ged(
     dist_pred_pred_2 = 1 - dice(
         pred_1_repeat,
         pred_2_repeat,
+        num_classes=nc,
         ignore_index=ignore_index if ignore_index == 0 else None,
     )
     gt_1_repeat = torch.repeat_interleave(ground_truth, ground_truth.shape[0], 0)
@@ -312,9 +317,9 @@ def calculate_ged(
         ground_truth.shape[0], *((ground_truth.ndim - 1) * [1])
     )
     if torch.any(gt_1_repeat == ignore_index):
-        dist_gt_gt_2 = 1 - dice(gt_1_repeat, gt_2_repeat, ignore_index=ignore_index)
+        dist_gt_gt_2 = 1 - dice(gt_1_repeat, gt_2_repeat, ignore_index=ignore_index, num_classes=nc)
     else:
-        dist_gt_gt_2 = 1 - dice(gt_1_repeat, gt_2_repeat)
+        dist_gt_gt_2 = 1 - dice(gt_1_repeat, gt_2_repeat, num_classes=nc)
     ged = 2 * dist_gt_pred_2 - dist_pred_pred_2 - dist_gt_gt_2
 
     if ground_truth.shape[0] > 1 and not ged_only:
@@ -326,7 +331,7 @@ def calculate_ged(
                 pred_softmax = torch.unsqueeze(output_softmax[pred_idx], 0).type(
                     torch.FloatTensor
                 )
-                dice_score = dice(pred_softmax, gt_seg, ignore_index=ignore_index)
+                dice_score = dice(pred_softmax, gt_seg, ignore_index=ignore_index, is_softmax=True)
                 if dice_score > max_dice:
                     max_dice = dice_score
             max_dice_rater.append(max_dice)
@@ -341,7 +346,7 @@ def calculate_ged(
                 gt_seg = torch.unsqueeze(ground_truth[seg_idx], 0).type(
                     torch.LongTensor
                 )
-                dice_score = dice(pred_softmax, gt_seg, ignore_index=ignore_index)
+                dice_score = dice(pred_softmax, gt_seg, ignore_index=ignore_index, is_softmax=True)
                 if dice_score > max_dice:
                     max_dice = dice_score
             dice_sum += max_dice
@@ -511,7 +516,7 @@ def calculate_uncertainty(softmax_preds: torch.Tensor, ssn: bool = False):
         uncertainty_dict["aleatoric_uncertainty"] = expected_entropy
         uncertainty_dict["epistemic_uncertainty"] = mutual_information
     else:
-        print("mutual information is aleatoric unc")
+        #print("mutual information is aleatoric unc")
         uncertainty_dict["aleatoric_uncertainty"] = mutual_information
         uncertainty_dict["epistemic_uncertainty"] = expected_entropy
     # value["softmax_pred"] = np.mean(value["softmax_pred"], axis=0)

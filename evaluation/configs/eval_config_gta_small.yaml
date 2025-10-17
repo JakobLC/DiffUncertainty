@@ -1,0 +1,47 @@
+defaults:
+  - _self_
+  - datasets/gta_small
+  - tasks/aggregation_patch_image
+  - tasks/failure_detection
+
+base_splits_path: "/home/jloch/Desktop/diff/luzern/values_datasets/gta_small/splits"
+base_path: "/home/jloch/Desktop/diff/luzern/values/experiments/FirstCycle"
+second_cycle_path: "/home/jloch/Desktop/diff/luzern/values/experiments/SecondCycle"
+experiments:
+  - ${GTA}
+
+#tasks: ["al_improvement"]
+tasks: ["ambiguity_modeling","ood_detection"]
+
+task_params:
+  aggregation: ${AGG_PATCH_IMAGE}
+  second_cycle_splits:
+    datasets: ["unlabeled"]
+    function:
+      _target_: evaluation.split_file_generation.split_files_second_cycle.generate_split_file
+      base_splits_path: "${base_splits_path}"
+  second_cycle_splits_random:
+    datasets: [ "unlabeled" ]
+    function:
+      _target_: evaluation.split_file_generation.split_files_second_cycle_random.generate_split_file
+      base_splits_path: "${base_splits_path}"
+      random_types: [ "random" ]
+  ood_detection:
+    datasets: [ "unlabeled" ]
+    function:
+      _target_: evaluation.metrics.auroc.ood_detection
+      base_splits_path: "${base_splits_path}"
+  failure_detection: ${FAILURE_DETECTION}
+  calibration:
+    datasets: ["id", "ood"]
+    function:
+      _target_: evaluation.metrics.ace.main
+      ignore_value: 255
+  ambiguity_modeling:
+    datasets: [ "id", "ood" ]
+    function:
+      _target_: evaluation.metrics.ncc.main
+  al_improvement:
+    datasets: [ "ood" ]
+    function:
+      _target_: evaluation.metrics.al_improvement.main

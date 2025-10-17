@@ -5,14 +5,24 @@ from torchmetrics.segmentation import DiceScore
 def dice(
     preds_idx: torch.Tensor,           # (N,H,W) int indices
     target_idx: torch.Tensor,          # (N,H,W) int indices
-    num_classes: int,                  # original classes including class 0
+    num_classes: int = None,                  # original classes including class 0
     ignore_index: int = 255,           # void label to ignore entirely
     include_background: bool = True,   # whether to ignore class 0
     average: str = "micro",
-    aggregation_level: str = "global"
+    aggregation_level: str = "global",
+    is_softmax=False,                  # if True, preds are softmax probabilities (N,C,H,W)
 ):
+    if is_softmax:
+        assert preds_idx.ndim == 4, f"Expected (N,C,H,W) for preds when is_softmax=True, got {preds_idx.shape}"
+        if num_classes is None:
+            num_classes = preds_idx.shape[1]
+        else:
+            assert num_classes == preds_idx.shape[1], f"num_classes={num_classes} inconsistent with preds.shape[1]={preds_idx.shape[1]}"
+        preds_idx = preds_idx.argmax(1)  # (N,H,W)
+
+    assert num_classes is not None, "num_classes must be specified"
     if preds_idx.shape != target_idx.shape or preds_idx.ndim != 3:
-        raise ValueError("Expected preds/target to be (N,H,W) with identical shapes.")
+        raise ValueError(f"Expected preds/target to be (N,H,W) with identical shapes. got shapes {preds_idx.shape} and {target_idx.shape}")
     
     if preds_idx.min() < 0 or preds_idx.max() >= num_classes:
         raise ValueError(f"preds_idx has values outside [0,{num_classes-1}], got {preds_idx.min()}..{preds_idx.max()}")

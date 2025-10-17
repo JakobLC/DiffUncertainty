@@ -72,6 +72,90 @@ def get_max_steps(
 
     return max_steps, steps_per_epoch
 
+from typing import List, Union
+from omegaconf import DictConfig, ListConfig, open_dict
+
+def _set_by_path(cfg: Union[DictConfig, ListConfig], path: List[str], value) -> None:
+    
+    #Set cfg[path[0]][path[1]]...[path[-1]] = value.
+    #- Raises KeyError/IndexError if any segment is missing.
+    #- Supports ListConfig via integer-like segments (e.g., "0").
+    
+    if not path:
+        raise KeyError("Empty path")
+
+    cur = cfg
+    for seg in path[:-1]:
+        if isinstance(cur, ListConfig):
+            try:
+                idx = int(seg)
+            except ValueError:
+                raise KeyError(f"Expected list index, got '{seg}' in path {path}")
+            if idx < 0 or idx >= len(cur):
+                raise IndexError(f"Index {idx} out of range for segment '{seg}' in path {path}")
+            cur = cur[idx]
+        else:
+            if seg not in cur:
+                raise KeyError(f"Missing key '{seg}' in path {path}")
+            cur = cur[seg]
+
+    last = path[-1]
+    with open_dict(cfg):
+        if isinstance(cur, ListConfig):
+            try:
+                idx = int(last)
+            except ValueError:
+                raise KeyError(f"Expected list index, got '{last}' in path {path}")
+            if idx < 0 or idx >= len(cur):
+                raise IndexError(f"Index {idx} out of range for last segment '{last}' in path {path}")
+            cur[idx] = value
+        else:
+            if last not in cur:
+                raise KeyError(f"Missing final key '{last}' in path {path}")
+            cur[last] = value
+
+def apply_augment_mult2(augmentations: DictConfig) -> DictConfig:
+    if "augment_mult" in augmentations.TRAIN and "apply_mult" in augmentations.TRAIN:
+        mult = augmentations.TRAIN.augment_mult
+        for key_seq in augmentations.TRAIN.apply_mult:
+            path = ["TRAIN","Compose"] + key_seq.split(".")
+            d = augmentations
+            for k in path:
+                d = d[k]
+            if isinstance(d, list):
+                for i in range(len(d)):
+                    d[i] = d[i] * mult
+            else:
+                d = d * mult
+            print("Setting", path, "to", d)
+            _set_by_path(augmentations, path, d)
+        del augmentations.TRAIN.augment_mult
+        del augmentations.TRAIN.apply_mult
+    return augmentations
+
+def apply_augment_mult(augmentations: DictConfig) -> DictConfig:
+    return augmentations
+    print("augment_mult" in augmentations.TRAIN and "apply_mult" in augmentations.TRAIN)
+    if "augment_mult" in augmentations.TRAIN and "apply_mult" in augmentations.TRAIN:
+        mult = augmentations.TRAIN.augment_mult
+        for key_seq in augmentations.TRAIN.apply_mult:
+            keys = key_seq.split(".")
+            d = augmentations.TRAIN.Compose.transforms
+            for k in keys[:-1]:
+                d = d[k]
+            last_key = keys[-1]
+            if last_key in d:
+                if isinstance(d[last_key], list):
+                    d[last_key] = [v * mult for v in d[last_key]]
+                elif isinstance(d[last_key], (int, float)):
+                    d[last_key] = d[last_key] * mult
+                else:
+                    print(f"Warning: augment_mult not applied to {key_seq} with value {d[last_key]}")
+            else:
+                print(f"Warning: key {last_key} not found in augmentation {key_seq}")
+        del augmentations.TRAIN.augment_mult
+        del augmentations.TRAIN.apply_mult
+    return augmentations
 
 def get_augmentations_from_config(augmentations: DictConfig) -> list:
     """
@@ -179,6 +263,10 @@ class BaseDataModule(LightningDataModule):
             current stage which is given by Pytorch Lightning
         """
         if stage in (None, "fit"):
+            #print(self.augmentations.TRAIN.Compose.transforms.RandomScale.scale_limit)
+            #self.augmentations = apply_augment_mult(self.augmentations)
+            #print(self.augmentations.TRAIN.Compose.transforms.RandomScale.scale_limit)
+            #exit()
             transforms_train = get_augmentations_from_config(self.augmentations.TRAIN)[0]
             self.DS_train = hydra.utils.instantiate(
                 self.dataset,

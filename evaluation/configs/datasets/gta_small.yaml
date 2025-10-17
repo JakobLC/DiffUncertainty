@@ -1,7 +1,7 @@
 #@package _global_
 defaults:
-  - /../../uncertainty_modeling/configs/datamodule/gta_small_torch_config@GTA.datamodule_config
-  - /../../uncertainty_modeling/configs/data_augmentations/tta_small_augmentations
+  - /../../uncertainty_modeling/configs/datamodule/gta_small@GTA.datamodule_config
+  - /../../uncertainty_modeling/configs/data_augmentations/tta_gta_small
   - _self_
 
 AUGMENTATIONS:
@@ -27,7 +27,7 @@ GTA:
   image_ending: ".png"
   unc_ending: ".tif"
   datamodule_config:
-    data_input_dir: "/nvme/GTA_small"
+    data_input_dir: "/home/jloch/Desktop/diff/luzern/values_datasets/gta_small"
   n_reference_segs: 5
   pred_seg_loading:
     _target_: evaluation.utils.gta.pred_seg_loading

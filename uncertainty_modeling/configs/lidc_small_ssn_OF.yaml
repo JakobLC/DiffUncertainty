@@ -5,7 +5,7 @@ defaults:
   - model: hrnet_ssn
   - data_augmentations: tta_lidc_2d_small
 
-exp_name: "lidc-small-snn"
+exp_name: "lidc-small-snn-OF"
 version: null
 ckpt_path: null
 
@@ -15,37 +15,32 @@ save_dir: "/home/jloch/Desktop/diff/luzern/values/saves"
 
 seed: 123
 pretrain_epochs: 5
-batch_size: 16
+batch_size: 64
 evaluate_training_data: true
 
 # training hyperparams
 learning_rate: 0.0001
-weight_decay: 0.0005
+weight_decay: 0.0
 
-augment_mult: 1.0
+augment_mult: 0.5
 
 optimizer:
-  _target_: torch.optim.RMSprop
+  _target_: torch.optim.AdamW
   lr: ${learning_rate}
   weight_decay: ${weight_decay}
-  momentum: 0.85 # 0.6 w BS 6 approximate. m_new=1-B_old/B_new*(1-m_old)=1-6/16*(1-0.6)=0.85
-  # alpha: 0.9
-
-lr_scheduler:
-  _target_: torch.optim.lr_scheduler.PolynomialLR
-  power: 0.9
 
 logger:
   _target_: pytorch_lightning.loggers.TensorBoardLogger
   save_dir: ${save_dir}
   name: ${exp_name}
+  default_hp_metric: false
 
 progress_bar:
   _target_: pytorch_lightning.callbacks.TQDMProgressBar
   refresh_rate: 10
 
 trainer:
-  max_epochs: 300
+  max_epochs: 500
   accelerator: gpu
   devices: 1
   precision: 32 # bf16-mixed
