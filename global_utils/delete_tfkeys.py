@@ -270,7 +270,7 @@ def main():
     import argparse
 
     parser = argparse.ArgumentParser(description="Clean TensorBoard logs by removing specified keys.")
-    parser.add_argument("--root_dir", type=str, default="/home/jloch/Desktop/diff/luzern/values/saves/lidc-small-snn-OF/version_14", 
+    parser.add_argument("--root_dir", type=str, default="/home/jloch/Desktop/diff/luzern/values/saves/lidc-small-snn/version_2", 
                         help="Root directory to search for TensorBoard event files.")
     parser.add_argument("--keys", type=str, help="List of TensorBoard scalar keys to remove.", default=default_keys)
     parser.add_argument("--dry", action='store_true', help="If set, only prints which keys would be deleted without making changes.")

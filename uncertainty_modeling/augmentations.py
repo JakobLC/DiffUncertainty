@@ -5,7 +5,6 @@ import numpy as np
 
 import uncertainty_modeling.data.cityscapes_labels as cs_labels
 
-
 class StochasticLabelSwitches(A.BasicTransform):
     def __init__(self, always_apply=False, p=0.5, n_reference_samples: int = 1):
         super(StochasticLabelSwitches, self).__init__(always_apply, p)

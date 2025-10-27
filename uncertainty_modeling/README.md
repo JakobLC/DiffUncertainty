@@ -49,6 +49,26 @@ optimizer:
 lr_scheduler:
   _target_: <lr scheduler to use>
   # ... (additional params)
+
+### Checkpoint scheduling and EMA weights
+
+The training configs additionally expose a ``ckpt_save_freq`` block and EMA controls:
+
+```yaml
+track_ema_weights: true   # enable exponential moving average tracking of model weights
+ema_decay: 0.999          # decay factor used for the EMA update
+
+ckpt_save_freq:
+  use_linear_saving: true       # set to true to store checkpoints every ``linear_freq`` epochs
+  use_exponential_saving: false # alternatively enable exponentially spaced checkpoints
+  only_small_ckpts: true        # save weights-only checkpoints when true
+  linear_freq: 25               # (linear) save at 25, 50, 75, ...
+  exponent_base: 1.5            # (exponential) growth factor between checkpoints
+  exponential_start: 10         # (exponential) first epoch to snapshot
+  end: ${trainer.max_epochs}    # last epoch considered when building the schedule
+```
+
+Only one of the linear or exponential schemes can be enabled at a time. Linear schedules save at regular intervals (e.g. 25, 50, 75, ...), whereas exponential schedules create a logarithmic spacing (e.g. 10, 20, 40, 80, ...). The configured checkpoints are stored alongside the standard Lightning checkpoints; the final training checkpoint remains handled by Lightning itself. When ``only_small_ckpts`` is ``true`` the scheduled checkpoints only contain the model weights (plus EMA weights when tracking is enabled) which are sufficient for inference.
 ```
 
 The datamodule and model configs are really dependent on the implementations of the datamodule and model they are instantiating. For examples, look in the corresponding subfolders.

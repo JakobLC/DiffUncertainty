@@ -5,7 +5,7 @@ defaults:
   - model: hrnet_ssn
   - data_augmentations: tta_lidc_2d_small
 
-exp_name: "lidc-small-snn-OF"
+exp_name: "lidc-small-ssn-OF"
 version: null
 ckpt_path: null
 
@@ -23,6 +23,9 @@ learning_rate: 0.0001
 weight_decay: 0.0
 
 augment_mult: 0.5
+
+track_ema_weights: true
+ema_decay: 0.999
 
 optimizer:
   _target_: torch.optim.AdamW
@@ -49,3 +52,12 @@ trainer:
   # gradient_clip_algorithm: norm
   # log_every_n_steps: 50
   # check_val_every_n_epoch: 1
+
+ckpt_save_freq:
+  use_linear_saving: false
+  use_exponential_saving: true
+  only_small_ckpts: true
+  linear_freq: 10
+  exponent_base: 1.25
+  exponential_start: 10
+  end: ${trainer.max_epochs}

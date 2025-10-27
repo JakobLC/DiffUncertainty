@@ -1,6 +1,8 @@
+import copy
 import os
 import pickle
 import random
+from pathlib import Path
 from typing import Dict, Tuple, List
 
 import hydra
@@ -24,6 +26,8 @@ from uncertainty_modeling.models.ssn_unet3D_module import SsnUNet3D
 from loss_modules import SoftDiceLoss
 from main import set_seed
 from tqdm import tqdm
+
+from global_utils.checkpoint_format import format_checkpoint_subdir#, infer_epoch_from_path
 
 
 def test_cli(config_file: str = None) -> Namespace:
@@ -106,10 +110,17 @@ def test_cli(config_file: str = None) -> Namespace:
         "--test_split",
         type=str,
         default="id",
-        help="The key of the test split to use for prediction. If 'unlabeled', uses both, the id and ood unlabeled data",
+        help="Comma separated list of test splits to evaluate. Each split is processed in a separate run.",
     )
     parser.add_argument(
         "--test_time_augmentations", "-tta", dest="tta", action="store_true"
+    )
+    parser.add_argument(
+        "--ema_mode",
+        type=str,
+        default="normal",
+        choices=["normal", "ema", "both"],
+        help="Select which weights to evaluate: 'normal', 'ema', or 'both'.",
     )
 
     if config_file is not None:
@@ -119,6 +130,74 @@ def test_cli(config_file: str = None) -> Namespace:
 
     args = parser.parse_args()
     return args
+
+
+def _expand_checkpoint_groups(entries: List[str]) -> List[List[str]]:
+    if not entries:
+        raise ValueError("No checkpoint paths provided.")
+    combinations: List[List[str]] = [[]]
+    for entry in entries:
+        path = Path(entry)
+        if path.is_dir():
+            candidates = sorted(path.glob("*.ckpt"))
+            if not candidates:
+                raise FileNotFoundError(f"No .ckpt files found in directory: {path}")
+            new_combinations: List[List[str]] = []
+            for combo in combinations:
+                for candidate in candidates:
+                    new_combo = combo + [candidate.as_posix()]
+                    new_combinations.append(new_combo)
+            combinations = new_combinations
+        else:
+            resolved = path.as_posix()
+            for combo in combinations:
+                combo.append(resolved)
+    return combinations
+
+
+def _parse_test_splits(split_arg: str) -> List[str]:
+    if split_arg is None:
+        return ["id"]
+    splits = [s.strip() for s in str(split_arg).split(",") if s.strip()]
+    return splits or ["id"]
+
+
+def _ema_mode_to_flags(mode: str) -> List[Tuple[str, bool]]:
+    normalized = (mode or "normal").lower()
+    if normalized == "normal":
+        return [("normal", False)]
+    if normalized == "ema":
+        return [("ema", True)]
+    if normalized == "both":
+        # Evaluate EMA first, then normal to mirror manual workflow
+        return [("ema", True), ("normal", False)]
+    raise ValueError(f"Unsupported ema_mode '{mode}'.")
+
+
+def prepare_evaluation_jobs(args: Namespace) -> List[Namespace]:
+    raw_paths = args.checkpoint_paths
+    if raw_paths is None:
+        raise ValueError("--checkpoint_paths must be provided.")
+    if isinstance(raw_paths, str):
+        raw_list = [raw_paths]
+    else:
+        raw_list = list(raw_paths)
+
+    checkpoint_combos = _expand_checkpoint_groups(raw_list)
+    test_splits = _parse_test_splits(args.test_split)
+    ema_options = _ema_mode_to_flags(getattr(args, "ema_mode", "normal"))
+
+    jobs: List[Namespace] = []
+    for checkpoints in checkpoint_combos:
+        for split in test_splits:
+            for ema_label, use_ema in ema_options:
+                job_args = copy.deepcopy(args)
+                job_args.checkpoint_paths = list(checkpoints)
+                job_args.test_split = split
+                job_args.use_ema = use_ema
+                job_args.current_ema_label = ema_label
+                jobs.append(job_args)
+    return jobs
 
 
 def dir_and_subjects_from_train(
@@ -221,7 +300,7 @@ def dir_and_subjects_from_train_lidc(
 
 
 def load_models_from_checkpoint(
-    checkpoints: List[Dict], device="cpu"
+    checkpoints: List[Dict], device="cpu", use_ema: bool = False
 ) -> List[nn.Module]:
     """
     Load the model for the predictions from a checkpoint
@@ -235,8 +314,42 @@ def load_models_from_checkpoint(
     for checkpoint in checkpoints:
         hparams = checkpoint["hyper_parameters"]
         state_dict = OrderedDict()
-        for k, v in checkpoint["state_dict"].items():
-            state_dict[".".join(k.split(".")[1:])] = v
+        if use_ema:
+            if "ema_state_dict" in checkpoint:
+                source_items = checkpoint["ema_state_dict"].items()
+                cleaned = []
+                for k, v in source_items:
+                    if k == "n_averaged":
+                        continue
+                    key = k.split("module.", 1)[1] if k.startswith("module.") else k
+                    cleaned.append((key, v))
+            else:
+                source_items = [
+                    (k, v)
+                    for k, v in checkpoint["state_dict"].items()
+                    if k.startswith("ema_model.")
+                ]
+                if not source_items:
+                    raise ValueError(
+                        "EMA weights requested but checkpoint does not contain an ema_model."  # noqa: E501
+                    )
+                cleaned = []
+                for k, v in source_items:
+                    key = k.split("ema_model.", 1)[1]
+                    if key == "n_averaged":
+                        continue
+                    key = key.split("module.", 1)[1] if key.startswith("module.") else key
+                    cleaned.append((key, v))
+        else:
+            source_items = [
+                (k, v)
+                for k, v in checkpoint["state_dict"].items()
+                if k.startswith("model.")
+            ]
+            cleaned = [(k.split(".", 1)[1], v) for k, v in source_items]
+
+        for key, value in cleaned:
+            state_dict[key] = value
         if "aleatoric_loss" in hparams and hparams["aleatoric_loss"] is not None:
             model = hydra.utils.instantiate(
                 hparams["model"], aleatoric_loss=hparams["aleatoric_loss"]
@@ -598,6 +711,8 @@ def save_results(
         else hparams["data_input_dir"]
     )
     exp_name = hparams["exp_name"] if args.exp_name is None else args.exp_name
+    checkpoint_tag = getattr(args, "checkpoint_subdir", None)
+
     if "shift_feature" in hparams["datamodule"]:
         test_datacarrier.save_data(
             root_dir=save_dir,
@@ -605,6 +720,7 @@ def save_results(
             version=hparams["version"],
             org_data_path=os.path.join(data_input_dir, "images"),
             test_split=args.test_split,
+            checkpoint_tag=checkpoint_tag,
         )
     else:
         if args.test_data_dir is not None:
@@ -623,6 +739,7 @@ def save_results(
             version=hparams["version"],
             org_data_path=org_data_path,
             test_split=args.test_split,
+            checkpoint_tag=checkpoint_tag,
         )
     test_datacarrier.log_metrics()
 
@@ -644,6 +761,9 @@ def run_test(args: Namespace) -> None:
     hparams = all_checkpoints[0]["hyper_parameters"]
 
     set_seed(hparams["seed"])
+    checkpoint_epoch = all_checkpoints[0].get("epoch")
+    checkpoint_tag = format_checkpoint_subdir(checkpoint_epoch, args.use_ema)
+    args.checkpoint_subdir = checkpoint_tag
     # No test data dir specified, so data should be in same input dir as training data and split should be specified
     if test_data_dir is None:
         if "shift_feature" in hparams["datamodule"]:
@@ -673,7 +793,9 @@ def run_test(args: Namespace) -> None:
         patch_overlap=hparams["datamodule"]["patch_overlap"],
     )
 
-    models = load_models_from_checkpoint(all_checkpoints)
+    models = load_models_from_checkpoint(
+        all_checkpoints, use_ema=bool(getattr(args, "use_ema", False))
+    )
     # data_samples = [data_samples[0]]
     ssn = False
     if isinstance(models[0], SsnUNet3D) and len(models) == 1:
@@ -703,4 +825,15 @@ def run_test(args: Namespace) -> None:
 
 if __name__ == "__main__":
     arguments = test_cli()
-    run_test(arguments)
+    jobs = prepare_evaluation_jobs(arguments)
+    if not jobs:
+        raise ValueError("No evaluation jobs were generated. Check your checkpoint paths.")
+    total_jobs = len(jobs)
+    for idx, job in enumerate(jobs, start=1):
+        ema_label = getattr(job, "current_ema_label", "normal")
+        ckpt_summary = ", ".join(Path(p).name for p in job.checkpoint_paths)
+        print(
+            f"[{idx}/{total_jobs}] Evaluating split='{job.test_split}' "
+            f"ema='{ema_label}' with checkpoints: {ckpt_summary}"
+        )
+        run_test(job)

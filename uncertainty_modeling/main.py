@@ -12,6 +12,7 @@ import random
 import pytorch_lightning as pl
 from pytorch_lightning.callbacks import ModelCheckpoint
 from omegaconf import DictConfig, OmegaConf, open_dict
+from uncertainty_modeling.callbacks import ScheduledCheckpointCallback
 from uncertainty_modeling.lightning_experiment import LightningExperiment
 import warnings
 # warnings.filterwarnings("error")
@@ -60,6 +61,13 @@ def main(cfg_hydra: DictConfig):
 
     logger = hydra.utils.instantiate(config.logger, version=config.version)
     progress_bar = hydra.utils.instantiate(config.progress_bar)
+    scheduled_ckpt_cb = None
+    if "ckpt_save_freq" in config and config.ckpt_save_freq is not None:
+        ckpt_cfg = config.ckpt_save_freq
+        use_linear = bool(getattr(ckpt_cfg, "use_linear_saving", False))
+        use_exponential = bool(getattr(ckpt_cfg, "use_exponential_saving", False))
+        if use_linear or use_exponential:
+            scheduled_ckpt_cb = ScheduledCheckpointCallback(ckpt_cfg)
     # Custom checkpoint naming: remove '=' and '-' by using explicit fields
     checkpoint_cb = ModelCheckpoint(
         monitor="validation/val_loss",
@@ -68,12 +76,16 @@ def main(cfg_hydra: DictConfig):
         auto_insert_metric_name=False,
         save_last=True,
         save_top_k=1,
+        save_weights_only=True,
     )
+    callbacks = [progress_bar, checkpoint_cb]
+    if scheduled_ckpt_cb is not None:
+        callbacks.append(scheduled_ckpt_cb)
     trainer = pl.Trainer(
         **config.trainer,
         logger=logger,
         profiler="simple",
-        callbacks=[progress_bar, checkpoint_cb],
+        callbacks=callbacks,
         deterministic="warn",
         gradient_clip_val=gradient_clip_val,
         gradient_clip_algorithm=gradient_clip_algorithm,

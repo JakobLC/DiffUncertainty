@@ -1,6 +1,6 @@
 import json
 import os
-from typing import Dict
+from typing import Dict, Optional
 
 import numpy as np
 import torch
@@ -22,7 +22,8 @@ class DataCarrier3D:
         exp_name: str,
         version: int,
         sigma_save_dir: bool,
-        test_split: str = "id",
+    test_split: str = "id",
+    checkpoint_tag: Optional[str] = None,
     ) -> None:
         """
         Create the directories to store the test results in.
@@ -31,15 +32,12 @@ class DataCarrier3D:
             exp_name: Name of the experiment
             version: version of the experiment
         """
-        # TODO: probably outdated if statement
-        if id is None:
-            self.save_dir = os.path.join(
-                root_dir, exp_name, "test_results", str(version)
-            )
-        else:
-            self.save_dir = os.path.join(
-                root_dir, exp_name, "test_results", str(version), test_split
-            )
+        path_parts = [root_dir, exp_name, "test_results", str(version)]
+        if checkpoint_tag:
+            path_parts.append(checkpoint_tag)
+        if test_split is not None:
+            path_parts.append(test_split)
+        self.save_dir = os.path.join(*path_parts)
         print(self.save_dir)
         self.save_input_dir = os.path.join(self.save_dir, "input")
         self.save_gt_dir = os.path.join(self.save_dir, "gt_seg")
@@ -185,6 +183,7 @@ class DataCarrier3D:
         version: int,
         org_data_path: str = None,
         test_split: str = "id",
+    checkpoint_tag: Optional[str] = None,
     ) -> None:
         """
         Saves the data according to the folder structure in _create_save_dirs
@@ -204,6 +203,7 @@ class DataCarrier3D:
             version=version,
             sigma_save_dir=sigma_save_dir,
             test_split=test_split,
+            checkpoint_tag=checkpoint_tag,
         )
         for key, value in self.data.items():
             data = np.asarray(

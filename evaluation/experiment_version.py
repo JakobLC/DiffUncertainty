@@ -1,5 +1,6 @@
 from pathlib import Path
 
+from global_utils.checkpoint_format import format_checkpoint_subdir
 
 class ExperimentVersion:
     def __init__(

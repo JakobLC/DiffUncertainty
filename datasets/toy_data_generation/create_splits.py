@@ -9,7 +9,7 @@ import pytorch_lightning as pl
 from sklearn.model_selection import KFold
 
 sys.path.append("../../")
-from utils.subfiles import subfiles
+from global_utils.subfiles import subfiles
 
 
 def main_cli():

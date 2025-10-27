@@ -1,4 +1,9 @@
 #@package _global_
+defaults:
+  - /../../uncertainty_modeling/configs/datamodule/lidc_2d@LIDC.datamodule_config
+  - /../../uncertainty_modeling/configs/data_augmentations/tta_lidc_2d
+  - _self_
+
 LIDC:
   iter_params:
     shift: [ "texture", "malignancy" ]

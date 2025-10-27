@@ -3,6 +3,10 @@ from pathlib import Path
 
 import hydra
 from omegaconf import ListConfig
+import sys
+
+from pathlib import Path
+sys.path.append(Path(__file__).parent.parent.as_posix())
 
 from experiment_version import ExperimentVersion
 from experiment_dataloader import ExperimentDataloader
@@ -109,7 +113,7 @@ class EvalExperiments:
         return
 
 
-@hydra.main(config_path="configs", config_name="eval_config_lidc", version_base=None)
+@hydra.main(config_path="configs", config_name="eval_config_lidc_small", version_base=None)
 def main(eval_config):
     evaluator = EvalExperiments(eval_config)
     evaluator.analyse()

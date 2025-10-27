@@ -3,7 +3,6 @@ import os
 from argparse import Namespace
 from pathlib import Path
 
-import albumentations
 import cv2
 import hydra
 import numpy as np
@@ -13,7 +12,6 @@ from omegaconf import OmegaConf
 import torch.nn.functional as F
 from tqdm import tqdm
 import sys
-from pathlib import Path
 sys.path.append(Path(__file__).parent.parent.as_posix())
 
 from evaluation.metrics.dice_wrapped import dice
@@ -24,8 +22,10 @@ from uncertainty_modeling.test_3D import (
     calculate_ged,
     calculate_uncertainty,
     calculate_one_minus_msr,
+    prepare_evaluation_jobs,
 )
 import uncertainty_modeling.data.cityscapes_labels as cs_labels
+from global_utils.checkpoint_format import format_checkpoint_subdir
 
 
 class Tester:
@@ -39,7 +39,9 @@ class Tester:
         self.test_dataloader = self.get_test_dataloader(args, hparams)
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         self.models = load_models_from_checkpoint(
-            self.all_checkpoints, device=self.device
+            self.all_checkpoints,
+            device=self.device,
+            use_ema=bool(getattr(args, "use_ema", False)),
         )
         self.n_pred = args.n_pred
         self.results_dict = {}
@@ -49,6 +51,12 @@ class Tester:
         self.exp_name = hparams["exp_name"] if args.exp_name is None else args.exp_name
         self.version = str(hparams["version"])
         self.test_split = args.test_split
+        self.use_ema = bool(getattr(args, "use_ema", False))
+        self.dataset_name = hparams.get("dataset") if isinstance(hparams, dict) else None
+        self.checkpoint_epoch = self.all_checkpoints[0].get("epoch")+1 if self.all_checkpoints else None
+        self.checkpoint_subdir = format_checkpoint_subdir(
+            self.checkpoint_epoch, self.use_ema
+        )
         self.create_save_dirs()
 
     @staticmethod
@@ -65,26 +73,36 @@ class Tester:
 
     @staticmethod
     def set_n_reference_samples(hparams, n_reference_samples):
-        label_switch_index = [
-            i
-            for i, aug in enumerate(
-                hparams["AUGMENTATIONS"]["TEST"][0]["Compose"]["transforms"]
+        transforms_cfg = hparams["AUGMENTATIONS"].get("TEST", [])
+        updated = False
+        for compose in transforms_cfg:
+            compose_cfg = compose.get("Compose")
+            if not compose_cfg:
+                continue
+            for transform in compose_cfg.get("transforms", []):
+                if "StochasticLabelSwitches" in transform:
+                    transform["StochasticLabelSwitches"][
+                        "n_reference_samples"
+                    ] = n_reference_samples
+                    updated = True
+        if not updated:
+            print(
+                "[test_2D] Warning: StochasticLabelSwitches not found in TEST augmentations;"
+                " skipping n_reference_samples configuration."
             )
-            if "StochasticLabelSwitches" in aug
-        ][0]
-        hparams["AUGMENTATIONS"]["TEST"][0]["Compose"]["transforms"][
-            label_switch_index
-        ]["StochasticLabelSwitches"]["n_reference_samples"] = n_reference_samples
         return hparams
 
     def create_save_dirs(self):
-        self.save_dir = os.path.join(
+        path_parts = [
             self.save_root_dir,
             self.exp_name,
             "test_results",
             self.version,
-            self.test_split,
-        )
+        ]
+        if self.checkpoint_subdir:
+            path_parts.append(self.checkpoint_subdir)
+        path_parts.append(self.test_split)
+        self.save_dir = os.path.join(*path_parts)
         print(f"saving to results dir {self.save_dir}")
         self.save_pred_dir = os.path.join(self.save_dir, "pred_seg")
         self.save_pred_prob_dir = os.path.join(self.save_dir, "pred_prob")
@@ -130,12 +148,6 @@ class Tester:
             # output_softmax_np = output.detach().cpu().numpy()
             output = torch.argmax(output, dim=-1, keepdim=True)
             output_np = output.detach().long().cpu().numpy().astype(np.uint8)
-            output_np_color = np.zeros((*output_np.shape[:-1], 3), dtype=np.uint8)
-            output_np[ignore_index_map.astype(bool)] = cs_labels.name2trainId[
-                "unlabeled"
-            ]
-            for k, v in cs_labels.trainId2color.items():
-                output_np_color[(output_np == k).squeeze(-1), :] = v
             if not multiple_preds:
                 output_idx += 1
             img_name = (
@@ -143,14 +155,30 @@ class Tester:
                 if output_idx == 0 and multiple_preds
                 else f"{image_id}_{str(output_idx).zfill(2)}"
             )
-            # np.savez_compressed(
-            #     os.path.join(self.save_pred_prob_dir, f"{img_name}.npz"),
-            #     pred_prob=output_softmax_np,
-            # )
-            output_np_color = cv2.cvtColor(output_np_color, cv2.COLOR_BGR2RGB)
-            cv2.imwrite(
-                os.path.join(self.save_pred_dir, f"{img_name}.png"), output_np_color
-            )
+
+            if self.dataset_name and "lidc" in self.dataset_name.lower():
+                mask = output_np.squeeze(-1)
+                ignore_mask = np.asarray(ignore_index_map, dtype=bool)
+                if ignore_mask.shape != mask.shape:
+                    ignore_mask = np.squeeze(ignore_mask)
+                mask = mask.copy()
+                mask[ignore_mask] = 0
+                mask = (mask > 0).astype(np.uint8) * 255
+                if mask.ndim > 2:
+                    mask = mask.squeeze()
+                mask = np.asarray(mask, dtype=np.uint8)
+                cv2.imwrite(os.path.join(self.save_pred_dir, f"{img_name}.png"), mask)
+            else:
+                output_np_color = np.zeros((*output_np.shape[:-1], 3), dtype=np.uint8)
+                output_np[ignore_index_map.astype(bool)] = cs_labels.name2trainId[
+                    "unlabeled"
+                ]
+                for k, v in cs_labels.trainId2color.items():
+                    output_np_color[(output_np == k).squeeze(-1), :] = v
+                output_np_color = cv2.cvtColor(output_np_color, cv2.COLOR_BGR2RGB)
+                cv2.imwrite(
+                    os.path.join(self.save_pred_dir, f"{img_name}.png"), output_np_color
+                )
         return
 
     def save_uncertainty(self, image_id, uncertainty_dict):
@@ -199,7 +227,7 @@ class Tester:
             uncertainty_dict = calculate_uncertainty(image_preds)
         else:
             uncertainty_dict = calculate_one_minus_msr(image_preds.squeeze(0))
-        ignore_index_map_image = ignore_index_map[image_idx][0].unsqueeze(-1)
+        ignore_index_map_image = ignore_index_map[image_idx][0]
         self.save_prediction(
             image_id,
             image_preds,
@@ -248,7 +276,7 @@ class Tester:
                 uncertainty_dict = calculate_uncertainty(image_preds, ssn=is_ssn)
             else:
                 uncertainty_dict = calculate_one_minus_msr(image_preds.squeeze(0))
-            ignore_index_map_image = ignore_index_map[image_idx][0].unsqueeze(-1)
+            ignore_index_map_image = ignore_index_map[image_idx][0]
             self.save_prediction(
                 image_id,
                 image_preds,
@@ -277,10 +305,13 @@ class Tester:
             # dataloader_iterator = iter(self.test_dataloader)
             # for i in tqdm(range(2)):
             #     batch = next(dataloader_iterator)
+            gt = batch["seg"]
+            if gt.ndim == 3:
+                gt = gt.unsqueeze(1)
             all_preds = {
                 "softmax_pred": [],
                 "image_id": batch["image_id"],
-                "gt": batch["seg"],
+                "gt": gt,
                 "dataset": batch["dataset"],
             }
             for model in self.models:
@@ -336,4 +367,15 @@ def run_test(args: Namespace) -> None:
 
 if __name__ == "__main__":
     arguments = test_cli()
-    run_test(arguments)
+    jobs = prepare_evaluation_jobs(arguments)
+    if not jobs:
+        raise ValueError("No evaluation jobs were generated. Check your checkpoint paths.")
+    total_jobs = len(jobs)
+    for idx, job in enumerate(jobs, start=1):
+        ema_label = getattr(job, "current_ema_label", "normal")
+        ckpt_summary = ", ".join(Path(p).name for p in job.checkpoint_paths)
+        print(
+            f"[{idx}/{total_jobs}] Evaluating split='{job.test_split}' "
+            f"ema='{ema_label}' with checkpoints: {ckpt_summary}"
+        )
+        run_test(job)

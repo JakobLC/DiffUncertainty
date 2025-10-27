@@ -63,6 +63,11 @@ class LIDC2DDataset(torch.utils.data.Dataset):
             subject_ids = splits[data_fold_id]["id_test"]
         elif split == "ood_test":
             subject_ids = splits[data_fold_id]["ood_test"]
+        elif split == "unlabeled":
+            subject_ids = splits[data_fold_id]["id_unlabeled_pool"]
+            subject_ids = np.concatenate(
+                (subject_ids, splits[data_fold_id]["ood_unlabeled_pool"])
+            )
         else:
             raise ValueError(f"Unknown split '{split}'")
         assert "lidc" in base_dir, f"Did not find expected string 'licd' in {base_dir}"

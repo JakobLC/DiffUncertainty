@@ -72,89 +72,69 @@ def get_max_steps(
 
     return max_steps, steps_per_epoch
 
-from typing import List, Union
-from omegaconf import DictConfig, ListConfig, open_dict
+from omegaconf import ListConfig
 
-def _set_by_path(cfg: Union[DictConfig, ListConfig], path: List[str], value) -> None:
-    
-    #Set cfg[path[0]][path[1]]...[path[-1]] = value.
-    #- Raises KeyError/IndexError if any segment is missing.
-    #- Supports ListConfig via integer-like segments (e.g., "0").
-    
-    if not path:
-        raise KeyError("Empty path")
-
-    cur = cfg
-    for seg in path[:-1]:
-        if isinstance(cur, ListConfig):
-            try:
-                idx = int(seg)
-            except ValueError:
-                raise KeyError(f"Expected list index, got '{seg}' in path {path}")
-            if idx < 0 or idx >= len(cur):
-                raise IndexError(f"Index {idx} out of range for segment '{seg}' in path {path}")
-            cur = cur[idx]
-        else:
-            if seg not in cur:
-                raise KeyError(f"Missing key '{seg}' in path {path}")
-            cur = cur[seg]
-
-    last = path[-1]
-    with open_dict(cfg):
-        if isinstance(cur, ListConfig):
-            try:
-                idx = int(last)
-            except ValueError:
-                raise KeyError(f"Expected list index, got '{last}' in path {path}")
-            if idx < 0 or idx >= len(cur):
-                raise IndexError(f"Index {idx} out of range for last segment '{last}' in path {path}")
-            cur[idx] = value
-        else:
-            if last not in cur:
-                raise KeyError(f"Missing final key '{last}' in path {path}")
-            cur[last] = value
-
-def apply_augment_mult2(augmentations: DictConfig) -> DictConfig:
-    if "augment_mult" in augmentations.TRAIN and "apply_mult" in augmentations.TRAIN:
-        mult = augmentations.TRAIN.augment_mult
-        for key_seq in augmentations.TRAIN.apply_mult:
-            path = ["TRAIN","Compose"] + key_seq.split(".")
-            d = augmentations
-            for k in path:
-                d = d[k]
-            if isinstance(d, list):
-                for i in range(len(d)):
-                    d[i] = d[i] * mult
-            else:
-                d = d * mult
-            print("Setting", path, "to", d)
-            _set_by_path(augmentations, path, d)
-        del augmentations.TRAIN.augment_mult
-        del augmentations.TRAIN.apply_mult
-    return augmentations
 
 def apply_augment_mult(augmentations: DictConfig) -> DictConfig:
-    return augmentations
-    print("augment_mult" in augmentations.TRAIN and "apply_mult" in augmentations.TRAIN)
-    if "augment_mult" in augmentations.TRAIN and "apply_mult" in augmentations.TRAIN:
-        mult = augmentations.TRAIN.augment_mult
-        for key_seq in augmentations.TRAIN.apply_mult:
-            keys = key_seq.split(".")
-            d = augmentations.TRAIN.Compose.transforms
-            for k in keys[:-1]:
-                d = d[k]
-            last_key = keys[-1]
-            if last_key in d:
-                if isinstance(d[last_key], list):
-                    d[last_key] = [v * mult for v in d[last_key]]
-                elif isinstance(d[last_key], (int, float)):
-                    d[last_key] = d[last_key] * mult
-                else:
-                    print(f"Warning: augment_mult not applied to {key_seq} with value {d[last_key]}")
+    """Finds and applies the augmentation multiplier to the augmentations config."""
+    augment_mult = augmentations.get("augment_mult", 1)
+    if augment_mult == 1:
+        return augmentations
+
+    apply_mult_keys = augmentations.get("apply_mult_keys", [])
+    transforms_root = augmentations.TRAIN[0].Compose.transforms
+
+    for key in apply_mult_keys:
+        current = transforms_root
+        parent_ref = None
+        parent_key = None
+
+        for subkey in key.split("."):
+            if isinstance(current, (list, ListConfig)):
+                matched = False
+                for item in current:
+                    if not isinstance(item, (dict, DictConfig)):
+                        continue
+                    if subkey in item:
+                        parent_ref = item
+                        parent_key = subkey
+                        current = item[subkey]
+                        matched = True
+                        break
+                if not matched:
+                    raise ValueError(
+                        f"Could not find subkey {subkey} from key {key} in list: {current}"
+                    )
+            elif isinstance(current, (DictConfig, dict)):
+                if subkey not in current:
+                    raise ValueError(
+                        f"Subkey {subkey} from key {key} not found in dict: {current}"
+                    )
+                parent_ref = current
+                parent_key = subkey
+                current = current[subkey]
             else:
-                print(f"Warning: key {last_key} not found in augmentation {key_seq}")
-        del augmentations.TRAIN.augment_mult
-        del augmentations.TRAIN.apply_mult
+                raise ValueError(
+                    f"Unexpected type {type(current)} when traversing augmentation config."
+                )
+
+        if parent_ref is None or parent_key is None:
+            raise ValueError(f"Failed to resolve key path {key} in augmentation config.")
+
+        value = current
+        if isinstance(value, (int, float)):
+            parent_ref[parent_key] = value * augment_mult
+        elif isinstance(value, (list, ListConfig)):
+            if isinstance(value, ListConfig):
+                for idx in range(len(value)):
+                    value[idx] = value[idx] * augment_mult
+            else:
+                parent_ref[parent_key] = [v * augment_mult for v in value]
+        else:
+            raise ValueError(
+                f"Unexpected type {type(value)} for augmentation parameter when applying augment_mult."
+            )
+
     return augmentations
 
 def get_augmentations_from_config(augmentations: DictConfig) -> list:
@@ -180,7 +160,6 @@ def get_augmentations_from_config(augmentations: DictConfig) -> list:
             parameters = getattr(augmentation, transform)
             if parameters is None:
                 parameters = {}
-
             if hasattr(A, transform):
                 if "transforms" in list(parameters.keys()):
                     # "transforms" indicates a transformation which takes a list of other transformations
@@ -191,6 +170,7 @@ def get_augmentations_from_config(augmentations: DictConfig) -> list:
                     trans.append(func(transforms=transforms, **parameters))
                 else:
                     # load transformation form Albumentations
+                    parameters = {k: list(v) if isinstance(v, ListConfig) else v for k, v in parameters.items()}
                     func = getattr(A, transform)
                     trans.append(func(**parameters))
             elif hasattr(A.pytorch, transform):
@@ -201,7 +181,7 @@ def get_augmentations_from_config(augmentations: DictConfig) -> list:
                 func = getattr(custom_augmentations, transform)
                 trans.append(func(**parameters))
             else:
-                print("No Operation Found: %s", transform)
+                raise ValueError(f"Augmentation {transform} not found in Albumentations or custom augmentations.")
     return trans
 
 
@@ -263,10 +243,7 @@ class BaseDataModule(LightningDataModule):
             current stage which is given by Pytorch Lightning
         """
         if stage in (None, "fit"):
-            #print(self.augmentations.TRAIN.Compose.transforms.RandomScale.scale_limit)
-            #self.augmentations = apply_augment_mult(self.augmentations)
-            #print(self.augmentations.TRAIN.Compose.transforms.RandomScale.scale_limit)
-            #exit()
+            self.augmentations = apply_augment_mult(self.augmentations)
             transforms_train = get_augmentations_from_config(self.augmentations.TRAIN)[0]
             self.DS_train = hydra.utils.instantiate(
                 self.dataset,

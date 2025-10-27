@@ -661,15 +661,14 @@ class HighResolutionNet(nn.Module):
 
         if self.ssn:
             x, cov_failed_flag = self.hrnet_ssn(x, x_size, mean_only)
+            return x, cov_failed_flag
         else:
-            cov_failed_flag = False
             x = self.last_layer(x)
 
             x = F.interpolate(
                 x, size=x_size, mode="bilinear", align_corners=ALIGN_CORNERS
             )
-
-        return x, cov_failed_flag
+            return x
 
     def init_weights(self):
         print("=> init weights from normal distribution")

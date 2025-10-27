@@ -129,16 +129,47 @@ class ExperimentDataloader:
 
     def get_gt_unc_map(self, image_id):
         if self.exp_version.gt_unc_map_loading is None:
-            n_reference_segs = self.exp_version.n_reference_segs
-            reference_segs_paths = [
-                self.ref_seg_dir / f"{image_id}_{i:02d}{self.exp_version.image_ending}"
-                for i in range(n_reference_segs)
-            ]
-            reference_segs = []
-            for reference_seg_path in reference_segs_paths:
-                reference_seg, _ = load(reference_seg_path)
-                reference_segs.append(reference_seg)
-            reference_segs = np.array(reference_segs)
+            if self.dataloader is not None:
+                dataset = self.dataloader.dataset
+                try:
+                    idx = dataset.image_ids.index(image_id)
+                except ValueError as exc:
+                    raise ValueError(f"Image id {image_id} not found in dataloader dataset") from exc
+
+                base_mask_path = dataset.masks[idx]
+                mask_dir, mask_name = os.path.split(base_mask_path)
+                try:
+                    prefix, _, suffix = mask_name.rsplit("_", 2)
+                except ValueError as exc:
+                    raise ValueError(
+                        f"Unexpected mask filename format for {base_mask_path}; cannot derive rater-specific paths"
+                    ) from exc
+
+                n_reference_segs = self.exp_version.n_reference_segs
+                reference_segs = []
+                for ref_idx in range(n_reference_segs):
+                    candidate = os.path.join(mask_dir, f"{prefix}_{ref_idx:02d}_{suffix}")
+                    if not os.path.exists(candidate):
+                        raise FileNotFoundError(
+                            f"Missing reference segmentation {candidate} for image {image_id}"
+                        )
+                    if candidate.endswith(".npy"):
+                        reference_segs.append(np.load(candidate))
+                    else:
+                        seg, _ = load(candidate)
+                        reference_segs.append(seg)
+                reference_segs = np.array(reference_segs)
+            else:
+                n_reference_segs = self.exp_version.n_reference_segs
+                reference_segs_paths = [
+                    self.ref_seg_dir / f"{image_id}_{i:02d}{self.exp_version.image_ending}"
+                    for i in range(n_reference_segs)
+                ]
+                reference_segs = []
+                for reference_seg_path in reference_segs_paths:
+                    reference_seg, _ = load(reference_seg_path)
+                    reference_segs.append(reference_seg)
+                reference_segs = np.array(reference_segs)
             per_pixel_variance = np.var(reference_segs, axis=0)
         else:
             per_pixel_variance = hydra.utils.instantiate(

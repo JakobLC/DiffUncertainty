@@ -13,6 +13,7 @@ import torch.optim as optim
 import torch.optim.lr_scheduler as lr_scheduler
 import torch.distributions as td
 import pytorch_lightning as pl
+from torch.optim.swa_utils import AveragedModel
 
 import torchvision
 from omegaconf import DictConfig, OmegaConf
@@ -22,6 +23,8 @@ from evaluation.metrics.dice_wrapped import dice
 import uncertainty_modeling.models.ssn_unet3D_module
 from loss_modules import SoftDiceLoss
 from data_carrier_3D import DataCarrier3D
+
+from global_utils.checkpoint_format import format_checkpoint_subdir
 
 import uncertainty_modeling.data.cityscapes_labels as cs_labels
 
@@ -70,6 +73,13 @@ class LightningExperiment(pl.LightningModule):
         self.weight_decay = weight_decay
         self.learning_rate = learning_rate
         self.pretrain_epochs = pretrain_epochs
+
+        self.track_ema_weights = bool(getattr(hparams, "track_ema_weights", False))
+        self.ema_decay = float(getattr(hparams, "ema_decay", 0.999))
+        if self.track_ema_weights and not (0.0 < self.ema_decay <= 1.0):
+            raise ValueError("ema_decay must lie in the interval (0, 1].")
+        self.ema_model: Optional[AveragedModel] = None
+        self._ema_initialized = False
 
         self.aleatoric_loss = aleatoric_loss
         self.n_aleatoric_samples = n_aleatoric_samples
@@ -125,6 +135,51 @@ class LightningExperiment(pl.LightningModule):
                 "frequency": 1,
             }
         return [optimizer], [scheduler]
+
+    def _ema_avg_fn(
+        self,
+        averaged_model_parameter: torch.Tensor,
+        model_parameter: torch.Tensor,
+        num_averaged: int,
+    ) -> torch.Tensor:
+        if num_averaged == 0:
+            return model_parameter.detach()
+        decay = self.ema_decay
+        return averaged_model_parameter * decay + model_parameter.detach() * (1.0 - decay)
+
+    def _ensure_ema_model(self) -> None:
+        if not self.track_ema_weights:
+            return
+        if not self._ema_initialized:
+            self.ema_model = AveragedModel(self.model, avg_fn=self._ema_avg_fn)
+            self.ema_model.requires_grad_(False)
+            self._ema_initialized = True
+        if self.ema_model is not None and next(self.ema_model.parameters(), None) is not None:
+            self.ema_model.to(self.device, non_blocking=True)  # type: ignore[arg-type]
+            self.ema_model.eval()
+
+    def _update_ema_weights(self) -> None:
+        if not self.track_ema_weights:
+            return
+        self._ensure_ema_model()
+        if self.ema_model is not None:
+            self.ema_model.update_parameters(self.model)
+
+    def on_train_start(self) -> None:
+        super().on_train_start()
+        self._ensure_ema_model()
+
+    def optimizer_step(self, *args, **kwargs):  # type: ignore[override]
+        output = super().optimizer_step(*args, **kwargs)
+        self._update_ema_weights()
+        return output
+
+    def on_load_checkpoint(self, checkpoint: dict) -> None:
+        if not self.track_ema_weights:
+            return
+        self._ensure_ema_model()
+        if self.ema_model is not None and "ema_state_dict" in checkpoint:
+            self.ema_model.load_state_dict(checkpoint["ema_state_dict"])  # type: ignore[arg-type]
 
     def on_fit_start(self):
         """Called when fit begins
@@ -465,10 +520,15 @@ class LightningExperiment(pl.LightningModule):
         return test_loss
 
     def on_test_end(self) -> None:
+        checkpoint_tag = format_checkpoint_subdir(
+            getattr(self.hparams, "checkpoint_epoch", None),
+            getattr(self.hparams, "ema", None),
+        )
         self.test_datacarrier.save_data(
             root_dir=self.hparams.save_dir,
             exp_name=self.hparams.exp_name,
             version=self.logger.version,
+            checkpoint_tag=checkpoint_tag,
         )
 
     @staticmethod
