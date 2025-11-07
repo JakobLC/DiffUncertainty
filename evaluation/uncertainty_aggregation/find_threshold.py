@@ -1,11 +1,10 @@
 import json
-import os
 from pathlib import Path
+
 import numpy as np
 from medpy.io import load
 
 from evaluation.experiment_dataloader import ExperimentDataloader
-from itertools import chain
 
 
 def calculate_foreground_quantile_image(image):
@@ -24,20 +23,26 @@ def get_foreground_quantile(exp_dataloader: ExperimentDataloader):
             all_quantiles.append(perc)
     quantile_dict[exp_dataloader.exp_version.pred_model][
         exp_dataloader.exp_version.version_name
-    ] = all_quantiles
+    ] = {
+        "quantiles": all_quantiles,
+        "exp_path": exp_dataloader.exp_version.exp_path.as_posix(),
+    }
     return quantile_dict
 
 
-def save_foreground_quantiles(results_dict, save_path):
-    methods_results_dict = {}
+def save_foreground_quantiles(results_dict, save_path=None):
     for method, versions in results_dict.items():
-        method_mean = np.mean(list(chain.from_iterable(versions.values())))
-        methods_results_dict[method] = method_mean
-    if not os.path.isfile(save_path):
-        save_path = Path(save_path) / "quantile_analysis.json"
-    print(save_path)
-    with open(save_path, "w") as f:
-        json.dump(methods_results_dict, f, indent=2)
+        for version_name, version_data in versions.items():
+            exp_path = Path(version_data["exp_path"])
+            exp_path.mkdir(parents=True, exist_ok=True)
+            quantiles = version_data["quantiles"]
+            if not quantiles:
+                continue
+            method_mean = float(np.mean(np.array(quantiles)))
+            save_file = exp_path / "quantile_analysis.json"
+            with open(save_file, "w") as f:
+                json.dump({method: method_mean}, f, indent=2)
+            print(save_file)
 
 
 def threshold_images_paths(exp_dataloader: ExperimentDataloader):
@@ -46,72 +51,62 @@ def threshold_images_paths(exp_dataloader: ExperimentDataloader):
             exp_dataloader.exp_version.version_name: {}
         }
     }
+    version_dict = unc_image_path_dict[exp_dataloader.exp_version.pred_model][
+        exp_dataloader.exp_version.version_name
+    ]
+    version_dict["exp_path"] = exp_dataloader.exp_version.exp_path.as_posix()
+    version_dict["unc_paths"] = {}
     for unc_type in exp_dataloader.exp_version.unc_types:
         uncertainty_path = exp_dataloader.unc_path_dict[unc_type]
-        unc_image_path_dict[exp_dataloader.exp_version.pred_model][
-            exp_dataloader.exp_version.version_name
-        ][unc_type] = []
+        version_dict["unc_paths"][unc_type] = []
         for image_id in exp_dataloader.image_ids:
-            unc_image_path_dict[exp_dataloader.exp_version.pred_model][
-                exp_dataloader.exp_version.version_name
-            ][unc_type].append(
-                uncertainty_path / f"{image_id}{exp_dataloader.exp_version.unc_ending}"
+            version_dict["unc_paths"][unc_type].append(
+                (uncertainty_path / f"{image_id}{exp_dataloader.exp_version.unc_ending}").as_posix()
             )
     return unc_image_path_dict
 
 
 def calculate_threshold_image(quantile_path: Path, image: np.array, method: str):
+    quantile_path = Path(quantile_path)
     with open(quantile_path) as f:
         all_quantiles = json.load(f)
-    print(all_quantiles[method])
-    threshold = np.quantile(image, all_quantiles[method])
-    return threshold
+    method_quantile = all_quantiles[method]
+    flattened_image = image.flatten() if isinstance(image, np.ndarray) else np.array(image).flatten()
+    threshold = np.quantile(flattened_image, method_quantile)
+    return float(threshold)
 
 
-def find_threshold(results_dict, quantile_path, save_path):
-    if not os.path.isfile(quantile_path):
-        quantile_path = Path(quantile_path) / "quantile_analysis.json"
-    if not os.path.isfile(save_path):
-        save_path = Path(save_path) / "threshold_analysis.json"
-    print(quantile_path)
-    print(save_path)
-    pred_model_path_dict = {}
+def find_threshold(results_dict, quantile_path=None, save_path=None):
     for pred_model, versions in results_dict.items():
-        pred_model_path_dict[pred_model] = {}
-        for version, uncs in versions.items():
-            for unc, paths in uncs.items():
-                if unc not in pred_model_path_dict[pred_model]:
-                    pred_model_path_dict[pred_model][unc] = []
-                pred_model_path_dict[pred_model][unc].extend(paths)
-    threshold_dict = {}
-    for pred_model, uncs in pred_model_path_dict.items():
-        threshold_dict[pred_model] = {}
-        for unc, paths in uncs.items():
-            unc_images = []
-            for path in paths:
-                unc_image, _ = load(path)
-                unc_images.append(unc_image)
-            threshold = calculate_threshold_image(np.array(unc_images), pred_model)
-            print(f"Mean {unc.split('_')[0]} threshold: {threshold}")
-            threshold_dict[pred_model][
-                f"Mean {unc.split('_')[0]} threshold"
-            ] = threshold
-    all_aleatoric = []
-    all_epistemic = []
-    all_predictive = []
-    for key, value in threshold_dict.items():
-        if key != "Softmax":
-            all_aleatoric.append(value["Mean aleatoric threshold"])
-            all_epistemic.append(value["Mean epistemic threshold"])
-        all_predictive.append(value["Mean predictive threshold"])
-    mean_dict = {
-        "Mean aleatoric threshold": np.mean(all_aleatoric),
-        "Mean epistemic threshold": np.mean(all_epistemic),
-        "Mean predictive threshold": np.mean(all_predictive),
-    }
-    threshold_dict["Mean"] = mean_dict
-    with open(
-        save_path,
-        "w",
-    ) as f:
-        json.dump(threshold_dict, f, indent=2)
+        for version_name, version_data in versions.items():
+            exp_path = Path(version_data["exp_path"])
+            exp_path.mkdir(parents=True, exist_ok=True)
+            quantile_file = exp_path / "quantile_analysis.json"
+            if not quantile_file.is_file():
+                raise FileNotFoundError(
+                    f"Quantile file not found for {pred_model} {version_name}: {quantile_file}"
+                )
+            threshold_entries = {}
+            for unc, paths in version_data["unc_paths"].items():
+                if not paths:
+                    continue
+                unc_images = []
+                for path in paths:
+                    unc_image, _ = load(path)
+                    unc_images.append(unc_image.ravel())
+                if not unc_images:
+                    continue
+                concatenated_unc = np.concatenate(unc_images)
+                threshold_value = calculate_threshold_image(
+                    quantile_file, concatenated_unc, method=pred_model
+                )
+                key = f"Mean {unc.split('_')[0]} threshold"
+                threshold_entries[key] = float(threshold_value)
+                print(f"{pred_model} {version_name} {key}: {threshold_value}")
+            if not threshold_entries:
+                continue
+            threshold_json = {pred_model: threshold_entries}
+            save_file = exp_path / "threshold_analysis.json"
+            with open(save_file, "w") as f:
+                json.dump(threshold_json, f, indent=2)
+            print(save_file)

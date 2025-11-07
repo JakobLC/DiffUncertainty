@@ -96,6 +96,7 @@ class EvalExperiments:
 
     def analyse(self):
         for task in self.tasks:
+            print(f"ANALYSING TASK: {task}")
             task_params = self.config.task_params[task]
             if type(self.config.task_params[task]) == ListConfig:
                 self.analyse_subtasks(task_params)

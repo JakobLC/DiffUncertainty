@@ -135,30 +135,53 @@ class ExperimentDataloader:
                     idx = dataset.image_ids.index(image_id)
                 except ValueError as exc:
                     raise ValueError(f"Image id {image_id} not found in dataloader dataset") from exc
-
-                base_mask_path = dataset.masks[idx]
-                mask_dir, mask_name = os.path.split(base_mask_path)
-                try:
-                    prefix, _, suffix = mask_name.rsplit("_", 2)
-                except ValueError as exc:
-                    raise ValueError(
-                        f"Unexpected mask filename format for {base_mask_path}; cannot derive rater-specific paths"
-                    ) from exc
-
-                n_reference_segs = self.exp_version.n_reference_segs
+                # New LIDC2DDataset exposes per-image rater mask paths as `mask_paths[idx]`.
+                # Fall back to the legacy `masks[idx]` path format if present.
                 reference_segs = []
-                for ref_idx in range(n_reference_segs):
-                    candidate = os.path.join(mask_dir, f"{prefix}_{ref_idx:02d}_{suffix}")
-                    if not os.path.exists(candidate):
+                n_reference_segs = self.exp_version.n_reference_segs
+                if hasattr(dataset, "mask_paths"):
+                    rater_paths = list(dataset.mask_paths[idx])
+                    if len(rater_paths) == 0:
                         raise FileNotFoundError(
-                            f"Missing reference segmentation {candidate} for image {image_id}"
+                            f"No rater masks found for image {image_id} via dataset.mask_paths"
                         )
-                    if candidate.endswith(".npy"):
-                        reference_segs.append(np.load(candidate))
-                    else:
-                        seg, _ = load(candidate)
-                        reference_segs.append(seg)
-                reference_segs = np.array(reference_segs)
+                    # use the first n_reference_segs raters (or all if fewer available)
+                    for candidate in rater_paths[:n_reference_segs]:
+                        if not os.path.exists(candidate):
+                            raise FileNotFoundError(
+                                f"Missing reference segmentation {candidate} for image {image_id}"
+                            )
+                        if candidate.endswith(".npy"):
+                            reference_segs.append(np.load(candidate))
+                        else:
+                            seg, _ = load(candidate)
+                            reference_segs.append(seg)
+                    reference_segs = np.array(reference_segs)
+                elif hasattr(dataset, "masks"):
+                    base_mask_path = dataset.masks[idx]
+                    mask_dir, mask_name = os.path.split(base_mask_path)
+                    try:
+                        prefix, _, suffix = mask_name.rsplit("_", 2)
+                    except ValueError as exc:
+                        raise ValueError(
+                            f"Unexpected mask filename format for {base_mask_path}; cannot derive rater-specific paths"
+                        ) from exc
+                    for ref_idx in range(n_reference_segs):
+                        candidate = os.path.join(mask_dir, f"{prefix}_{ref_idx:02d}_{suffix}")
+                        if not os.path.exists(candidate):
+                            raise FileNotFoundError(
+                                f"Missing reference segmentation {candidate} for image {image_id}"
+                            )
+                        if candidate.endswith(".npy"):
+                            reference_segs.append(np.load(candidate))
+                        else:
+                            seg, _ = load(candidate)
+                            reference_segs.append(seg)
+                    reference_segs = np.array(reference_segs)
+                else:
+                    raise AttributeError(
+                        "Dataset does not expose `mask_paths` or `masks`; cannot derive rater-specific GT paths."
+                    )
             else:
                 n_reference_segs = self.exp_version.n_reference_segs
                 reference_segs_paths = [

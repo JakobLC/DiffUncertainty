@@ -21,8 +21,11 @@ def compute_ncc(gt_unc_map: np.array, pred_unc_map: np.array):
     gt_norm = gt_unc_map - mu_gt
     pred_norm = pred_unc_map - mu_pred
     prod = np.sum(np.multiply(gt_norm, pred_norm))
-    ncc = (1 / (np.size(gt_unc_map) * sigma_gt * sigma_pred)) * prod
-    return ncc
+    if sigma_gt == 0 or sigma_pred == 0:
+        return 0.0
+    else:
+        ncc = (1 / (np.size(gt_unc_map) * sigma_gt * sigma_pred)) * prod
+        return ncc
 
 
 def main(exp_dataloader: ExperimentDataloader):

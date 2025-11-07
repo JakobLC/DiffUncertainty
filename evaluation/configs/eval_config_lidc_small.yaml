@@ -1,9 +1,9 @@
 #@package _global_
 defaults:
   - _self_
-  - datasets/lidc_small
+  - datasets/lidc_small_ssn_ensemble
   - tasks/threshold
-  - tasks/aggregation_patch_image
+  - tasks/aggregation_patch_thresh
   - tasks/failure_detection
 
 base_splits_path: "/home/jloch/Desktop/diff/luzern/values_datasets/lidc_2d_small/splits"
@@ -12,10 +12,14 @@ second_cycle_path: "/home/jloch/Desktop/diff/luzern/values/experiments/SecondCyc
 experiments:
   - ${LIDC}
 evaluate_training_data: null
+evaluate_all_raters: true
 
 #tasks: ["al_improvement"]
-tasks: ["ambiguity_modeling","ood_detection","calibration"]
-
+#tasks: ["ambiguity_modeling","ood_detection","calibration"]
+tasks: ["threshold","aggregation","ood_detection","ambiguity_modeling","calibration"]
+#tasks: ["aggregation","ambiguity_modeling","calibration"]
+#tasks: ["threshold", "ood_detection"]
+#tasks: ["calibration"]
 task_params:
   threshold:
     - ${QUANTILE}
@@ -25,18 +29,18 @@ task_params:
     datasets: ["unlabeled"]
     function:
       _target_: evaluation.split_file_generation.split_files_second_cycle.generate_split_file
-      base_splits_path: "/home/${oc.env:USER}/LIDC-IDRI/CroppedData/splits"
+      base_splits_path: ${base_splits_path}
   second_cycle_splits_random:
     datasets: [ "unlabeled" ]
     function:
       _target_: evaluation.split_file_generation.split_files_second_cycle_random.generate_split_file
-      base_splits_path: "/home/${oc.env:USER}/LIDC-IDRI/CroppedData/splits"
+      base_splits_path: ${base_splits_path}
       random_types: ["random", "best", "worst"]
   ood_detection:
     datasets: ["unlabeled"]
     function:
       _target_: evaluation.metrics.auroc.ood_detection
-      base_splits_path: "/home/${oc.env:USER}/LIDC-IDRI/CroppedData/splits"
+      base_splits_path: ${base_splits_path}
   failure_detection: ${FAILURE_DETECTION}
   calibration:
     datasets: [ "id", "ood" ]

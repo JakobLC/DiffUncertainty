@@ -195,6 +195,7 @@ class BaseDataModule(LightningDataModule):
         num_workers: int,
         augmentations: DictConfig,
         evaluate_training_data: bool = False,
+        evaluate_all_raters: bool = True,
         tta: bool = False,
         **kwargs,
     ) -> None:
@@ -230,8 +231,17 @@ class BaseDataModule(LightningDataModule):
         self.tta = tta
         # whether to return an additional validation dataloader sampling from training set
         self.evaluate_training_data = evaluate_training_data
+        self.evaluate_all_raters = evaluate_all_raters
         # placeholder for optional evaluation dataset based on training data
         self.DS_train_eval = None
+
+    def _is_lidc2d_dataset(self) -> bool:
+        target = ""
+        if isinstance(self.dataset, DictConfig):
+            target = self.dataset.get("_target_", "")
+        elif isinstance(self.dataset, dict):
+            target = self.dataset.get("_target_", "")
+        return "LIDC2DDataset" in str(target)
 
     def setup(self, stage: str = None) -> None:
         """
@@ -242,33 +252,44 @@ class BaseDataModule(LightningDataModule):
         stage: str
             current stage which is given by Pytorch Lightning
         """
+        is_lidc2d = self._is_lidc2d_dataset()
+
         if stage in (None, "fit"):
             self.augmentations = apply_augment_mult(self.augmentations)
             transforms_train = get_augmentations_from_config(self.augmentations.TRAIN)[0]
-            self.DS_train = hydra.utils.instantiate(
-                self.dataset,
+            train_kwargs = dict(
                 base_dir=self.data_input_dir,
                 split="train",
                 transforms=transforms_train,
             )
+            if is_lidc2d:
+                train_kwargs["return_all_raters"] = False
+            self.DS_train = hydra.utils.instantiate(self.dataset, **train_kwargs)
         if stage in (None, "fit", "validate"):
             transforms_val = get_augmentations_from_config(self.augmentations.VALIDATION)[0]
-            self.DS_val = hydra.utils.instantiate(
-                self.dataset,
+            val_kwargs = dict(
                 base_dir=self.data_input_dir,
                 split="val",
                 transforms=transforms_val,
                 tta=self.tta,
             )
+            if is_lidc2d:
+                val_kwargs["return_all_raters"] = self.evaluate_all_raters
+            self.DS_val = hydra.utils.instantiate(self.dataset, **val_kwargs)
             # Optionally build a validation-view of the training set (independent of train dataloader)
             if self.evaluate_training_data:
                 # create a training dataset instance but with validation transforms
-                DS_train_full_for_eval = hydra.utils.instantiate(
-                    self.dataset,
+                train_eval_kwargs = dict(
                     base_dir=self.data_input_dir,
                     split="train",
                     transforms=transforms_val,
                     tta=self.tta,
+                )
+                if is_lidc2d:
+                    train_eval_kwargs["return_all_raters"] = self.evaluate_all_raters
+                DS_train_full_for_eval = hydra.utils.instantiate(
+                    self.dataset,
+                    **train_eval_kwargs,
                 )
                 # sample a random subset of the training set equal in size to the validation set
                 target_size = min(len(DS_train_full_for_eval), len(self.DS_val))
@@ -284,13 +305,15 @@ class BaseDataModule(LightningDataModule):
                 if self.test_split == "unlabeled" or self.test_split == "val"
                 else f"{self.test_split}_test"
             )
-            self.DS_test = hydra.utils.instantiate(
-                self.dataset,
+            test_kwargs = dict(
                 base_dir=self.data_input_dir,
                 split=test_split,
                 transforms=transforms_test,
                 tta=self.tta,
             )
+            if is_lidc2d:
+                test_kwargs["return_all_raters"] = True
+            self.DS_test = hydra.utils.instantiate(self.dataset, **test_kwargs)
 
     def max_steps(self) -> int:
         """

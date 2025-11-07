@@ -78,11 +78,32 @@ def aggregate_uncertainties(exp_dataloader: ExperimentDataloader, aggregations):
                     unc_path / f"{image_id}{exp_dataloader.exp_version.unc_ending}"
                 )
                 # TODO: Probably pass pred model and unc more dynamically
+                aggregation_config = aggregations[aggregation]
+                instantiate_kwargs = {
+                    "image": unc_image,
+                    "pred_model": exp_dataloader.exp_version.pred_model,
+                    "unc_type": unc,
+                }
+                target_path = aggregation_config.get("_target_", "")
+                threshold_path_cfg = (
+                    aggregation_config["threshold_path"]
+                    if "threshold_path" in aggregation_config
+                    else None
+                )
+                if (
+                    "threshold_aggregation" in target_path
+                    and (
+                        threshold_path_cfg is None
+                        or str(threshold_path_cfg).lower() == "none"
+                    )
+                ):
+                    instantiate_kwargs["threshold_path"] = (
+                        exp_dataloader.exp_version.exp_path
+                        / "threshold_analysis.json"
+                    )
                 unc_dict = hydra.utils.instantiate(
-                    aggregations[aggregation],
-                    image=unc_image,
-                    pred_model=exp_dataloader.exp_version.pred_model,
-                    unc_type=unc,
+                    aggregation_config,
+                    **instantiate_kwargs,
                 )
                 all_uncs[f"{image_id}{exp_dataloader.exp_version.unc_ending}"][
                     aggregation
@@ -91,6 +112,12 @@ def aggregate_uncertainties(exp_dataloader: ExperimentDataloader, aggregations):
         print(save_path)
         opts = jsbeautifier.default_options()
         opts.indent_size = 4
+        #convert to float from float32 numpy types for json serialization
+        for image_id, unc_dict in all_uncs.items():
+            for aggregation, values in unc_dict.items():
+                for key, value in values.items():
+                    if isinstance(value, np.floating):
+                        all_uncs[image_id][aggregation][key] = float(value)
         with open(save_path, "w") as f:
             f.write(jsbeautifier.beautify(json.dumps(all_uncs), opts))
     print()

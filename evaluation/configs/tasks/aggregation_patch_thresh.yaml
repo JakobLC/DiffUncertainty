@@ -9,4 +9,3 @@ AGG_PATCH_THRESH:
         patch_size: 10
       threshold:
         _target_: evaluation.uncertainty_aggregation.aggregate_uncertainties.threshold_aggregation
-        threshold_path: ${base_path}/threshold_analysis.json

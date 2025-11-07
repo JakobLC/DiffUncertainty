@@ -7,6 +7,7 @@ from typing import List, Optional, Sequence, Set
 import pytorch_lightning as pl
 from omegaconf import DictConfig
 from pytorch_lightning.utilities.rank_zero import rank_zero_info, rank_zero_warn
+import torch
 
 
 class ScheduledCheckpointCallback(pl.Callback):
@@ -27,6 +28,9 @@ class ScheduledCheckpointCallback(pl.Callback):
             )
 
         self.only_small_ckpts = bool(ckpt_config.get("only_small_ckpts", False))
+        # New option: when True, scheduled_ckpts will contain only EMA parameters to save space.
+        # Regular ModelCheckpoint ('checkpoints' dir) remains unchanged.
+        self.only_save_ema = bool(ckpt_config.get("only_save_ema", False))
         self.linear_freq = int(ckpt_config.get("linear_freq", 0)) if self.use_linear else None
         self.exponential_start = (
             int(ckpt_config.get("exponential_start", 0)) if self.use_exponential else None
@@ -144,11 +148,33 @@ class ScheduledCheckpointCallback(pl.Callback):
             return
         filename = self._format_filename(epoch_idx)
         filepath = str(self._dirpath / filename)
-        trainer.save_checkpoint(filepath, weights_only=self.only_small_ckpts)
+        # If requested, store only EMA parameters for scheduled checkpoints to save space.
+        if self.only_save_ema:
+            track_ema = bool(getattr(pl_module, "track_ema_weights", False))
+            ema_model = getattr(pl_module, "ema_model", None)
+            if track_ema and ema_model is not None:
+                try:
+                    ema_state = ema_model.state_dict()
+                    ckpt = {
+                        "hyper_parameters": pl_module.hparams,
+                        "ema_state_dict": ema_state,
+                        "epoch": epoch_idx,
+                    }
+                    torch.save(ckpt, filepath)
+                    rank_zero_info(f"Saved EMA-only scheduled checkpoint: {filepath}")
+                except Exception as e:
+                    rank_zero_warn(
+                        f"Failed to save EMA-only checkpoint due to: {e}. Falling back to standard checkpoint."
+                    )
+                    trainer.save_checkpoint(filepath, weights_only=self.only_small_ckpts)
+            else:
+                rank_zero_warn(
+                    "only_save_ema=True but EMA tracking is disabled or not initialized; saving standard checkpoint instead."
+                )
+                trainer.save_checkpoint(filepath, weights_only=self.only_small_ckpts)
+        else:
+            trainer.save_checkpoint(filepath, weights_only=self.only_small_ckpts)
         self._saved_epochs.add(epoch_idx)
-        rank_zero_info(
-            f"Saved scheduled checkpoint at epoch {epoch_idx} to {filepath} (weights_only={self.only_small_ckpts})."
-        )
 
     def state_dict(self) -> dict:
         return {"saved_epochs": sorted(self._saved_epochs)}

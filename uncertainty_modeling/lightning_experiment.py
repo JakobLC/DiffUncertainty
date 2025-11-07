@@ -23,10 +23,31 @@ from evaluation.metrics.dice_wrapped import dice
 import uncertainty_modeling.models.ssn_unet3D_module
 from loss_modules import SoftDiceLoss
 from data_carrier_3D import DataCarrier3D
-
 from global_utils.checkpoint_format import format_checkpoint_subdir
 
 import uncertainty_modeling.data.cityscapes_labels as cs_labels
+
+
+_calculate_ged_fn = None
+_calculate_ged_fast_fn = None
+
+
+def _get_calculate_ged():
+    global _calculate_ged_fn
+    if _calculate_ged_fn is None:
+        from uncertainty_modeling.test_3D import calculate_ged as _calc
+
+        _calculate_ged_fn = _calc
+    return _calculate_ged_fn
+
+
+def _get_calculate_ged_fast():
+    global _calculate_ged_fast_fn
+    if _calculate_ged_fast_fn is None:
+        from evaluation.metrics.ged_fast import ged_binary_fast as _calc_fast
+
+        _calculate_ged_fast_fn = _calc_fast
+    return _calculate_ged_fast_fn
 
 
 class LightningExperiment(pl.LightningModule):
@@ -74,14 +95,17 @@ class LightningExperiment(pl.LightningModule):
         self.learning_rate = learning_rate
         self.pretrain_epochs = pretrain_epochs
 
-        self.track_ema_weights = bool(getattr(hparams, "track_ema_weights", False))
-        self.ema_decay = float(getattr(hparams, "ema_decay", 0.999))
+        ckpt_cfg = hparams.get("ckpt_save_freq", None)
+        self.track_ema_weights = bool(getattr(ckpt_cfg, "track_ema_weights", False))
+        self.ema_decay = float(getattr(ckpt_cfg, "ema_decay", 0.999))
         if self.track_ema_weights and not (0.0 < self.ema_decay <= 1.0):
             raise ValueError("ema_decay must lie in the interval (0, 1].")
         self.ema_model: Optional[AveragedModel] = None
         self._ema_initialized = False
 
         self.aleatoric_loss = aleatoric_loss
+        if self.aleatoric_loss:
+            raise ValueError("Aleatoric loss not updated/tested since repo refactor.")
         self.n_aleatoric_samples = n_aleatoric_samples
         self.dice_loss = SoftDiceLoss()
         self.ce_loss = torch.nn.CrossEntropyLoss()
@@ -89,6 +113,12 @@ class LightningExperiment(pl.LightningModule):
 
         self.test_datacarrier = DataCarrier3D()
         self._val_metric_accumulators = {}
+        # By default, only compute GED (and the standard per-image dice is logged separately).
+        # Users can override this in hparams to include extra metrics like ["dice", "major_dice", ...].
+        self._validation_additional_metrics = []
+        self.evaluate_all_raters = bool(
+            getattr(hparams, "evaluate_all_raters", True)
+        )
 
         if "optimizer" in hparams:
             self.optimizer_conf = hparams.optimizer
@@ -125,16 +155,10 @@ class LightningExperiment(pl.LightningModule):
                 "interval": "step",
                 "frequency": 1,
             }
+            scheduler_list = [scheduler]
         else:
-            scheduler = {
-                "scheduler": lr_scheduler.ReduceLROnPlateau(
-                    optimizer=optimizer, patience=10
-                ),
-                "monitor": "validation/val_loss",
-                "interval": "epoch",
-                "frequency": 1,
-            }
-        return [optimizer], [scheduler]
+            scheduler_list = []
+        return [optimizer],scheduler_list
 
     def _ema_avg_fn(
         self,
@@ -244,15 +268,7 @@ class LightningExperiment(pl.LightningModule):
             ]
         )
         if val:
-            val_dice = torch.zeros([self.n_aleatoric_samples])
-            sample_labels = torch.argmax(samples, dim=2)
-            for idx, sample in enumerate(sample_labels):                
-                val_dice[idx] = dice(sample, target, 
-                                     num_classes        = self.model.num_classes,
-                                     ignore_index       = self.ignore_index,
-                                     include_background = self.model.num_classes > 2,
-                                     average            = "micro")
-            val_dice = torch.mean(val_dice)
+            softmax_samples = torch.softmax(samples, dim=2)
             # one sample batch for visualization
             sample_idx = randrange(self.n_aleatoric_samples)
             output = samples[sample_idx]
@@ -275,7 +291,7 @@ class LightningExperiment(pl.LightningModule):
         )
         loss = -loglikelihood
         if val:
-            return loss, output, val_dice
+            return loss, output, softmax_samples
         return loss
 
     def training_step(self, batch: dict, batch_idx: int) -> torch.Tensor:
@@ -338,59 +354,98 @@ class LightningExperiment(pl.LightningModule):
     def on_validation_epoch_start(self) -> None:
         self._val_metric_accumulators = {}
 
-    def validation_step(self, batch: dict, batch_idx: int, dataloader_idx: int = 0) -> torch.Tensor:
-        """Perform a validation step, i.e.pass a validation batch through the network, visualize the results in logging
-        and calculate loss and dice score for logging
+    def validation_step(
+        self, batch: dict, batch_idx: int, dataloader_idx: int = 0
+    ) -> torch.Tensor:
+        """Run a validation batch, log qualitative grids, and accumulate metrics."""
 
-        Args:
-            batch (dict): The validation batch
-            batch_idx (int): The index of the current batch
-
-        Returns:
-            val_loss [torch.Tensor]: The computed loss
-        """
         if dataloader_idx == 0:
             split = "val"
-        else:
+        elif dataloader_idx == 1:
             split = "train"
-        target = batch["seg"].long().squeeze(1)
-        if type(
-            self.model
-        ) is uncertainty_modeling.models.ssn_unet3D_module.SsnUNet3D or (
-            hasattr(self.model, "ssn") and self.model.ssn
-        ):
-            eval_loss, output, eval_dice = self.forward_ssn(batch, target, val=True)
+        else:
+            split = f"val_{dataloader_idx}"
+
+        target_full = batch["seg"].long()
+        is_lidc_dataset = hasattr(self.hparams, "dataset") and "lidc" in self.hparams.dataset
+        if target_full.ndim == 3:
+            if is_lidc_dataset and self.evaluate_all_raters:
+                raise ValueError(
+                    "LIDC dataset should have multiple raters in validation when evaluate_all_raters is True."
+                )
+            target_full = target_full.unsqueeze(1)
+        target = target_full[:, 0]
+        batch_size = target.shape[0]
+        multi_rater_available = self.evaluate_all_raters and target_full.shape[1] > 1
+
+        inputs = batch["data"]
+        if isinstance(inputs, list):
+            inputs = inputs[0]
+        inputs = inputs.float()
+
+        is_ssn_model = (
+            type(self.model)
+            is uncertainty_modeling.models.ssn_unet3D_module.SsnUNet3D
+        ) or (hasattr(self.model, "ssn") and self.model.ssn)
+
+        softmax_stack: Optional[torch.Tensor] = None
+
+        if is_ssn_model:
+            eval_loss, output, softmax_stack = self.forward_ssn(
+                batch, target, val=True
+            )
+            # Compute dice across individual samples (not mean prob) when not overridden by GED later
+            per_sample_dice = []
+            # softmax_stack: (S, B, C, H, W)
+            for t in range(softmax_stack.shape[0]):
+                d = dice(
+                    softmax_stack[t],
+                    target,
+                    num_classes=self.model.num_classes,
+                    ignore_index=self.ignore_index if self.ignore_index != 0 else None,
+                    binary_dice=self.model.num_classes == 2,
+                    is_softmax=True,
+                )
+                per_sample_dice.append(d if isinstance(d, torch.Tensor) else torch.tensor(float(d), device=inputs.device))
+            eval_dice = torch.stack(per_sample_dice).mean()
         elif self.aleatoric_loss:
-            device = "cuda" if torch.cuda.is_available() else "cpu"
-            mu, s = self.forward(batch["data"])
+            mu, s = self.forward(inputs)
             sigma = torch.exp(s / 2)
-            all_samples = torch.zeros(
-                (self.n_aleatoric_samples, *mu.size()), device=device
+            all_samples = torch.empty(
+                (self.n_aleatoric_samples, *mu.size()), device=mu.device, dtype=mu.dtype
             )
             for t in range(self.n_aleatoric_samples):
-                epsilon = torch.randn(s.size(), device=device)
+                epsilon = torch.randn_like(s)
                 sample = mu + sigma * epsilon
-                log_sample_prob = F.log_softmax(sample)
+                log_sample_prob = F.log_softmax(sample, dim=1)
                 all_samples[t] = log_sample_prob
-            log_sample_avg = torch.logsumexp(all_samples, 0) - torch.log(
-                torch.tensor(self.n_aleatoric_samples)
+            log_sample_avg = torch.logsumexp(all_samples, dim=0) - math.log(
+                self.n_aleatoric_samples
             )
-            eval_loss = self.dice_loss(
-                torch.exp(log_sample_avg), target
-            ) + self.nll_loss(log_sample_avg, target)
-            eval_dice = dice(
-                torch.exp(log_sample_avg), target,
-                num_classes        = self.model.num_classes,
-                ignore_index       = self.ignore_index,
-                include_background = self.model.num_classes > 2,
-                average            = "micro"
+            prob_avg = torch.exp(log_sample_avg)
+            eval_loss = self.dice_loss(prob_avg, target) + self.nll_loss(
+                log_sample_avg, target
             )
-            # use averaged logits for visualization to keep pipeline uniform
+            # For evaluation, prefer averaging dice across individual samples (not mean prob)
+            # to match the requested behavior when not evaluating all raters.
+            sample_probs = torch.exp(all_samples)
+            per_sample_dice = []
+            for t in range(self.n_aleatoric_samples):
+                d = dice(
+                    sample_probs[t],
+                    target,
+                    num_classes=self.model.num_classes,
+                    ignore_index=self.ignore_index if self.ignore_index != 0 else None,
+                    binary_dice=self.model.num_classes == 2,
+                    is_softmax=True,
+                )
+                per_sample_dice.append(d if isinstance(d, torch.Tensor) else torch.tensor(float(d), device=mu.device))
+            eval_dice = torch.stack(per_sample_dice).mean()
             output = log_sample_avg
+            softmax_stack = sample_probs
         else:
-            output = self.forward(batch["data"].float())
+            output = self.forward(inputs)
             output_softmax = F.softmax(output, dim=1)
-            output_labels = torch.argmax(output_softmax, dim=1)
             if self.ignore_index != 0:
                 eval_loss = F.cross_entropy(
                     output, target, ignore_index=self.ignore_index
@@ -399,19 +454,64 @@ class LightningExperiment(pl.LightningModule):
                 eval_loss = self.dice_loss(output_softmax, target) + self.ce_loss(
                     output, target
                 )
+            output_labels = torch.argmax(output_softmax, dim=1)
+            eval_dice = dice(
+                output_labels,
+                target,
+                num_classes=self.model.num_classes,
+                ignore_index=self.ignore_index if self.ignore_index != 0 else None,
+                binary_dice=self.model.num_classes == 2,
+            )
+            softmax_stack = output_softmax.unsqueeze(0) if multi_rater_available else None
 
-            eval_dice = dice(output_labels, target,
-                            num_classes        = self.model.num_classes,
-                            ignore_index       = self.ignore_index,
-                            include_background = self.model.num_classes > 2,
-                            average            = "micro")
+        ged_results: List[dict] = []
+        if multi_rater_available and softmax_stack is not None:
+            predictions = softmax_stack.detach()
+            targets = target_full.detach()
+            use_fast = (
+                is_lidc_dataset
+                and self.model.num_classes == 2
+            )
+            if use_fast:
+                calculate_ged_fast = _get_calculate_ged_fast()
+            else:
+                calculate_ged = _get_calculate_ged()
+
+            for idx in range(batch_size):
+                pred_stack = predictions[:, idx]
+                if pred_stack.ndim == 3:
+                    pred_stack = pred_stack.unsqueeze(0)
+                gt_stack = targets[idx]
+                if gt_stack.ndim == 2:
+                    gt_stack = gt_stack.unsqueeze(0)
+                # Always request 'dice' for internal use, but only 'ged' will be logged unless enabled in settings.
+                requested_metrics = list(set((self._validation_additional_metrics or []) + ["dice"]))
+                if use_fast:
+                    ged_result = calculate_ged_fast(
+                        pred_stack,
+                        gt_stack,
+                        ignore_index=self.ignore_index if self.ignore_index != 0 else None,
+                        additional_metrics=requested_metrics,
+                    )
+                else:
+                    ged_result = calculate_ged(
+                        pred_stack,
+                        gt_stack,
+                        ignore_index=self.ignore_index if self.ignore_index != 0 else None,
+                        additional_metrics=requested_metrics,
+                    )
+                ged_results.append(ged_result)
+
+            # Use GED-based mean dice (random pred vs random GT in expectation) for the logged dice when evaluating all raters
+            ged_dices = [float(r.get("dice")) for r in ged_results if "dice" in r]
+            if ged_dices:
+                eval_dice = torch.tensor(sum(ged_dices) / len(ged_dices), device=inputs.device, dtype=torch.float32)
 
         # Visualization of Segmentations
-        if batch_idx == 1 and len(batch["seg"].shape) == 3:
+        if batch_idx == 1 and target.ndim == 3:
             pred_seg_val = torch.argmax(output, dim=1, keepdim=True)
             pred_seg_val = torch.squeeze(pred_seg_val, 1)
-            target_seg_val = batch["seg"].long()
-            target_seg_val = torch.squeeze(target_seg_val, 1)
+            target_seg_val = target
             # transform the labels to color map for visualization
             pred_seg_val_color = torch.zeros((*pred_seg_val.shape, 3), dtype=torch.long)
             target_seg_val_color = torch.zeros((*target_seg_val.shape, 3), dtype=torch.long)
@@ -438,21 +538,39 @@ class LightningExperiment(pl.LightningModule):
                 grid = grid / 255.0
             self.logger.experiment.add_image(f"validation/{split}_target_seg", grid, self.current_epoch)
 
-        if isinstance(eval_loss, torch.Tensor):
-            loss_value = eval_loss.detach().float().mean().item()
-        else:
-            loss_value = float(eval_loss)
-        if isinstance(eval_dice, torch.Tensor):
-            dice_value = eval_dice.detach().float().mean().item()
-        else:
-            dice_value = float(eval_dice)
-
-        metrics = self._val_metric_accumulators.setdefault(
-            split, {"loss_sum": 0.0, "dice_sum": 0.0, "count": 0}
+        loss_value = (
+            eval_loss.detach().float().mean().item()
+            if isinstance(eval_loss, torch.Tensor)
+            else float(eval_loss)
         )
+        dice_value = (
+            eval_dice.detach().float().mean().item()
+            if isinstance(eval_dice, torch.Tensor)
+            else float(eval_dice)
+        )
+
+        if split not in self._val_metric_accumulators:
+            ged_keys = ["ged", *self._validation_additional_metrics] if self.evaluate_all_raters else []
+            self._val_metric_accumulators[split] = {
+                "loss_sum": 0.0,
+                "dice_sum": 0.0,
+                "count": 0,
+                "ged_sums": {key: 0.0 for key in ged_keys},
+                "ged_count": 0,
+            }
+
+        metrics = self._val_metric_accumulators[split]
         metrics["loss_sum"] += loss_value
         metrics["dice_sum"] += dice_value
         metrics["count"] += 1
+
+        if ged_results:
+            metrics["ged_count"] += len(ged_results)
+            for result in ged_results:
+                for key, value in result.items():
+                    if key not in metrics["ged_sums"]:
+                        continue
+                    metrics["ged_sums"][key] += float(value)
 
         return eval_loss
 
@@ -462,6 +580,23 @@ class LightningExperiment(pl.LightningModule):
             return
 
         device = self.device if hasattr(self, "device") else torch.device("cpu")
+
+        # Log current optimizer LR once per epoch to help diagnose plateaus/scheduler effects
+        try:
+            if self.trainer is not None and len(self.trainer.optimizers) > 0:
+                current_lr = float(self.trainer.optimizers[0].param_groups[0]["lr"])
+                self.log(
+                    "optimization/lr",
+                    torch.tensor(current_lr, device=device),
+                    prog_bar=False,
+                    logger=True,
+                    on_epoch=True,
+                    add_dataloader_idx=False,
+                    sync_dist=True,
+                )
+        except Exception:
+            # Best-effort LR logging; ignore if optimizer not yet available
+            pass
         for split, metrics in accumulators.items():
             count = metrics.get("count", 0)
             if count == 0:
@@ -491,6 +626,24 @@ class LightningExperiment(pl.LightningModule):
                 sync_dist=True,
             )
 
+            ged_count = metrics.get("ged_count", 0)
+            if ged_count > 0:
+                ged_sums = metrics.get("ged_sums", {})
+                for metric_name, total in ged_sums.items():
+                    avg_metric = total / ged_count
+                    # Only prefix with 'ged' for the actual GED. Other metrics are logged plainly.
+                    log_key = f"validation/{split}_{metric_name}"
+                    metric_tensor = torch.tensor(avg_metric, device=device)
+                    self.log(
+                        log_key,
+                        metric_tensor,
+                        prog_bar=False,
+                        logger=True,
+                        on_epoch=True,
+                        add_dataloader_idx=False,
+                        sync_dist=True,
+                    )
+
         self._val_metric_accumulators = {}
 
     def test_step(self, batch: dict, batch_idx: int) -> torch.Tensor:
@@ -512,7 +665,11 @@ class LightningExperiment(pl.LightningModule):
         test_loss = self.dice_loss(output_softmax, target) + self.ce_loss(
             output, target
         )
-        test_dice = dice(output_softmax, target, ignore_index=self.ignore_index)
+        test_dice = dice(output_softmax, target, 
+                        num_classes        = self.model.num_classes,
+                        ignore_index       = self.ignore_index,
+                        binary_dice        = self.model.num_classes == 2,
+                        is_softmax         = True)
         self.test_datacarrier.concat_data(batch=batch, softmax_pred=output_softmax)
 
         log = {"test/test_loss": test_loss, "test/test_dice": test_dice}

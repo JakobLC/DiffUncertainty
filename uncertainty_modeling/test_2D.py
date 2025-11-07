@@ -15,6 +15,7 @@ import sys
 sys.path.append(Path(__file__).parent.parent.as_posix())
 
 from evaluation.metrics.dice_wrapped import dice
+from evaluation.metrics.ged_fast import ged_binary_fast
 from uncertainty_modeling.main import set_seed
 from uncertainty_modeling.test_3D import (
     test_cli,
@@ -34,6 +35,7 @@ class Tester:
         hparams = self.all_checkpoints[0]["hyper_parameters"]
         set_seed(hparams["seed"])
         self.ignore_index = hparams["datamodule"]["ignore_index"]
+        self.evaluate_all_raters = True#bool(hparams.get("evaluate_all_raters", True))
         self.test_batch_size = args.test_batch_size
         self.tta = args.tta
         self.test_dataloader = self.get_test_dataloader(args, hparams)
@@ -49,7 +51,8 @@ class Tester:
             args.save_dir if args.save_dir is not None else hparams["save_dir"]
         )
         self.exp_name = hparams["exp_name"] if args.exp_name is None else args.exp_name
-        self.version = str(hparams["version"])
+        # Prefer an override when running ensembles so saved folder reflects all members
+        self.version = str(getattr(args, "version_override", None) or hparams["version"])
         self.test_split = args.test_split
         self.use_ema = bool(getattr(args, "use_ema", False))
         self.dataset_name = hparams.get("dataset") if isinstance(hparams, dict) else None
@@ -85,11 +88,6 @@ class Tester:
                         "n_reference_samples"
                     ] = n_reference_samples
                     updated = True
-        if not updated:
-            print(
-                "[test_2D] Warning: StochasticLabelSwitches not found in TEST augmentations;"
-                " skipping n_reference_samples configuration."
-            )
         return hparams
 
     def create_save_dirs(self):
@@ -192,69 +190,75 @@ class Tester:
             # save(unc_map_np, os.path.join(unc_dir, f"{image_id}.nii.gz"))
 
     def calculate_test_metrics(self, output_softmax, ground_truth):
+        """Compute per-image mean Dice across raters.
+
+        Optimizations:
+        - Compute argmax of mean softmax once and reuse for all raters.
+        - Use a vectorized binary Dice path for LIDC (two-class) datasets.
+        """
         metrics_dict = {}
-        output_softmax = torch.unsqueeze(output_softmax, 0).type(torch.FloatTensor)
+        is_lidc = self.dataset_name and "lidc" in self.dataset_name.lower()
+
+        # output_softmax: (C,H,W) for this image
+        # Convert to predicted indices once
+        pred_idx = output_softmax.argmax(dim=0)  # (H,W)
+
+        if is_lidc:
+            # Vectorized binary dice versus all raters on device
+            gt = ground_truth.to(pred_idx.device)  # (R,H,W)
+            ignore = self.ignore_index
+            # Expand pred to (R,H,W)
+            pred_rep = pred_idx.unsqueeze(0).expand_as(gt)
+            valid = (gt != ignore)
+
+            pred_pos = (pred_rep == 1) & valid
+            gt_pos = (gt == 1) & valid
+
+            tp = (pred_pos & gt_pos).sum(dim=(1, 2)).to(torch.float32)
+            pred_sum = pred_pos.sum(dim=(1, 2)).to(torch.float32)
+            gt_sum = gt_pos.sum(dim=(1, 2)).to(torch.float32)
+            denom = 2 * tp + (pred_sum - tp) + (gt_sum - tp)  # 2TP+FP+FN
+
+            both_empty = (pred_sum == 0) & (gt_sum == 0)
+            one_empty = (pred_sum == 0) ^ (gt_sum == 0)
+            dice_vals = torch.zeros_like(denom, dtype=torch.float32)
+            dice_vals[both_empty] = 1.0
+            dice_vals[one_empty] = 0.0
+            regular = ~(both_empty | one_empty)
+            safe = denom > 0
+            idx = regular & safe
+            dice_vals[idx] = (2 * tp[idx]) / denom[idx]
+            metrics_dict["dice"] = float(dice_vals.mean().item())
+            return metrics_dict
+
+        # Fallback: multi-class/general path via wrapper (single argmax per call avoided)
+        output_idx = pred_idx.unsqueeze(0)  # (1,H,W)
         all_test_dice = []
         for rater in ground_truth:
-            rater = torch.unsqueeze(rater, 0)
+            rater = rater.unsqueeze(0)
             test_dice = dice(
-                output_softmax, rater, ignore_index=output_softmax.shape[1] - 1,
-                is_softmax=True
+                output_idx,
+                rater,
+                ignore_index=self.ignore_index,
+                include_background=False,
+                num_classes=int(output_softmax.shape[0]),
+                binary_dice=False,
+                average="macro",
+                is_softmax=False,
             )
-            all_test_dice.append(test_dice.item())
-        metrics_dict["dice"] = np.mean(np.array(all_test_dice))
-        # self.results_dict[image_id]["metrics"].update(metrics_dict)
+            all_test_dice.append(test_dice.item() if not isinstance(test_dice, float) else test_dice)
+        metrics_dict["dice"] = float(np.mean(np.array(all_test_dice)))
         return metrics_dict
 
-    def process_image_prediction(
-        self, all_preds, image_idx, image_preds, ignore_index_map
-    ):
-        image_id = all_preds["image_id"][image_idx]
-        mean_softmax_pred = torch.mean(image_preds, dim=0)
-        self.results_dict[image_id] = {"dataset": all_preds["dataset"][image_idx]}
-        self.results_dict[image_id]["metrics"] = {}
-        self.results_dict[image_id]["metrics"].update(
-            self.calculate_test_metrics(mean_softmax_pred, all_preds["gt"][image_idx])
-        )
-        self.results_dict[image_id]["metrics"].update(
-            calculate_ged(
-                image_preds,
-                all_preds["gt"][image_idx],
-                ignore_index=image_preds.shape[1] - 1,
-            )
-        )
-        if image_preds.shape[0] > 1:
-            uncertainty_dict = calculate_uncertainty(image_preds)
-        else:
-            uncertainty_dict = calculate_one_minus_msr(image_preds.squeeze(0))
-        ignore_index_map_image = ignore_index_map[image_idx][0]
-        self.save_prediction(
-            image_id,
-            image_preds,
-            mean_softmax_pred,
-            ignore_index_map_image.detach().long().cpu().numpy().astype(np.uint8),
-        )
-        self.save_uncertainty(image_id, uncertainty_dict)
-
-    def process_output(self, all_preds, is_ssn):
-        pred_shape = all_preds["softmax_pred"].shape
-        # The extra dimension is added to enable that torchmetrics can deal with ignore index outside of softmax dimensions
-        extra_dimension = torch.zeros(
-            pred_shape[0],
-            pred_shape[1],
-            1,
-            pred_shape[3],
-            pred_shape[4],
-            device=self.device,
-        )
-        all_preds["softmax_pred"] = torch.cat((all_preds["softmax_pred"], extra_dimension), dim=2)
+    def process_output(self, all_preds):
         ignore_index_map = all_preds["gt"] == self.ignore_index
-        all_preds["gt"][all_preds["gt"] == self.ignore_index] = all_preds["softmax_pred"].shape[2] - 1
-        image_predictions = [
-            all_preds["softmax_pred"][:, i, :, :]
-            for i in range(all_preds["softmax_pred"].shape[1])
-        ]
-        for image_idx, image_preds in enumerate(image_predictions):
+        compute_ged = self.evaluate_all_raters and all_preds["gt"].shape[1] > 1
+        ged_ignore_index = (
+            self.ignore_index if compute_ged and self.ignore_index >= 0 else None
+        )
+        n_batch = all_preds["softmax_pred"].shape[1]
+        for image_idx in range(n_batch):
+            image_preds = all_preds["softmax_pred"][:, image_idx]  # (P,C,H,W)
             image_id = all_preds["image_id"][image_idx]
             mean_softmax_pred = torch.mean(image_preds, dim=0)
             self.results_dict[image_id] = {"dataset": all_preds["dataset"][image_idx]}
@@ -264,16 +268,28 @@ class Tester:
                     mean_softmax_pred, all_preds["gt"][image_idx]
                 )
             )
-            self.results_dict[image_id]["metrics"].update(
-                calculate_ged(
-                    image_preds,
-                    all_preds["gt"][image_idx].to(self.device),
-                    ignore_index=image_preds.shape[1] - 1,
-                    ged_only=True,
-                )
-            )
+            if compute_ged:
+                # Fast GED path for binary LIDC: compute with argmax on-device
+                is_lidc = self.dataset_name and "lidc" in self.dataset_name.lower()
+                if is_lidc:
+                    fast_ged = ged_binary_fast(
+                        image_preds,
+                        all_preds["gt"][image_idx],
+                        ignore_index=ged_ignore_index,
+                        additional_metrics=["dice"],
+                    )
+                    self.results_dict[image_id]["metrics"].update(fast_ged)
+                else:
+                    self.results_dict[image_id]["metrics"].update(
+                        calculate_ged(
+                            image_preds,
+                            all_preds["gt"][image_idx].to(self.device),
+                            ignore_index=ged_ignore_index,
+                            additional_metrics=["dice"],
+                        )
+                    )
             if image_preds.shape[0] > 1:
-                uncertainty_dict = calculate_uncertainty(image_preds, ssn=is_ssn)
+                uncertainty_dict = calculate_uncertainty(image_preds)
             else:
                 uncertainty_dict = calculate_one_minus_msr(image_preds.squeeze(0))
             ignore_index_map_image = ignore_index_map[image_idx][0]
@@ -284,6 +300,8 @@ class Tester:
                 ignore_index_map_image.detach().long().cpu().numpy().astype(np.uint8),
             )
             self.save_uncertainty(image_id, uncertainty_dict)
+
+    
 
     def save_results_dict(self):
         filename = os.path.join(self.save_dir, "metrics.json")
@@ -314,6 +332,9 @@ class Tester:
                 "gt": gt,
                 "dataset": batch["dataset"],
             }
+            # If we ensemble multiple generative models (e.g., SSNs),
+            # average the inner samples per model and only aggregate across models.
+            multiple_generative = sum(getattr(m, "ssn", False) for m in self.models) > 1
             for model in self.models:
                 if model.ssn:
                     distribution, cov_failed_flag = model.forward(batch["data"].to(self.device))
@@ -327,9 +348,15 @@ class Tester:
                             *batch["data"].size()[2:],
                         ]
                     )
-                    for output_sample in output_samples:
-                        output_softmax = F.softmax(output_sample, dim=1)
-                        all_preds["softmax_pred"].append(output_softmax)
+                    if multiple_generative:
+                        # Vectorized softmax over class dim (2), mean over inner samples
+                        softmax_samples = F.softmax(output_samples, dim=2)
+                        output_softmax_mean = softmax_samples.mean(dim=0)
+                        all_preds["softmax_pred"].append(output_softmax_mean)
+                    else:
+                        for output_sample in output_samples:
+                            output_softmax = F.softmax(output_sample, dim=1)
+                            all_preds["softmax_pred"].append(output_softmax)
                 elif self.tta:
                     for index, image in enumerate(batch["data"]):
                         output = model.forward(image.to(self.device))
@@ -349,7 +376,7 @@ class Tester:
                         output_softmax = F.softmax(output, dim=1)  # .to("cpu")
                         all_preds["softmax_pred"].append(output_softmax)
             all_preds["softmax_pred"] = torch.stack(all_preds["softmax_pred"])
-            self.process_output(all_preds, is_ssn=self.models[0].ssn)
+            self.process_output(all_preds)
         self.save_results_dict()
 
 
@@ -379,3 +406,40 @@ if __name__ == "__main__":
             f"ema='{ema_label}' with checkpoints: {ckpt_summary}"
         )
         run_test(job)
+
+
+"""
+Code commented out because it was unused
+    def process_image_prediction(
+        self, all_preds, image_idx, image_preds, ignore_index_map
+    ):
+        image_id = all_preds["image_id"][image_idx]
+        mean_softmax_pred = torch.mean(image_preds, dim=0)
+        self.results_dict[image_id] = {"dataset": all_preds["dataset"][image_idx]}
+        self.results_dict[image_id]["metrics"] = {}
+        self.results_dict[image_id]["metrics"].update(
+            self.calculate_test_metrics(mean_softmax_pred, all_preds["gt"][image_idx])
+        )
+        if self.evaluate_all_raters and all_preds["gt"][image_idx].shape[0] > 1:
+            ged_ignore_index = self.ignore_index if self.ignore_index >= 0 else None
+            self.results_dict[image_id]["metrics"].update(
+                calculate_ged(
+                    image_preds,
+                    all_preds["gt"][image_idx],
+                    ignore_index=ged_ignore_index,
+                    additional_metrics=["dice", "major_dice", "max_dice_pred", "max_dice_gt"],
+                )
+            )
+        if image_preds.shape[0] > 1:
+            uncertainty_dict = calculate_uncertainty(image_preds)
+        else:
+            uncertainty_dict = calculate_one_minus_msr(image_preds.squeeze(0))
+        ignore_index_map_image = ignore_index_map[image_idx][0]
+        self.save_prediction(
+            image_id,
+            image_preds,
+            mean_softmax_pred,
+            ignore_index_map_image.detach().long().cpu().numpy().astype(np.uint8),
+        )
+        self.save_uncertainty(image_id, uncertainty_dict)
+"""

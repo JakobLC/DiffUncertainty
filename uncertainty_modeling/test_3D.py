@@ -3,7 +3,7 @@ import os
 import pickle
 import random
 from pathlib import Path
-from typing import Dict, Tuple, List
+from typing import Dict, Tuple, List, Optional
 
 import hydra
 import yaml
@@ -122,6 +122,24 @@ def test_cli(config_file: str = None) -> Namespace:
         choices=["normal", "ema", "both"],
         help="Select which weights to evaluate: 'normal', 'ema', or 'both'.",
     )
+    parser.add_argument(
+        "--wildcard_replace",
+        type=str,
+        default=None,
+        help=(
+            "Comma-separated replacement strings for '*' in checkpoint paths. "
+            "Example: --wildcard_replace=120,121,122 and --checkpoint_paths=/path/aug0_s*/ckpt.ckpt"
+        ),
+    )
+    parser.add_argument(
+        "--ensemble_mode",
+        action="store_true",
+        default=False,
+        help=(
+            "Group checkpoints as ensembles instead of forming a cross-product. "
+            "Files: combine all files into one ensemble. Folders: create one ensemble per common filename across folders."
+        ),
+    )
 
     if config_file is not None:
         with open(os.path.join(os.path.dirname(__file__), config_file), "r") as f:
@@ -132,27 +150,103 @@ def test_cli(config_file: str = None) -> Namespace:
     return args
 
 
-def _expand_checkpoint_groups(entries: List[str]) -> List[List[str]]:
+def _build_checkpoint_groups(
+    entries: List[str],
+    wildcard_replacements: Optional[List[str]] = None,
+    ensemble_mode: bool = False,
+) -> List[List[str]]:
+    """
+    Build checkpoint groups from raw entries according to ensemble semantics.
+
+    Behavior:
+    - When ensemble_mode is False (default):
+      * Files: each file is its own group
+      * Folders: union of all .ckpt files across folders, each as its own group
+      * Mixing files and folders is allowed; all are treated individually
+    - When ensemble_mode is True:
+      * Files only: all files are combined into a single ensemble group (requires >=2 files)
+      * Folders only: create one ensemble per common filename across all folders (requires >=2 folders)
+      * Mixing files and folders is not supported and will raise an error
+    - Wildcards ('*') in entries must be provided with --wildcard_replace and are expanded prior to grouping.
+    """
     if not entries:
         raise ValueError("No checkpoint paths provided.")
-    combinations: List[List[str]] = [[]]
-    for entry in entries:
-        path = Path(entry)
-        if path.is_dir():
-            candidates = sorted(path.glob("*.ckpt"))
-            if not candidates:
-                raise FileNotFoundError(f"No .ckpt files found in directory: {path}")
-            new_combinations: List[List[str]] = []
-            for combo in combinations:
-                for candidate in candidates:
-                    new_combo = combo + [candidate.as_posix()]
-                    new_combinations.append(new_combo)
-            combinations = new_combinations
+
+    # Helper to materialize one raw entry into concrete paths or folders
+    def _resolve_entry(e: str) -> Tuple[List[str], List[str]]:
+        files: List[str] = []
+        folders: List[str] = []
+        if "*" in e:
+            tokens = [t.strip() for t in (wildcard_replacements or []) if t and t.strip()]
+            if not tokens:
+                raise ValueError(
+                    "checkpoint_paths contains '*' but --wildcard_replace was not provided or empty."
+                )
+            for token in tokens:
+                replaced = e.replace("*", token)
+                p = Path(replaced)
+                if p.is_dir():
+                    folders.append(p.as_posix())
+                else:
+                    files.append(p.as_posix())
         else:
-            resolved = path.as_posix()
-            for combo in combinations:
-                combo.append(resolved)
-    return combinations
+            p = Path(e)
+            if p.is_dir():
+                folders.append(p.as_posix())
+            else:
+                files.append(p.as_posix())
+        return files, folders
+
+    all_files: List[str] = []
+    folder_to_files: OrderedDict[str, List[str]] = OrderedDict()
+
+    for raw in entries:
+        files, folders = _resolve_entry(raw)
+        # Collect files
+        all_files.extend(files)
+        # Collect folder contents
+        for folder in folders:
+            ckpts = sorted(Path(folder).glob("*.ckpt"))
+            if not ckpts:
+                raise FileNotFoundError(f"No .ckpt files found in directory: {folder}")
+            folder_to_files[folder] = [c.as_posix() for c in ckpts]
+
+    if not ensemble_mode:
+        # Individual evaluation of each file
+        union: List[str] = list(sorted(set(all_files)))
+        for files in folder_to_files.values():
+            union.extend(files)
+        # Ensure uniqueness and stable order
+        union = list(OrderedDict((p, None) for p in union).keys())
+        return [[p] for p in union]
+
+    # Ensemble mode
+    has_files = len(all_files) > 0
+    has_folders = len(folder_to_files) > 0
+    if has_files and has_folders:
+        raise ValueError("--ensemble_mode does not support mixing files and folders in one run. Provide either files or folders.")
+
+    if has_folders:
+        if len(folder_to_files) < 2:
+            raise ValueError("--ensemble_mode with folders requires at least two folders to ensemble across.")
+        # Find common basenames across all folders
+        basename_sets = [set(Path(p).name for p in files) for files in folder_to_files.values()]
+        common_basenames = set.intersection(*basename_sets) if basename_sets else set()
+        if not common_basenames:
+            raise ValueError("No common checkpoint filenames across folders for ensembling.")
+        groups: List[List[str]] = []
+        for base in sorted(common_basenames):
+            group: List[str] = []
+            for folder in folder_to_files.keys():
+                group.append((Path(folder) / base).as_posix())
+            groups.append(group)
+        return groups
+
+    # Files only
+    unique_files = list(sorted(set(all_files)))
+    if len(unique_files) < 2:
+        raise ValueError("--ensemble_mode with files requires at least two files.")
+    return [unique_files]
 
 
 def _parse_test_splits(split_arg: str) -> List[str]:
@@ -183,9 +277,146 @@ def prepare_evaluation_jobs(args: Namespace) -> List[Namespace]:
     else:
         raw_list = list(raw_paths)
 
-    checkpoint_combos = _expand_checkpoint_groups(raw_list)
+    # Parse wildcard replacements if provided
+    wildcard_replacements: Optional[List[str]] = None
+    if getattr(args, "wildcard_replace", None):
+        wildcard_replacements = [s.strip() for s in str(args.wildcard_replace).split(",") if s.strip()]
+
+    checkpoint_combos = _build_checkpoint_groups(
+        raw_list, wildcard_replacements, bool(getattr(args, "ensemble_mode", False))
+    )
     test_splits = _parse_test_splits(args.test_split)
     ema_options = _ema_mode_to_flags(getattr(args, "ema_mode", "normal"))
+
+    total_jobs = len(checkpoint_combos) * len(test_splits) * len(ema_options)
+    print(f"About to launch {total_jobs} evaluation jobs.")
+    print(f"len(checkpoint_combos)={len(checkpoint_combos)}, len(test_splits)={len(test_splits)}, len(ema_options)={len(ema_options)}")
+
+    # Helper: derive an informative ensemble version name for saving
+    def _extract_version_from_ckpt_path(p: str) -> str:
+        path = Path(p)
+        # Typical: .../<version>/(checkpoints|scheduled_ckpts)/file.ckpt
+        if path.suffix == ".ckpt":
+            parent = path.parent  # checkpoints folder
+            if parent.name in ("checkpoints", "scheduled_ckpts") and parent.parent:
+                return parent.parent.name
+            # Fallback to parent folder if structure differs
+            return parent.name
+        # If a folder path slipped through (shouldn't in groups), use folder name
+        return path.name
+
+    def _build_group_version_name(
+        raw_entries: List[str],
+        replacements: Optional[List[str]],
+        group_paths: List[str],
+    ) -> Optional[str]:
+        # Only build a special name for ensembles
+        if len(group_paths) <= 1:
+            return None
+
+        versions = [_extract_version_from_ckpt_path(p) for p in group_paths]
+
+        # If user provided replacements, try to reconstruct prefix[specified_tokens]suffix
+        # even if the shell expanded '*' and raw_entries no longer contain it.
+        if replacements:
+            reps = [t for t in replacements if t]
+            # Attempt to factor each version as prefix + rep + suffix with a common prefix/suffix
+            common_prefix: Optional[str] = None
+            common_suffix: Optional[str] = None
+            matched_tokens: List[str] = []
+            success = True
+            for v in versions:
+                found_match = False
+                for r in reps:
+                    idx = v.find(r)
+                    if idx != -1:
+                        pre = v[:idx]
+                        suf = v[idx + len(r):]
+                        if common_prefix is None and common_suffix is None:
+                            common_prefix, common_suffix = pre, suf
+                            found_match = True
+                            matched_tokens.append(r)
+                            break
+                        else:
+                            if pre == common_prefix and suf == common_suffix:
+                                found_match = True
+                                matched_tokens.append(r)
+                                break
+                if not found_match:
+                    success = False
+                    break
+            if success and common_prefix is not None:
+                # Preserve the order provided by replacements for readability
+                ordered_unique = []
+                seen = set()
+                for r in reps:
+                    if r in matched_tokens and r not in seen:
+                        seen.add(r)
+                        ordered_unique.append(r)
+                candidate = f"{common_prefix}[{','.join(ordered_unique)}]{common_suffix}"
+                if len(candidate) <= 50:
+                    return candidate
+                short = ordered_unique[:2]
+                return f"{common_prefix}[{','.join(short)},etc]{common_suffix}"
+
+        # Prefer star-based naming when any raw entry had a '*':
+        # derive tokens by factoring common prefix/suffix across concrete version names.
+        if any("*" in e for e in raw_entries):
+            def longest_common_prefix(strs: List[str]) -> str:
+                if not strs:
+                    return ""
+                s1, s2 = min(strs), max(strs)
+                i = 0
+                for i, (c1, c2) in enumerate(zip(s1, s2)):
+                    if c1 != c2:
+                        return s1[:i]
+                return s1[: len(s1) if len(s1) <= len(s2) else len(s2)]
+
+            def longest_common_suffix(strs: List[str]) -> str:
+                rev = [s[::-1] for s in strs]
+                pref = longest_common_prefix(rev)
+                return pref[::-1]
+
+            lcp = longest_common_prefix(versions)
+            lcs = longest_common_suffix(versions)
+
+            # Extract the varying tokens between lcp and lcs for each version
+            tokens: List[str] = []
+            for v in versions:
+                start = len(lcp)
+                end = len(v) - len(lcs) if lcs else len(v)
+                token = v[start:end]
+                tokens.append(token)
+
+            # If tokens are non-empty and represent the variation, build prefix[tokens]suffix
+            if any(t for t in tokens):
+                # Preserve order and remove duplicates
+                seen = set()
+                uniq_tokens: List[str] = []
+                for t in tokens:
+                    if t not in seen:
+                        seen.add(t)
+                        uniq_tokens.append(t)
+                candidate = f"{lcp}[{','.join(uniq_tokens)}]{lcs}"
+                if len(candidate) <= 50:
+                    return candidate
+                # Compress to first two + etc if exceeding limit
+                short_tokens = uniq_tokens[:2]
+                return f"{lcp}[{','.join(short_tokens)},etc]{lcs}"
+
+        # Otherwise, build from the concrete group paths' version names
+        # Unique while preserving order
+        seen = set()
+        uniq = []
+        for v in versions:
+            if v not in seen:
+                seen.add(v)
+                uniq.append(v)
+        name = f"[{','.join(uniq)}]"
+        if len(name) <= 50:
+            return name
+        short = uniq[:2]
+        return f"[{','.join(short)},etc]"
 
     jobs: List[Namespace] = []
     for checkpoints in checkpoint_combos:
@@ -196,6 +427,10 @@ def prepare_evaluation_jobs(args: Namespace) -> List[Namespace]:
                 job_args.test_split = split
                 job_args.use_ema = use_ema
                 job_args.current_ema_label = ema_label
+                # Derive version override for ensembles so results reflect group members
+                job_args.version_override = _build_group_version_name(
+                    raw_list, wildcard_replacements, job_args.checkpoint_paths
+                )
                 jobs.append(job_args)
     return jobs
 
@@ -357,6 +592,8 @@ def load_models_from_checkpoint(
         else:
             model = hydra.utils.instantiate(hparams["model"])
         model.load_state_dict(state_dict=state_dict)
+        # Ensure deterministic evaluation behavior (e.g., disable dropout/batchnorm updates)
+        model.eval()
         all_models.append(model.to(device))
     return all_models
 
@@ -385,7 +622,11 @@ def calculate_test_metrics(
         test_loss = dice_loss(output_softmax, gt_seg) + nll_loss(
             torch.log(output_softmax), gt_seg
         )
-        test_dice = dice(output_softmax, gt_seg, ignore_index=0, is_softmax=1)
+        test_dice = dice(output_softmax, gt_seg, 
+                        is_softmax=1,
+                        num_classes=output_softmax.size(dim=1),
+                        binary_dice=output_softmax.size(dim=1) == 2)
+
         all_test_loss.append(test_loss.item())
         all_test_dice.append(test_dice.item())
     metrics_dict = {
@@ -399,81 +640,99 @@ def calculate_ged(
     output_softmax: torch.Tensor,
     ground_truth: torch.Tensor,
     ignore_index: int = 0,
-    ged_only=False,
+    additional_metrics: Optional[List[str]] = None,
 ) -> Dict:
-    gt_repeat = torch.repeat_interleave(ground_truth, output_softmax.shape[0], 0)
-    pred_repeat = output_softmax.repeat(
-        ground_truth.shape[0], *((output_softmax.ndim - 1) * [1])
-    )
-    nc = output_softmax.shape[1]
-    dist_gt_pred_2 = 1 - dice(
-        pred_repeat,
-        gt_repeat,
-        num_classes=nc,
-        ignore_index=ignore_index,
-        is_softmax=True
-    )
-    pred_1_repeat = torch.repeat_interleave(output_softmax, output_softmax.shape[0], 0)
-    pred_1_repeat = torch.argmax(pred_1_repeat, dim=1)
-    pred_2_repeat = output_softmax.repeat(
-        output_softmax.shape[0], *((output_softmax.ndim - 1) * [1])
-    )
-    pred_2_repeat = torch.argmax(pred_2_repeat, dim=1)
-    dist_pred_pred_2 = 1 - dice(
-        pred_1_repeat,
-        pred_2_repeat,
-        num_classes=nc,
-        ignore_index=ignore_index if ignore_index == 0 else None,
-    )
-    gt_1_repeat = torch.repeat_interleave(ground_truth, ground_truth.shape[0], 0)
-    gt_2_repeat = ground_truth.repeat(
-        ground_truth.shape[0], *((ground_truth.ndim - 1) * [1])
-    )
-    if torch.any(gt_1_repeat == ignore_index):
-        dist_gt_gt_2 = 1 - dice(gt_1_repeat, gt_2_repeat, ignore_index=ignore_index, num_classes=nc)
+    if additional_metrics is None:
+        additional_metrics = ["dice"]
+
+    n_pred = output_softmax.shape[0]
+    n_gt = ground_truth.shape[0]
+    num_classes = output_softmax.shape[1]
+
+
+    device = output_softmax.device
+    dice_matrix = torch.zeros((n_pred, n_gt), dtype=torch.float32, device=device)
+    for pred_idx in range(n_pred):
+        pred_softmax = output_softmax[pred_idx : pred_idx + 1].detach()
+        for gt_idx in range(n_gt):
+            gt_seg = ground_truth[gt_idx : gt_idx + 1].detach()
+            dice_score = dice(
+                pred_softmax.cpu(),
+                gt_seg.cpu(),
+                binary_dice=num_classes == 2,
+                num_classes=num_classes,
+                ignore_index=ignore_index,
+                is_softmax=True,
+            )
+            dice_matrix[pred_idx, gt_idx] = float(dice_score)
+    one_minus_dice = 1.0 - dice_matrix
+    dist_gt_pred_2 = one_minus_dice.mean().item()
+
+    if n_pred > 1:
+        pred_labels = output_softmax.argmax(dim=1)
+        pred_distances: List[float] = []
+        for i in range(n_pred):
+            for j in range(n_pred):
+                dice_score = dice(
+                    pred_labels[i : i + 1].cpu(),
+                    pred_labels[j : j + 1].cpu(),
+                    num_classes=num_classes,
+                    binary_dice=num_classes == 2,
+                    ignore_index=None,
+                )
+                pred_distances.append(1.0 - float(dice_score))
+        dist_pred_pred_2 = float(torch.tensor(pred_distances).mean().item()) if pred_distances else 0.0
     else:
-        dist_gt_gt_2 = 1 - dice(gt_1_repeat, gt_2_repeat, num_classes=nc)
+        dist_pred_pred_2 = 0.0
+
+    if n_gt > 1:
+        gt_distances: List[float] = []
+        for i in range(n_gt):
+            for j in range(n_gt):
+                dice_score = dice(
+                    ground_truth[i : i + 1].cpu(),
+                    ground_truth[j : j + 1].cpu(),
+                    num_classes=num_classes,
+                    ignore_index=ignore_index,
+                    binary_dice=num_classes == 2,
+                )
+                gt_distances.append(1.0 - float(dice_score))
+        dist_gt_gt_2 = float(torch.tensor(gt_distances).mean().item()) if gt_distances else 0.0
+    else:
+        dist_gt_gt_2 = 0.0
+
     ged = 2 * dist_gt_pred_2 - dist_pred_pred_2 - dist_gt_gt_2
 
-    if ground_truth.shape[0] > 1 and not ged_only:
-        max_dice_rater = []
-        for seg_idx in range(ground_truth.shape[0]):
-            gt_seg = torch.unsqueeze(ground_truth[seg_idx], 0).type(torch.LongTensor)
-            max_dice = torch.tensor(0, dtype=torch.float)
-            for pred_idx in range(output_softmax.shape[0]):
-                pred_softmax = torch.unsqueeze(output_softmax[pred_idx], 0).type(
-                    torch.FloatTensor
+    results: Dict[str, float | torch.Tensor] = {"ged": ged}
+
+    dice_mean = dice_matrix.mean().item()
+    if "dice" in additional_metrics:
+        results["dice"] = dice_mean
+
+    if "max_dice_pred" in additional_metrics:
+        results["max_dice_pred"] = dice_matrix.max(dim=1).values.mean().item()
+
+    if "max_dice_gt" in additional_metrics:
+        results["max_dice_gt"] = dice_matrix.max(dim=0).values.mean().item()
+
+    if "major_dice" in additional_metrics:
+        majority_pred = output_softmax.mean(dim=0).argmax(dim=0)
+        if num_classes == 2:
+            majority_gt = (ground_truth.float().mean(dim=0) >= 0.5).to(torch.long)
+        else:
+            majority_gt = torch.mode(ground_truth, dim=0).values
+        dice_score = dice(
+                    majority_pred,
+                    majority_gt,
+                    num_classes=num_classes,
+                    ignore_index=ignore_index,
+                    binary_dice=num_classes == 2,
                 )
-                dice_score = dice(pred_softmax, gt_seg, ignore_index=ignore_index, is_softmax=True)
-                if dice_score > max_dice:
-                    max_dice = dice_score
-            max_dice_rater.append(max_dice)
 
-        dice_sum = torch.tensor(0, dtype=torch.float)
-        for pred_idx in range(output_softmax.shape[0]):
-            pred_softmax = torch.unsqueeze(output_softmax[pred_idx], 0).type(
-                torch.FloatTensor
-            )
-            max_dice = torch.tensor(0, dtype=torch.float)
-            for seg_idx in range(ground_truth.shape[0]):
-                gt_seg = torch.unsqueeze(ground_truth[seg_idx], 0).type(
-                    torch.LongTensor
-                )
-                dice_score = dice(pred_softmax, gt_seg, ignore_index=ignore_index, is_softmax=True)
-                if dice_score > max_dice:
-                    max_dice = dice_score
-            dice_sum += max_dice
-        min_over_preds = dice_sum / output_softmax.shape[0]
+    if "dice_matrix" in additional_metrics:
+        results["dice_matrix"] = dice_matrix.cpu()
 
-    # ged_v2 = ged + dist_mean
-    ged_dict = {}
-    ged_dict["ged"] = ged.item()
-    if ground_truth.shape[0] > 1 and not ged_only:
-        for idx, rater_dist in enumerate(max_dice_rater):
-            ged_dict["max dice rater {}".format(idx)] = rater_dist.item()
-        ged_dict["max dice pred"] = min_over_preds.item()
-
-    return ged_dict
+    return results
 
 
 def predict_cases_ssn(
@@ -601,7 +860,7 @@ def predict_cases(
     return test_datacarrier
 
 
-def calculate_uncertainty(softmax_preds: torch.Tensor, ssn: bool = False):
+def calculate_uncertainty(softmax_preds: torch.Tensor):
     uncertainty_dict = {}
     # softmax_preds = torch.from_numpy(softmax_preds)
     mean_softmax = torch.mean(softmax_preds, dim=0)
@@ -625,14 +884,8 @@ def calculate_uncertainty(softmax_preds: torch.Tensor, ssn: bool = False):
     expected_entropy = torch.mean(expected_entropy, dim=0)
     mutual_information = pred_entropy - expected_entropy
     uncertainty_dict["pred_entropy"] = pred_entropy
-    if not ssn:
-        uncertainty_dict["aleatoric_uncertainty"] = expected_entropy
-        uncertainty_dict["epistemic_uncertainty"] = mutual_information
-    else:
-        #print("mutual information is aleatoric unc")
-        uncertainty_dict["aleatoric_uncertainty"] = mutual_information
-        uncertainty_dict["epistemic_uncertainty"] = expected_entropy
-    # value["softmax_pred"] = np.mean(value["softmax_pred"], axis=0)
+    uncertainty_dict["aleatoric_uncertainty"] = mutual_information
+    uncertainty_dict["epistemic_uncertainty"] = expected_entropy
     return uncertainty_dict
 
 
@@ -686,8 +939,15 @@ def calculate_metrics(test_datacarrier: DataCarrier3D) -> None:
                 )
             )
             ged_dict = calculate_ged(
-                torch.from_numpy(softmax_pred).to("cuda"),
-                torch.from_numpy(gt).to("cuda"),
+                torch.from_numpy(softmax_pred),
+                torch.from_numpy(gt),
+                ignore_index=0,
+                additional_metrics=[
+                    "dice",
+                    "major_dice",
+                    "max_dice_pred",
+                    "max_dice_gt",
+                ],
             )
             metrics_dict.update(ged_dict)
         test_datacarrier.data[key]["metrics"] = metrics_dict
@@ -717,7 +977,7 @@ def save_results(
         test_datacarrier.save_data(
             root_dir=save_dir,
             exp_name=exp_name,
-            version=hparams["version"],
+            version=(getattr(args, "version_override", None) or hparams["version"]),
             org_data_path=os.path.join(data_input_dir, "images"),
             test_split=args.test_split,
             checkpoint_tag=checkpoint_tag,
@@ -736,7 +996,7 @@ def save_results(
         test_datacarrier.save_data(
             root_dir=save_dir,
             exp_name=exp_name,
-            version=hparams["version"],
+            version=(getattr(args, "version_override", None) or hparams["version"]),
             org_data_path=org_data_path,
             test_split=args.test_split,
             checkpoint_tag=checkpoint_tag,

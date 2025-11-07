@@ -26,6 +26,7 @@ import torch._utils
 import torch.nn.functional as F
 import torch.distributions as td
 
+import warnings
 
 BatchNorm2d = BatchNorm2d_class = nn.BatchNorm2d
 
@@ -565,14 +566,19 @@ class HighResolutionNet(nn.Module):
         mean = mean.view((batch_size, -1))
         # if mean_only:
         #     return mean
-        cov_diag = self.last_layer(x).exp() + self.epsilon
+        # Stable positive diagonal: use softplus instead of exp, avoid inf/NaN
+        cov_logits = self.last_layer(x)
+        cov_diag = F.softplus(cov_logits) + self.epsilon
         cov_diag = F.interpolate(
             cov_diag, size=x_size, mode="bilinear", align_corners=ALIGN_CORNERS
         )
+        # Replace non-finite values and enforce strictly positive lower bound
+        cov_diag = torch.nan_to_num(cov_diag, nan=1.0, posinf=1e6, neginf=self.epsilon)
         cov_diag = cov_diag.clamp(min=self.epsilon)
         cov_diag = cov_diag.view((batch_size, -1))
         if mean_only:
-            cov_factor = torch.zeros([*cov_diag.shape, self.rank])
+            # Ensure cov_factor is on the correct device/dtype to avoid device mismatch
+            cov_factor = torch.zeros([*cov_diag.shape, self.rank], device=cov_diag.device, dtype=cov_diag.dtype)
         else:
             cov_factor = self.cov_factor_conv(x)
             cov_factor = F.interpolate(
@@ -588,8 +594,15 @@ class HighResolutionNet(nn.Module):
             cov_failed_flag = False
         except:
             cov_failed_flag = True
+            # Guard against any residual non-finites and ensure strictly positive scale
+            safe_diag = torch.nan_to_num(cov_diag, nan=1.0, posinf=1e6, neginf=self.epsilon)
+            # warn if there were any actual NaNs/Infs
+            if not torch.all(torch.isfinite(safe_diag)):
+                warnings.warn("Non-finite values encountered in covariance diagonal.")
+            safe_diag = safe_diag.clamp(min=self.epsilon)
+            scale = torch.sqrt(safe_diag).clamp(min=self.epsilon)
             distribution = td.Independent(
-                td.Normal(loc=mean, scale=torch.sqrt(cov_diag)), 1
+                td.Normal(loc=mean, scale=scale), 1
             )
 
         return distribution, cov_failed_flag
@@ -687,6 +700,8 @@ class HighResolutionNet(nn.Module):
             # some preprocessing
             if "state_dict" in pretrained_dict.keys():
                 pretrained_dict = pretrained_dict["state_dict"]
+            if any([k.startswith("ema_model.") for k in pretrained_dict.keys()]):
+                raise ValueError("Unexpected EMA weights in pretrained model, probably missing code to handle this case.")
             pretrained_dict = {
                 k.replace("model.", "")
                 .replace("module.", "")

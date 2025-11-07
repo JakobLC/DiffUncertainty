@@ -6,7 +6,6 @@ QUANTILE:
     _target_: evaluation.uncertainty_aggregation.find_threshold.get_foreground_quantile
   postprocess_function:
     _target_: evaluation.uncertainty_aggregation.find_threshold.save_foreground_quantiles
-    save_path: ${base_path}
 THRESHOLD:
   datasets: ["val"]
   accumulated: True
@@ -14,5 +13,3 @@ THRESHOLD:
     _target_: evaluation.uncertainty_aggregation.find_threshold.threshold_images_paths
   postprocess_function:
     _target_: evaluation.uncertainty_aggregation.find_threshold.find_threshold
-    quantile_path: ${base_path}
-    save_path: ${base_path}
