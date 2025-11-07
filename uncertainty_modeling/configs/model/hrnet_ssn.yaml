@@ -9,7 +9,7 @@ model:
 MODEL:
   NAME: hrnet
   # Set to false, was initially true
-  PRETRAINED: True  # when resuming (ckpt_path is set), code forces this to False to avoid double-loading
+  PRETRAINED: False  # when resuming (ckpt_path is set), code forces this to False to avoid double-loading
   pretrained_on: ImageNet
   pretrained_path: /home/jloch/Desktop/diff/luzern/values/uncertainty_modeling/models/checkpoints
   PRETRAINED_WEIGHTS: ${MODEL.pretrained_path}/${MODEL.available_weights.${MODEL.pretrained_on}}

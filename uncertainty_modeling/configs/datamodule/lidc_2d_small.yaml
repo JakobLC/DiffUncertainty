@@ -10,4 +10,4 @@ evaluate_training_data: ${evaluate_training_data}
 evaluate_all_raters: ${evaluate_all_raters}
 dataset:
   _target_: uncertainty_modeling.data.lidc2d_dataset.LIDC2DDataset
-  splits_path: "/home/jloch/Desktop/diff/luzern/values_datasets/lidc_2d_small/splits/texture/firstCycle/splits.pkl"
+  splits_path: "${data_input_dir}/splits/texture/firstCycle/splits.pkl"
