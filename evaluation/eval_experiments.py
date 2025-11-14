@@ -39,8 +39,39 @@ class EvalExperiments:
                 version_params.update(exp_config)
                 version_params["base_path"] = self.base_path
                 version_params["second_cycle_path"] = self.second_cycle_path
-                version_params.update(
-                    dict(experiment.prediction_models[version_params["pred_model"]])
+                # If the experiment did not include a datamodule_config, allow a top-level
+                # `datamodule_config` to be used for all experiments. This lets users
+                # define the datamodule once at the root rather than repeating the
+                # import for every experiment mapping.
+                if "datamodule_config" not in version_params and "datamodule_config" in config:
+                    version_params["datamodule_config"] = config.datamodule_config
+                # Merge model-dependent settings from config if present (naming schemes, aggregations)
+                # but DO NOT trust unc_types from config; we derive it from only_pu below.
+                if "prediction_models" in experiment and version_params.get("pred_model") in experiment.prediction_models:
+                    model_cfg = dict(experiment.prediction_models[version_params["pred_model"]])
+                    # Drop any legacy unc_types from configs to avoid double-definition
+                    if "unc_types" in model_cfg:
+                        model_cfg.pop("unc_types")
+                    version_params.update(model_cfg)
+
+                # Derive uncertainty types from per-experiment only_pu if present,
+                # otherwise fall back to top-level config.only_pu for backward compatibility
+                only_pu = bool(version_params.get("only_pu", getattr(config, "only_pu", False)))
+                pred_model_name = str(version_params.get("pred_model"))
+                # Consistency checks as requested
+                if pred_model_name == "Softmax" and not only_pu:
+                    raise ValueError("only_pu must be True when pred_model is 'Softmax'.")
+                if pred_model_name != "Softmax" and only_pu:
+                    raise ValueError("only_pu must be False when pred_model is not 'Softmax'.")
+                # Set unc_types based on only_pu
+                version_params["unc_types"] = (
+                    ["predictive_uncertainty"]
+                    if only_pu
+                    else [
+                        "predictive_uncertainty",
+                        "aleatoric_uncertainty",
+                        "epistemic_uncertainty",
+                    ]
                 )
                 exp_version = ExperimentVersion(**version_params)
                 versions.append(exp_version)

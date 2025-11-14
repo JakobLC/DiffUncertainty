@@ -35,7 +35,8 @@ class Tester:
         hparams = self.all_checkpoints[0]["hyper_parameters"]
         set_seed(hparams["seed"])
         self.ignore_index = hparams["datamodule"]["ignore_index"]
-        self.evaluate_all_raters = True#bool(hparams.get("evaluate_all_raters", True))
+        #self.evaluate_all_raters = True#bool(hparams.get("evaluate_all_raters", True))
+        self.skip_ged = args.skip_ged
         self.test_batch_size = args.test_batch_size
         self.tta = args.tta
         self.test_dataloader = self.get_test_dataloader(args, hparams)
@@ -61,13 +62,17 @@ class Tester:
             self.checkpoint_epoch, self.use_ema
         )
         self.create_save_dirs()
+        self.skip_existing = bool(getattr(args, "skip_existing", False))
 
     @staticmethod
     def get_checkpoints(checkpoint_paths):
         all_checkpoints = []
         for checkpoint_path in checkpoint_paths:
-            checkpoint = torch.load(checkpoint_path, weights_only=True)
+            checkpoint = torch.load(checkpoint_path, weights_only=False)
             checkpoint["hyper_parameters"]["MODEL"]["PRETRAINED"] = False
+            # Minimal fix: if top-level hyper_parameters is a Lightning AttributeDict, cast to plain dict
+            if checkpoint["hyper_parameters"].__class__.__name__ == "AttributeDict":
+                checkpoint["hyper_parameters"] = dict(checkpoint["hyper_parameters"])
             conf = OmegaConf.create(checkpoint["hyper_parameters"])
             resolved = OmegaConf.to_container(conf, resolve=True)
             checkpoint["hyper_parameters"] = resolved
@@ -108,6 +113,21 @@ class Tester:
         os.makedirs(self.save_pred_dir, exist_ok=True)
         # os.makedirs(self.save_pred_prob_dir, exist_ok=True)
         return
+
+    def should_skip(self):
+        if not self.skip_existing:
+            return False
+        metrics_path = os.path.join(self.save_dir, "metrics.json")
+        if not os.path.exists(metrics_path):
+            return False
+        try:
+            with open(metrics_path, "r") as f:
+                data = json.load(f)
+            if isinstance(data, dict) and "mean" in data:
+                return True
+        except Exception:
+            return False
+        return False
 
     def get_test_dataloader(self, args: Namespace, hparams):
         data_input_dir = (
@@ -235,7 +255,7 @@ class Tester:
         output_idx = pred_idx.unsqueeze(0)  # (1,H,W)
         all_test_dice = []
         for rater in ground_truth:
-            rater = rater.unsqueeze(0)
+            rater = rater.unsqueeze(0).to(output_idx.device)
             test_dice = dice(
                 output_idx,
                 rater,
@@ -252,7 +272,7 @@ class Tester:
 
     def process_output(self, all_preds):
         ignore_index_map = all_preds["gt"] == self.ignore_index
-        compute_ged = self.evaluate_all_raters and all_preds["gt"].shape[1] > 1
+        compute_ged = not self.skip_ged and all_preds["gt"].shape[1] > 1
         ged_ignore_index = (
             self.ignore_index if compute_ged and self.ignore_index >= 0 else None
         )
@@ -371,10 +391,9 @@ class Tester:
                         else:
                             all_preds["softmax_pred"].append(output_softmax)
                 else:
-                    for pred in range(self.n_pred):
-                        output = model.forward(batch["data"].to(self.device))
-                        output_softmax = F.softmax(output, dim=1)  # .to("cpu")
-                        all_preds["softmax_pred"].append(output_softmax)
+                    output = model.forward(batch["data"].to(self.device))
+                    output_softmax = F.softmax(output, dim=1)  # .to("cpu")
+                    all_preds["softmax_pred"].append(output_softmax)
             all_preds["softmax_pred"] = torch.stack(all_preds["softmax_pred"])
             self.process_output(all_preds)
         self.save_results_dict()
@@ -389,6 +408,9 @@ def run_test(args: Namespace) -> None:
     """
     torch.set_grad_enabled(False)
     tester = Tester(args)
+    if tester.should_skip():
+        print(f"[skip_existing] All expected outputs already exist for split='{tester.test_split}' (version={tester.version}, ckpt_tag={tester.checkpoint_subdir}). Skipping evaluation.")
+        return
     tester.predict_cases()
 
 
@@ -406,40 +428,3 @@ if __name__ == "__main__":
             f"ema='{ema_label}' with checkpoints: {ckpt_summary}"
         )
         run_test(job)
-
-
-"""
-Code commented out because it was unused
-    def process_image_prediction(
-        self, all_preds, image_idx, image_preds, ignore_index_map
-    ):
-        image_id = all_preds["image_id"][image_idx]
-        mean_softmax_pred = torch.mean(image_preds, dim=0)
-        self.results_dict[image_id] = {"dataset": all_preds["dataset"][image_idx]}
-        self.results_dict[image_id]["metrics"] = {}
-        self.results_dict[image_id]["metrics"].update(
-            self.calculate_test_metrics(mean_softmax_pred, all_preds["gt"][image_idx])
-        )
-        if self.evaluate_all_raters and all_preds["gt"][image_idx].shape[0] > 1:
-            ged_ignore_index = self.ignore_index if self.ignore_index >= 0 else None
-            self.results_dict[image_id]["metrics"].update(
-                calculate_ged(
-                    image_preds,
-                    all_preds["gt"][image_idx],
-                    ignore_index=ged_ignore_index,
-                    additional_metrics=["dice", "major_dice", "max_dice_pred", "max_dice_gt"],
-                )
-            )
-        if image_preds.shape[0] > 1:
-            uncertainty_dict = calculate_uncertainty(image_preds)
-        else:
-            uncertainty_dict = calculate_one_minus_msr(image_preds.squeeze(0))
-        ignore_index_map_image = ignore_index_map[image_idx][0]
-        self.save_prediction(
-            image_id,
-            image_preds,
-            mean_softmax_pred,
-            ignore_index_map_image.detach().long().cpu().numpy().astype(np.uint8),
-        )
-        self.save_uncertainty(image_id, uncertainty_dict)
-"""

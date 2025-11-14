@@ -1,10 +1,10 @@
 #@package _global_
 defaults:
   - _self_
-  - datasets/lidc
-  - tasks/threshold
-  - tasks/aggregation_patch_thresh
-  - tasks/failure_detection
+  - datasets: lidc
+  - tasks: threshold
+  - tasks: aggregation_patch_thresh
+  - tasks: failure_detection
 
 base_path: "/home/${oc.env:USER}/LIDC-IDRI/ActiveLearning/FirstCycle"
 second_cycle_path: "/home/${oc.env:USER}/LIDC-IDRI/ActiveLearning/SecondCycle"
@@ -12,6 +12,9 @@ experiments:
   - ${LIDC}
 
 tasks: ["al_improvement"]
+
+# Use only predictive uncertainty when True. For Softmax models, this must be True.
+only_pu: false
 
 task_params:
   threshold:

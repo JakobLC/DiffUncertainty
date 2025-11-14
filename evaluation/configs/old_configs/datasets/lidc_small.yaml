@@ -1,0 +1,33 @@
+#@package _global_
+defaults:
+  - /../../uncertainty_modeling/configs/datamodule/lidc_2d_small@LIDC.datamodule_config
+  - /../../uncertainty_modeling/configs/data_augmentations/tta_lidc_2d_small
+  - _self_
+
+augment_mult: null
+data_input_dir: "/home/jloch/Desktop/diff/luzern/values_datasets/lidc_2d_small"
+
+base_splits_path: "/home/jloch/Desktop/diff/luzern/values_datasets/lidc_2d_small/splits"
+experiments:
+  - ${LIDC}
+
+AUG_SSN:
+  iter_params:
+    shift: [ "texture" ]
+    pred_model: [ "SSN" ]
+    seed: [ "123" ]
+    version: ["aug0.0", "aug0.5",  "aug1.0" ]
+    epochs: [10,12,15,19,24,30,37,46,57,71,88,109,136,169,210,261,324,402,500 ]
+    ema: [ "_ema" ]
+  naming_scheme_pred_model: "lidc-small-ssn-OF"
+  naming_scheme_version: "{version}/e{epochs}{ema}"
+  aggregations: [ "patch_level", "threshold" ]
+  fold: 0
+  rank: 5
+  image_ending: ".png"
+  unc_ending: ".tif"
+  n_reference_segs: 4
+  only_pu: false
+  evaluate_training_data: ${evaluate_training_data}
+  datamodule_config:
+    data_input_dir: ${data_input_dir}

@@ -1,6 +1,6 @@
 #@package _global_
 defaults:
-  - /../../uncertainty_modeling/configs/datamodule/gta_small@GTA.datamodule_config
+  - /../../uncertainty_modeling/configs/datamodule/gta_small@datamodule_config
   - /../../uncertainty_modeling/configs/data_augmentations/tta_gta_small
   - _self_
 
@@ -17,45 +17,32 @@ AUGMENTATIONS:
               n_reference_samples: ${GTA.n_reference_segs}
           - ToTensorV2:
 
+augment_mult: null
+data_input_dir: "/home/jloch/Desktop/diff/luzern/values_datasets/gta_small"
+datamodule_config:
+  data_input_dir: ${data_input_dir}
+base_splits_path: "/home/jloch/Desktop/diff/luzern/values_datasets/gta_small/splits"
+experiments:
+  - ${GTA}
+
 GTA:
   iter_params:
     pred_model: [ "SSN" ]
-    seed: [ "123" ]
-    version: [ "3" ]
-    epochs: [ null ]
-    ema: [ null ]
+    seed: [ "120" ]
+    version: [ "aug0_s12[0,1,2]" ]
+    epochs: [ 10, 20, 40, 80, 160, 320 ]
+    ema: [ "_ema" ]
+  naming_scheme_pred_model: "gta-small-ssn"
+  naming_scheme_version: "{version}/e{epochs}{ema}"
+  aggregations: [ "image_level", "patch_level" ]
   fold: 0
   rank: 10
   n_classes: 19
   image_ending: ".png"
   unc_ending: ".tif"
-  datamodule_config:
-    data_input_dir: "/home/jloch/Desktop/diff/luzern/values_datasets/gta_small"
   n_reference_segs: 5
+  only_pu: false
   pred_seg_loading:
     _target_: evaluation.utils.gta.pred_seg_loading
   gt_unc_map_loading:
     _target_: evaluation.utils.gta.gt_unc_map
-
-  prediction_models:
-    Softmax:
-      naming_scheme_version: "fold{fold}_seed{seed}"
-      unc_types: [ "predictive_uncertainty" ]
-      aggregations: [ "image_level", "patch_level" ]
-    Dropout-Final:
-      naming_scheme_version: "fold{fold}_seed{seed}"
-      unc_types: [ "predictive_uncertainty", "aleatoric_uncertainty", "epistemic_uncertainty" ]
-      aggregations: [ "image_level", "patch_level" ]
-    Ensemble:
-      naming_scheme_version: "fold{fold}_seed{seed}"
-      unc_types: [ "predictive_uncertainty", "aleatoric_uncertainty", "epistemic_uncertainty" ]
-      aggregations: [ "image_level", "patch_level" ]
-    TTA:
-      naming_scheme_version: "fold{fold}_seed{seed}"
-      unc_types: [ "predictive_uncertainty", "aleatoric_uncertainty", "epistemic_uncertainty" ]
-      aggregations: [ "image_level", "patch_level" ]
-    SSN:
-      naming_scheme_pred_model: "gta-small-snn"
-      naming_scheme_version: "{version}"
-      unc_types: [ "predictive_uncertainty", "aleatoric_uncertainty", "epistemic_uncertainty" ]
-      aggregations: [ "image_level", "patch_level" ]

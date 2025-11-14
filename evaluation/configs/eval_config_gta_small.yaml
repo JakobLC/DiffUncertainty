@@ -1,18 +1,14 @@
 defaults:
   - _self_
-  - datasets/gta_small
+  - datasets: gta_small
   - tasks/aggregation_patch_image
   - tasks/failure_detection
 
-base_splits_path: "/home/jloch/Desktop/diff/luzern/values_datasets/gta_small/splits"
 base_path: "/home/jloch/Desktop/diff/luzern/values/saves"
 second_cycle_path: "/home/jloch/Desktop/diff/luzern/values/experiments/SecondCycle"
-experiments:
-  - ${GTA}
 evaluate_training_data: null
 
-#tasks: ["al_improvement"]
-tasks: ["ambiguity_modeling","ood_detection"]
+tasks: ["aggregation","ood_detection","ambiguity_modeling","calibration"]
 
 task_params:
   aggregation: ${AGG_PATCH_IMAGE}

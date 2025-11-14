@@ -1,0 +1,22 @@
+#@package _global_
+defaults:
+  - /../../uncertainty_modeling/configs/datamodule/lidc_2d@LIDC.datamodule_config
+  - /../../uncertainty_modeling/configs/data_augmentations/tta_lidc_2d
+  - _self_
+
+augment_mult: null
+data_input_dir: "/home/jloch/Desktop/diff/luzern/values_datasets/lidc"
+
+LIDC:
+  iter_params:
+    shift: [ "texture", "malignancy" ]
+    pred_model: [ "Softmax", "Dropout", "Ensemble", "TTA", "SSN" ]
+    seed: [ "123", "124", "125" ]
+  fold: 0
+  rank: 5
+  image_ending: ".nii.gz"
+  unc_ending: ".nii.gz"
+  naming_scheme_pred_model: "NOT_YET_DEFINED"
+  naming_scheme_version: "{shift}_fold{fold}_rank{rank}_seed{seed}"
+  n_reference_segs: 4
+  aggregations: [ "patch_level", "threshold" ]

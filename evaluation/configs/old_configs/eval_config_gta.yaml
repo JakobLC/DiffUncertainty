@@ -1,8 +1,8 @@
 defaults:
   - _self_
-  - datasets/gta
-  - tasks/aggregation_patch_image
-  - tasks/failure_detection
+  - datasets: gta
+  - tasks: aggregation_patch_image
+  - tasks: failure_detection
 
 base_path: "/nvme/GTA/Experiments/FirstCycle"
 second_cycle_path: "/nvme/GTA/Experiments/SecondCycle"
@@ -10,6 +10,9 @@ experiments:
   - ${GTA}
 
 tasks: ["al_improvement"]
+
+# Use only predictive uncertainty when True. For Softmax models, this must be True.
+only_pu: false
 
 task_params:
   aggregation: ${AGG_PATCH_IMAGE}

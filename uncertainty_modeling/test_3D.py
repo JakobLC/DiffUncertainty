@@ -1,4 +1,5 @@
 import copy
+import json
 import os
 import pickle
 import random
@@ -138,6 +139,23 @@ def test_cli(config_file: str = None) -> Namespace:
         help=(
             "Group checkpoints as ensembles instead of forming a cross-product. "
             "Files: combine all files into one ensemble. Folders: create one ensemble per common filename across folders."
+        ),
+    )
+    parser.add_argument(
+        "--skip_ged",
+        action="store_true",
+        default=False,
+        help=(
+            " Skip evaluation of the Generalized Energy Distance (GED) metric. "
+        ),
+    )
+    parser.add_argument(
+        "--skip_existing",
+        action="store_true",
+        default=False,
+        help=(
+            "Skip evaluation if all expected output files for a job already exist. "
+            "Checks at the deepest level (per model group, split, EMA mode)."
         ),
     )
 
@@ -433,6 +451,33 @@ def prepare_evaluation_jobs(args: Namespace) -> List[Namespace]:
                 )
                 jobs.append(job_args)
     return jobs
+
+def _metrics_complete_3d(args: Namespace, hparams: Dict) -> bool:
+    """Return True if metrics.json exists and appears complete.
+
+    Completeness heuristic:
+    - File exists
+    - Parses as JSON containing a 'mean' key (written at end of evaluation)
+    """
+    root_dir = args.save_dir if args.save_dir is not None else hparams["save_dir"]
+    exp_name = hparams["exp_name"] if args.exp_name is None else args.exp_name
+    version = getattr(args, "version_override", None) or hparams["version"]
+    checkpoint_tag = getattr(args, "checkpoint_subdir", None)
+    parts = [root_dir, exp_name, "test_results", str(version)]
+    if checkpoint_tag:
+        parts.append(checkpoint_tag)
+    parts.append(args.test_split)
+    metrics_path = os.path.join(*parts, "metrics.json")
+    if not os.path.exists(metrics_path):
+        return False
+    try:
+        with open(metrics_path, "r") as f:
+            data = json.load(f)
+        if isinstance(data, dict) and "mean" in data:
+            return True
+    except Exception:
+        return False
+    return False
 
 
 def dir_and_subjects_from_train(
@@ -1056,6 +1101,10 @@ def run_test(args: Namespace) -> None:
     models = load_models_from_checkpoint(
         all_checkpoints, use_ema=bool(getattr(args, "use_ema", False))
     )
+    # Early skip logic: only rely on metrics.json completeness
+    if getattr(args, "skip_existing", False) and _metrics_complete_3d(args, hparams):
+        print(f"[skip_existing] metrics.json complete for split='{args.test_split}' (version={getattr(args, 'version_override', None) or hparams['version']}, ckpt_tag={checkpoint_tag}). Skipping evaluation.")
+        return
     # data_samples = [data_samples[0]]
     ssn = False
     if isinstance(models[0], SsnUNet3D) and len(models) == 1:

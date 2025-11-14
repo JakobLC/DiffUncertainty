@@ -40,7 +40,10 @@ def dice(
     if preds_idx.shape != target_idx.shape or preds_idx.ndim != 3:
         raise ValueError(f"Expected preds/target to be (N,H,W) with identical shapes. got shapes {preds_idx.shape} and {target_idx.shape}")
     
-    if preds_idx.min() < 0 or preds_idx.max() >= num_classes:
+    if ignore_index is None:
+        ignore_index = -1  # use -1 internally for convenience
+    ignore_mask = target_idx.eq(ignore_index)  # Tensor[bool] shape (N,H,W)
+    if preds_idx[~ignore_mask].min() < 0 or preds_idx[~ignore_mask].max() >= num_classes:
         raise ValueError(f"preds_idx has values outside [0,{num_classes-1}], got {preds_idx.min()}..{preds_idx.max()}")
 
 
@@ -48,10 +51,7 @@ def dice(
     preds_idx  = preds_idx.to(dtype=torch.long)
     target_idx = target_idx.to(dtype=torch.long)
 
-    if ignore_index is None:
-        ignore_index = -1  # use -1 internally for convenience
     # build a proper *tensor* mask on the same device
-    ignore_mask = target_idx.eq(ignore_index)  # Tensor[bool] shape (N,H,W)
     if target_idx[~ignore_mask].min() < 0 or target_idx[~ignore_mask].max() >= num_classes:
         raise ValueError(f"target_idx has values outside [0,{num_classes-1}] (ignoring {ignore_index}), got {target_idx[~ignore_mask].min()}..{target_idx[~ignore_mask].max()}")
     target_idx = torch.where(ignore_mask, target_idx, target_idx.clamp(0, num_classes - 1))
