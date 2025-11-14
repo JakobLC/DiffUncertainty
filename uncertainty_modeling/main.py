@@ -13,6 +13,7 @@ import pytorch_lightning as pl
 from pytorch_lightning.callbacks import ModelCheckpoint
 from omegaconf import DictConfig, OmegaConf, open_dict
 from uncertainty_modeling.callbacks import ScheduledCheckpointCallback
+from uncertainty_modeling.callbacks import GracefulShutdownCallback
 from uncertainty_modeling.lightning_experiment import LightningExperiment
 import warnings
 # warnings.filterwarnings("error")
@@ -62,13 +63,23 @@ def main(cfg_hydra: DictConfig):
     logger = hydra.utils.instantiate(config.logger, version=config.version)
     progress_bar = hydra.utils.instantiate(config.progress_bar)
     scheduled_ckpt_cb = None
+    graceful_shutdown_cb = None
     if "ckpt_save_freq" in config and config.ckpt_save_freq is not None:
         ckpt_cfg = config.ckpt_save_freq
         use_linear = bool(getattr(ckpt_cfg, "use_linear_saving", False))
         use_exponential = bool(getattr(ckpt_cfg, "use_exponential_saving", False))
         if use_linear or use_exponential:
             scheduled_ckpt_cb = ScheduledCheckpointCallback(ckpt_cfg)
+        # Graceful shutdown handling
+        shutdown_timer = ckpt_cfg.get("shutdown_timer", None)
+        do_shutdown = bool(ckpt_cfg.get("do_shutdown", False))
+        full_last_ckpt = bool(ckpt_cfg.get("full_last_ckpt", False))
+        if do_shutdown or (shutdown_timer is not None):
+            graceful_shutdown_cb = GracefulShutdownCallback(shutdown_timer=shutdown_timer, do_shutdown=do_shutdown, full_last_ckpt=full_last_ckpt)
     # Custom checkpoint naming: remove '=' and '-' by using explicit fields
+    # Configure ModelCheckpoint to control whether the final `last.ckpt` includes optimizer
+    # state via `save_weights_only`. When `full_last_ckpt` is True, we want the full checkpoint
+    # (weights + optimizer); otherwise save only weights to save space.
     checkpoint_cb = ModelCheckpoint(
         monitor="validation/val_loss",
         mode="min",
@@ -76,11 +87,13 @@ def main(cfg_hydra: DictConfig):
         auto_insert_metric_name=False,
         save_last=True,
         save_top_k=1,
-        save_weights_only=True,
+        save_weights_only=not full_last_ckpt,
     )
     callbacks = [progress_bar, checkpoint_cb]
     if scheduled_ckpt_cb is not None:
         callbacks.append(scheduled_ckpt_cb)
+    if graceful_shutdown_cb is not None:
+        callbacks.append(graceful_shutdown_cb)
     trainer = pl.Trainer(
         **config.trainer,
         logger=logger,

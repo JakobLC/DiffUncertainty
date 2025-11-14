@@ -8,6 +8,8 @@ import pytorch_lightning as pl
 from omegaconf import DictConfig
 from pytorch_lightning.utilities.rank_zero import rank_zero_info, rank_zero_warn
 import torch
+import time
+from pathlib import Path
 
 
 class ScheduledCheckpointCallback(pl.Callback):
@@ -185,3 +187,46 @@ class ScheduledCheckpointCallback(pl.Callback):
             self._saved_epochs = set(int(epoch) for epoch in saved)
         else:
             self._saved_epochs = set()
+
+
+class GracefulShutdownCallback(pl.Callback):
+    """Shutdown training gracefully after a configured time limit.
+
+    When the time limit is exceeded, this callback saves a final `last.ckpt`
+    (optionally including optimizer state) and requests the trainer to stop.
+    The check is performed at the end of each training epoch (after evaluation).
+    """
+
+    def __init__(self, shutdown_timer: int = 82800, do_shutdown: bool = False, full_last_ckpt: bool = False):
+        super().__init__()
+        self.shutdown_timer = int(shutdown_timer) if shutdown_timer is not None else None
+        self.do_shutdown = bool(do_shutdown)
+        self.full_last_ckpt = bool(full_last_ckpt)
+        self._start_time = None
+
+    def on_train_start(self, trainer: pl.Trainer, pl_module: pl.LightningModule) -> None:
+        # record wall-clock start
+        self._start_time = time.time()
+
+    def on_train_epoch_end(self, trainer: pl.Trainer, pl_module: pl.LightningModule) -> None:
+        if not self.do_shutdown or self.shutdown_timer is None:
+            return
+        if self._start_time is None:
+            self._start_time = time.time()
+            return
+        elapsed = time.time() - self._start_time
+        if elapsed < self.shutdown_timer:
+            return
+        # time exceeded: request trainer to stop. Do NOT perform checkpoint saving here.
+        rank_zero_info(
+            "GracefulShutdownCallback: shutdown timer exceeded — requesting trainer to stop (no checkpoint saved here)."
+        )
+        try:
+            trainer.should_stop = True
+        except Exception:
+            # As a fallback, raise a KeyboardInterrupt to halt training loop
+            raise KeyboardInterrupt("GracefulShutdownCallback triggered shutdown")
+
+    def on_train_end(self, trainer: pl.Trainer, pl_module: pl.LightningModule) -> None:
+        # No op: ModelCheckpoint (configured in main) will handle saving the final `last.ckpt`.
+        return

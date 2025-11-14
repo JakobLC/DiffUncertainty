@@ -52,3 +52,6 @@ trainer:
   # gradient_clip_algorithm: norm
   # log_every_n_steps: 50
   # check_val_every_n_epoch: 1
+  full_last_ckpt: true
+  shutdown_timer: 82800 # 23 hours
+  do_shutdown: false

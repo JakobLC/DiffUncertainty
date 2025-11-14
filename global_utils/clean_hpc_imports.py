@@ -16,7 +16,6 @@ prompts for confirmation, and applies the modifications if the user confirms.
 from pathlib import Path
 import re
 import sys
-import shutil
 try:
     import torch
 except Exception:
@@ -106,11 +105,7 @@ def main():
 
     # Apply changes
     for f, new_text in candidates:
-        backup = f.with_suffix('.yaml.bak')
         try:
-            # write backup if not exists
-            if not backup.exists():
-                backup.write_text(f.read_text(encoding='utf-8'), encoding='utf-8')
             f.write_text(new_text, encoding='utf-8')
             print(f"Updated {f.relative_to(SAVES_DIR)}")
         except Exception as exc:
@@ -164,11 +159,7 @@ def main():
                         except Exception:
                             ckpt['hyper_parameters'] = hp
             if modified:
-                # backup ckpt if not exists
-                bak = ckpt_path.with_suffix(ckpt_path.suffix + '.bak')
                 try:
-                    if not bak.exists():
-                        shutil.copy2(ckpt_path, bak)
                     torch.save(ckpt, ckpt_path)
                     print(f"Updated checkpoint {ckpt_path.relative_to(SAVES_DIR)}")
                 except Exception as exc:

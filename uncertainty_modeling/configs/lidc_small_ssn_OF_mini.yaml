@@ -62,3 +62,6 @@ ckpt_save_freq:
   exponent_base: 2.0
   exponential_start: 10
   end: ${trainer.max_epochs}
+  full_last_ckpt: true
+  shutdown_timer: 82800 # 23 hours
+  do_shutdown: false

@@ -46,3 +46,6 @@ trainer:
   accelerator: gpu
   devices: 1
   precision: 32
+  full_last_ckpt: true
+  shutdown_timer: 82800 # 23 hours
+  do_shutdown: false
