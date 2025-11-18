@@ -136,11 +136,13 @@ class LightningExperiment(pl.LightningModule):
             optimizer [List[optim.Adam]]: The optimizer which is used in training (Adam)
             scheduler [dict]: The learning rate scheduler
         """
+        # Only optimize base model parameters; EMA weights are maintained separately.
+        params = list(self.model.parameters())
         if self.optimizer_conf:
-            optimizer = hydra.utils.instantiate(self.optimizer_conf, self.parameters())
+            optimizer = hydra.utils.instantiate(self.optimizer_conf, params)
         else:
             optimizer = optim.Adam(
-                self.parameters(),
+                params,
                 lr=self.learning_rate,
                 weight_decay=self.weight_decay,
             )
@@ -197,7 +199,7 @@ class LightningExperiment(pl.LightningModule):
         output = super().optimizer_step(*args, **kwargs)
         self._update_ema_weights()
         return output
-
+    
     def on_load_checkpoint(self, checkpoint: dict) -> None:
         if not self.track_ema_weights:
             return

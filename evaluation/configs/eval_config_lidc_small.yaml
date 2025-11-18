@@ -11,8 +11,9 @@ second_cycle_path: "/home/jloch/Desktop/diff/luzern/values/experiments/SecondCyc
 evaluate_training_data: null
 evaluate_all_raters: true
 
-tasks: ["threshold","aggregation","ood_detection","ambiguity_modeling","calibration"]
+#tasks: ["threshold","aggregation","ood_detection","ambiguity_modeling","calibration"]
 
+tasks: ["cleanup"]
 
 task_params:
   threshold:

@@ -10,11 +10,11 @@ class StochasticLabelSwitches(A.BasicTransform):
         super(StochasticLabelSwitches, self).__init__(always_apply, p)
         self._name2id = cs_labels.name2trainId
         self._label_switches = {
-            "sidewalk": 1.0 / 3.0,
-            "person": 1.0 / 3.0,
-            "car": 1.0 / 3.0,
-            "vegetation": 1.0 / 3.0,
-            "road": 1.0 / 3.0,
+            "sidewalk": 8.0 / 17.0,
+            "person": 7.0 / 17.0,
+            "car": 6.0 / 17.0,
+            "vegetation": 5.0 / 17.0,
+            "road": 4.0 / 17.0,
         }
         self.n_reference_samples = n_reference_samples
 

@@ -9,7 +9,6 @@ from omegaconf import DictConfig
 from pytorch_lightning.utilities.rank_zero import rank_zero_info, rank_zero_warn
 import torch
 import time
-from pathlib import Path
 
 
 class ScheduledCheckpointCallback(pl.Callback):

@@ -1,5 +1,6 @@
 from itertools import product
 from pathlib import Path
+import shutil
 
 import hydra
 from omegaconf import ListConfig
@@ -128,6 +129,11 @@ class EvalExperiments:
     def analyse(self):
         for task in self.tasks:
             print(f"ANALYSING TASK: {task}")
+            # Special-case cleanup task which does not require an entry in task_params
+            if str(task) == "cleanup":
+                self.cleanup()
+                print(task)
+                continue
             task_params = self.config.task_params[task]
             if type(self.config.task_params[task]) == ListConfig:
                 self.analyse_subtasks(task_params)
@@ -143,6 +149,50 @@ class EvalExperiments:
                     self.analyse_single_version(task_params=task_params)
                 print(task)
         return
+
+    def cleanup(self):
+        """Remove large image folders under each version/dataset test folder.
+
+        Deletes the following subdirectories if present under each dataset folder:
+        - `aleatoric_uncertainty`
+        - `epistemic_uncertainty`
+        - `pred_entropy`
+        - `pred_seg`
+
+        JSON files and other files are left untouched.
+        """
+        folders_to_remove = [
+            "aleatoric_uncertainty",
+            "epistemic_uncertainty",
+            "pred_entropy",
+            "pred_seg",
+        ]
+        for version in self.versions:
+            exp_path = Path(version.exp_path)
+            if not exp_path.exists():
+                print(f"Skipping missing version path: {exp_path}")
+                continue
+            # If there are dataset split subdirectories, iterate them; otherwise treat exp_path as single dataset
+            children = [p for p in exp_path.iterdir() if p.is_dir()]
+            if children:
+                dataset_dirs = children
+            else:
+                dataset_dirs = [exp_path]
+
+            for dataset_dir in dataset_dirs:
+                for sub in folders_to_remove:
+                    target = dataset_dir / sub
+                    if target.exists():
+                        try:
+                            if target.is_dir():
+                                shutil.rmtree(target)
+                                print(f"Removed {target}")
+                            else:
+                                # If it's a file, remove file
+                                target.unlink()
+                                print(f"Removed file {target}")
+                        except Exception as e:
+                            print(f"Failed removing {target}: {e}")
 
 
 @hydra.main(config_path="configs", config_name="eval_config_lidc_small", version_base=None)

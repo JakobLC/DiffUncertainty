@@ -1,7 +1,7 @@
 # @package _global_
 defaults:
   - _self_
-  - datamodule: lidc_2d_small
+  - datamodule: lidc_2d
   - model: hrnet_ssn_mini
   - data_augmentations: tta_lidc_2d_small
 

@@ -1,51 +1,47 @@
 # @package _global_
 defaults:
   - _self_
-  - datamodule: lidc_2d
+  - datamodule: gta
   - model: hrnet_ssn
-  - data_augmentations: tta_lidc_2d_small
+  - data_augmentations: tta_gta_xsmall
 
-exp_name: "lidc-small-snn"
+exp_name: "gta-xsmall-ssn-big"
 version: null
 ckpt_path: null
 
-dataset: "lidc_2d_small"
+dataset: "gta_xsmall"
 data_input_dir: "/home/jloch/Desktop/diff/luzern/values_datasets/${dataset}"
 save_dir: "/home/jloch/Desktop/diff/luzern/values/saves"
 
 seed: 123
 pretrain_epochs: 5
-batch_size: 16
+batch_size: 64
 evaluate_training_data: true
+evaluate_all_raters: true
 
 # training hyperparams
 learning_rate: 0.0001
-weight_decay: 0.0005
+weight_decay: 0.0
 
-augment_mult: 1.0
+augment_mult: 0.0
 
 optimizer:
-  _target_: torch.optim.RMSprop
+  _target_: torch.optim.AdamW
   lr: ${learning_rate}
   weight_decay: ${weight_decay}
-  momentum: 0.85 # 0.6 w BS 6 approximate. m_new=1-B_old/B_new*(1-m_old)=1-6/16*(1-0.6)=0.85
-  # alpha: 0.9
-
-lr_scheduler:
-  _target_: torch.optim.lr_scheduler.PolynomialLR
-  power: 0.9
 
 logger:
   _target_: pytorch_lightning.loggers.TensorBoardLogger
   save_dir: ${save_dir}
   name: ${exp_name}
+  default_hp_metric: false
 
 progress_bar:
   _target_: pytorch_lightning.callbacks.TQDMProgressBar
   refresh_rate: 10
 
 trainer:
-  max_epochs: 300
+  max_epochs: 320
   accelerator: gpu
   devices: 1
   precision: 32 # bf16-mixed
@@ -54,6 +50,17 @@ trainer:
   # gradient_clip_algorithm: norm
   # log_every_n_steps: 50
   # check_val_every_n_epoch: 1
+
+ckpt_save_freq:
+  use_linear_saving: false
+  use_exponential_saving: true
+  only_small_ckpts: true
+  track_ema_weights: true
+  ema_decay: 0.999
+  linear_freq: 10
+  exponent_base: 2.0
+  exponential_start: 10
+  end: ${trainer.max_epochs}
   full_last_ckpt: true
   shutdown_timer: 82800 # 23 hours
   do_shutdown: false

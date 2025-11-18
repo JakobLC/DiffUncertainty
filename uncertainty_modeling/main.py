@@ -32,8 +32,7 @@ def set_seed(seed):
     np.random.seed(seed)
     random.seed(seed)
     os.environ["PYTHONHASHSEED"] = str(seed)
-
-
+            
 @hydra.main(version_base=None, config_path="configs", config_name="softmax_config")
 def main(cfg_hydra: DictConfig):
     """Uses the pl.Trainer to fit & test the model
@@ -90,6 +89,7 @@ def main(cfg_hydra: DictConfig):
         save_weights_only=not full_last_ckpt,
     )
     callbacks = [progress_bar, checkpoint_cb]
+
     if scheduled_ckpt_cb is not None:
         callbacks.append(scheduled_ckpt_cb)
     if graceful_shutdown_cb is not None:
@@ -113,7 +113,7 @@ def main(cfg_hydra: DictConfig):
     # If resuming, do not load pretrained backbone weights when instantiating the model
     with open_dict(config):
         try:
-            if ("ckpt_path" in config and config.ckpt_path is not None and str(config.ckpt_path) != "null"):
+            if (("ckpt_path" in config and config.ckpt_path is not None and str(config.ckpt_path) != "null") or (hasattr(config, "resume_from_ckpt") and config.resume_from_ckpt not in [None, "", "null"])):
                 if "MODEL" in config and "PRETRAINED" in config.MODEL:
                     config.MODEL.PRETRAINED = False
                 if "model" in config and "cfg" in config.model and "MODEL" in config.model.cfg and "PRETRAINED" in config.model.cfg.MODEL:
@@ -122,13 +122,35 @@ def main(cfg_hydra: DictConfig):
             pass
 
     model = LightningExperiment(config, **config)
-    # Allow resuming from a checkpoint by passing `ckpt_path=<path>` on the CLI/hydra
+
+    # Resolve checkpoint path: prefer explicit ckpt_path, otherwise use
+    # resume_from_ckpt (relative to the current version directory) if provided.
     ckpt_path = None
     try:
         if "ckpt_path" in config and config.ckpt_path is not None and str(config.ckpt_path) != "null":
             ckpt_path = str(config.ckpt_path)
     except Exception:
         ckpt_path = None
+
+    # Minimal mapping from resume_from_ckpt (relative) to an absolute ckpt_path
+    if ckpt_path is None and hasattr(config, "resume_from_ckpt"):
+        rel = str(config.resume_from_ckpt or "").strip()
+        if rel not in ["", "null"]:
+            if config.version is None:
+                raise ValueError("resume_from_ckpt is set but config.version is None. A version must be specified to resume.")
+
+            # Use the logger's version directory as the base for relative checkpoints
+            if hasattr(logger, "log_dir") and logger.log_dir is not None:
+                version_dir = logger.log_dir
+            else:
+                # Fallback: construct from save_dir and version
+                save_dir = getattr(config, "save_dir", os.getcwd())
+                version_dir = os.path.join(save_dir, str(config.version))
+
+            candidate = os.path.join(version_dir, rel)
+            if not os.path.exists(candidate):
+                raise FileNotFoundError(f"resume_from_ckpt '{candidate}' does not exist.")
+            ckpt_path = candidate
 
     trainer.fit(model, datamodule=dm, ckpt_path=ckpt_path)
 

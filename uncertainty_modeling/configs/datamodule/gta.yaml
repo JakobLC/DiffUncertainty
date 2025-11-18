@@ -2,8 +2,8 @@ _target_: uncertainty_modeling.data.torch_dataloader.BaseDataModule   # Base Dat
 num_classes: 24
 ignore_index: 255
 num_workers: 10
-batch_size: 6
-val_batch_size: 6
+batch_size: 64
+val_batch_size: 64
 data_fold_id: 0
 augmentations: ${AUGMENTATIONS}
 evaluate_training_data: ${evaluate_training_data}

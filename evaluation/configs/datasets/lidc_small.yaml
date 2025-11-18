@@ -21,7 +21,7 @@ BIG_SSN:
     version: [ "aug0_s12[0,1,2,3,4]" ]
     epochs: [ 10, 20, 40, 80, 160, 320 ]
     ema: [ "_ema" ]
-  naming_scheme_pred_model: "lidc-small-ssn-OF-mini"
+  naming_scheme_pred_model: "lidc-small-ssn-OF"
   naming_scheme_version: "{version}/e{epochs}{ema}"
   aggregations: [ "patch_level", "threshold" ]
   fold: 0

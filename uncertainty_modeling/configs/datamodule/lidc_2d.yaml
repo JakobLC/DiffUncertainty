@@ -7,6 +7,7 @@ val_batch_size: 16
 data_fold_id: 0
 augmentations: ${AUGMENTATIONS}
 evaluate_training_data: ${evaluate_training_data}
+evaluate_all_raters: ${evaluate_all_raters}
 dataset:
   _target_: uncertainty_modeling.data.lidc2d_dataset.LIDC2DDataset
   splits_path: "${data_input_dir}/splits/texture/firstCycle/splits.pkl"
