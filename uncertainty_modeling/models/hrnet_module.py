@@ -747,7 +747,6 @@ class HighResolutionNet(nn.Module):
         else:
             raise NotImplementedError(f"No Pretrained Weights found for {pretrained}")
 
-
 def get_seg_model(cfg, **kwargs):
     model = HighResolutionNet(cfg)
     if cfg.MODEL.PRETRAINED:

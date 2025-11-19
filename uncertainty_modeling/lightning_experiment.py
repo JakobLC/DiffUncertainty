@@ -85,7 +85,7 @@ class LightningExperiment(pl.LightningModule):
         else:
             self.ignore_index = 0
 
-        if aleatoric_loss is not None:
+        if aleatoric_loss:
             self.model = hydra.utils.instantiate(
                 hparams.model, aleatoric_loss=aleatoric_loss
             )

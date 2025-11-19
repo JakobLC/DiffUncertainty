@@ -1,69 +1,11 @@
+import math
+from abc import abstractmethod
+
+import numpy as np
 import torch
-import os
 import torch.nn as nn
 import torch.nn.functional as F
-import torch.distributions as td
-import numpy as np
-
-import math
-import torch
-
-import torch.nn.functional as F
-import numpy as np
-from abc import abstractmethod
-from torch import nn
 from omegaconf import OmegaConf
-
-from models.nn import (timestep_embedding,checkpoint,identity_module,total_model_norm)
-from models.fp16 import (convert_module_to_f16,
-                                         convert_module_to_f32)
-
-def checkpoint(func, inputs, params, flag):
-    """
-    Evaluate a function without caching intermediate activations, allowing for
-    reduced memory at the expense of extra compute in the backward pass.
-
-    :param func: the function to evaluate.
-    :param inputs: the argument sequence to pass to `func`.
-    :param params: a sequence of parameters `func` depends on but does not
-                   explicitly take as arguments.
-    :param flag: if False, disable gradient checkpointing.
-    """
-    if flag:
-        args = tuple(inputs) + tuple(params)
-        return CheckpointFunction.apply(func, len(inputs), *args)
-    else:
-        return func(*inputs)
-
-class CheckpointFunction(torch.autograd.Function):
-    @staticmethod
-    def forward(ctx, run_function, length, *args):
-        ctx.run_function = run_function
-        ctx.input_tensors = list(args[:length])
-        ctx.input_params = list(args[length:])
-        with torch.no_grad():
-            output_tensors = ctx.run_function(*ctx.input_tensors)
-        return output_tensors
-
-    @staticmethod
-    def backward(ctx, *output_grads):
-        ctx.input_tensors = [x.detach().requires_grad_(True) for x in ctx.input_tensors]
-        with torch.enable_grad():
-            # Fixes a bug where the first op in run_function modifies the
-            # Tensor storage in place, which is not allowed for detach()'d
-            # Tensors.
-            shallow_copies = [x.view_as(x) for x in ctx.input_tensors]
-            output_tensors = ctx.run_function(*shallow_copies)
-        input_grads = torch.autograd.grad(
-            output_tensors,
-            ctx.input_tensors + ctx.input_params,
-            output_grads,
-            allow_unused=True,
-        )
-        del ctx.input_tensors
-        del ctx.input_params
-        del output_tensors
-        return (None, None) + input_grads
 
 def timestep_embedding(timesteps, dim, max_period=10):
     """
@@ -85,45 +27,20 @@ def timestep_embedding(timesteps, dim, max_period=10):
         embedding = torch.cat([embedding, torch.zeros_like(embedding[:, :1])], dim=-1)
     return embedding
 
-def zero_module(module):
-    """
-    Zero out the parameters of a module and return it.
-    """
-    for p in module.parameters():
-        p.detach().zero_()
-    return module
-
-def identity_module(module,raise_error=True):
-    """
-    Make valid layers do an identity mapping by setting parameters appropriately.
-    Asserts that the number of input and output channels are the same.
-    """
-    try:
-        valid_layers = [nn.Linear,nn.Conv2d]
-        assert isinstance(module, tuple(valid_layers)), f"module should be one of the valid layers: {valid_layers}, found: {module}"
-        if isinstance(module, nn.Linear):
-            assert module.in_features == module.out_features, f"module should have same number of input and output features, found: {module.in_features} and {module.out_features}"
-            module.weight.data.copy_(torch.eye(module.in_features))
-            module.bias.data.zero_()
-        elif isinstance(module, nn.Conv2d):
-            assert module.in_channels == module.out_channels, f"module should have same number of input and output channels, found: {module.in_channels} and {module.out_channels}"
-            module.weight.data.zero_()
-            module.bias.data.zero_()
-            #set central pixels to 1s such that no change in input
-            for i in range(module.out_channels):
-                module.weight.data[i,i,module.kernel_size[0]//2,module.kernel_size[1]//2] = 1
-        success = 1
-    except AssertionError as e:
-        if raise_error:
-            raise e
-        success = 0
-    return success
-
 class GroupNorm32(nn.GroupNorm):
-    def forward(self, x):
+    """GroupNorm that normalizes in float32 but allows small channel counts.
+
+    Uses ``num_groups = min(32, num_channels)`` so it works for channels < 32.
+    """
+
+    def __init__(self, num_channels: int):
+        num_groups = min(32, num_channels)
+        super().__init__(num_groups=num_groups, num_channels=num_channels)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:  # type: ignore[override]
         return super().forward(x.float()).type(x.dtype)
     
-class UNetModel(nn.Module):
+class DiffUnet(nn.Module):
     """
     The full UNet model with attention and timestep embedding.
 
@@ -149,19 +66,26 @@ class UNetModel(nn.Module):
         dropout=0,
         channel_mult=(1, 1, 2, 4),
         conv_resample=True,
-        dims=2,
-        use_checkpoint=False,
         num_heads=4,
         num_heads_upsample=-1,
         use_scale_shift_norm=False,
-        no_diffusion=False,
+        diffusion: bool = False,
         final_act="none",
         one_skip_per_reso=False,
         new_upsample_method=False,
         mlp_attn=False,
-        act=nn.SiLU
+        act="silu",
+        name="unet",
+        ssn=False,
     ):
         super().__init__()
+        if isinstance(act, str):
+            assert act.lower() in ["silu","relu","gelu"], f"Unsupported activation function: {act}"
+            act_dict = {"silu": nn.SiLU,
+                        "relu": nn.ReLU,
+                        "gelu": nn.GELU}
+            act = act_dict[act.lower()]
+        self.name = name
         self.act = act
         self.mlp_attn = mlp_attn
         self.new_upsample_method = new_upsample_method
@@ -188,114 +112,172 @@ class UNetModel(nn.Module):
 
         self.class_dict = {}
 
-        self.use_checkpoint = use_checkpoint
         self.num_heads = num_heads
         self.num_heads_upsample = num_heads_upsample
-        self.no_diffusion = no_diffusion
-        self.fp16_attrs = ["input_blocks","output_blocks"]
-        if num_middle_res_blocks>=1:
+        # if diffusion is False, we will ignore timestep embeddings and
+        # avoid creating unused parameters where possible.
+        self.diffusion = diffusion
+        self.fp16_attrs = ["input_blocks", "output_blocks"]
+        if num_middle_res_blocks >= 1:
             self.fp16_attrs.append("middle_block")
 
-        self.fp16_attrs.append("time_embed")
-        self.time_embed = nn.Sequential(
-            nn.Linear(model_channels, time_embed_dim),
-            self.act(),
-            nn.Linear(time_embed_dim, time_embed_dim),
-        )
+        # Only create timestep embedding network when diffusion is enabled.
+        if self.diffusion:
+            self.fp16_attrs.append("time_embed")
+            self.time_embed = nn.Sequential(
+                nn.Linear(model_channels, time_embed_dim),
+                self.act(),
+                nn.Linear(time_embed_dim, time_embed_dim),
+            )
+        else:
+            self.time_embed = None
         self.in_channels = in_channels
 
-        self.input_blocks = nn.ModuleList([
-            TimestepEmbedSequential(nn.Conv2d(self.in_channels, model_channels, 3, padding=1))
-            ])
+        self.input_blocks = nn.ModuleList(
+            [
+                TimestepEmbedSequential(
+                    nn.Conv2d(self.in_channels, model_channels, 3, padding=1)
+                )
+            ]
+        )
         self.input_skip = [False]
         input_block_chans = [model_channels]
         ch = model_channels
-        res_block_kwargs = {"emb_channels": time_embed_dim,
-                            "dropout": dropout,
-                            "dims": dims,
-                            "use_checkpoint": use_checkpoint,
-                            "use_scale_shift_norm": use_scale_shift_norm,
-                            "act": act}
-        attn_kwargs = {"use_checkpoint": use_checkpoint,
-                        "num_heads": num_heads,
-                        "with_xattn": False,
-                        "xattn_channels": None}
+        # 2D-only implementation for now: no generic dims handling.
+        res_block_kwargs = {
+            "emb_channels": time_embed_dim,
+            "dropout": dropout,
+            "use_scale_shift_norm": use_scale_shift_norm,
+            "act": act,
+        }
+        attn_kwargs = {
+            "num_heads": num_heads,
+            "with_xattn": False,
+            "xattn_channels": None,
+        }
         resolution = 0
         
-        assert channel_mult[0]==1, "channel_mult[0] must be 1"
-        for level, (mult, n_res_blocks) in enumerate(zip(channel_mult, num_res_blocks)):
+        assert channel_mult[0] == 1, "channel_mult[0] must be 1"
+        for level, (mult, n_res_blocks) in enumerate(
+            zip(channel_mult, num_res_blocks)
+        ):
             for _ in range(n_res_blocks):
                 if self.new_upsample_method:
-                    ch = mult*model_channels
+                    ch = mult * model_channels
                     ch_in = ch
                 else:
                     ch_in = ch
-                    ch = mult*model_channels
-                layers = [
-                    
-                ]
-                
+                    ch = mult * model_channels
+                layers = []
                 if resolution in self.attention_resolutions:
                     if self.mlp_attn:
-                        layers = [MLPBlock(ch,**res_block_kwargs),
-                                  AttentionBlock(ch,**attn_kwargs)]
+                        layers = [
+                            MLPBlock(ch, **res_block_kwargs),
+                            AttentionBlock(ch, **attn_kwargs),
+                        ]
                     else:
-                        layers = [ResBlock(ch_in,out_channels=ch,**res_block_kwargs),
-                                  AttentionBlock(ch,**attn_kwargs)]
+                        layers = [
+                            ResBlock(ch_in, out_channels=ch, **res_block_kwargs),
+                            AttentionBlock(ch, **attn_kwargs),
+                        ]
                 else:
-                    layers = [ResBlock(ch_in,out_channels=ch,**res_block_kwargs)]
+                    layers = [ResBlock(ch_in, out_channels=ch, **res_block_kwargs)]
                 self.input_blocks.append(TimestepEmbedSequential(*layers))
                 self.input_skip.append(False)
                 input_block_chans.append(ch)
             if level != len(channel_mult) - 1:
                 resolution += 1
-                ch_out = channel_mult[resolution]*model_channels if self.new_upsample_method else None
+                ch_out = (
+                    channel_mult[resolution] * model_channels
+                    if self.new_upsample_method
+                    else None
+                )
                 self.input_blocks.append(
-                    TimestepEmbedSequential(Downsample(ch, conv_resample, dims=dims, channels_out=ch_out))
+                    TimestepEmbedSequential(
+                        Downsample(ch, conv_resample, channels_out=ch_out)
+                    )
                 )
                 self.input_skip[-1] = True
                 self.input_skip.append(False)
                 input_block_chans.append(ch)
         if resolution in self.attention_resolutions:
             if self.mlp_attn:
-                middle_layers = (sum([[MLPBlock(ch,**res_block_kwargs),
-                               AttentionBlock(ch,**attn_kwargs)] 
-                               for _ in range(num_middle_res_blocks-1)],[])+
-                            [MLPBlock(ch,**res_block_kwargs)])
+                middle_layers = (
+                    sum(
+                        [
+                            [
+                                MLPBlock(ch, **res_block_kwargs),
+                                AttentionBlock(ch, **attn_kwargs),
+                            ]
+                            for _ in range(num_middle_res_blocks - 1)
+                        ],
+                        [],
+                    )
+                    + [MLPBlock(ch, **res_block_kwargs)]
+                )
             else:
-                middle_layers = (sum([[ResBlock(ch,**res_block_kwargs),
-                               AttentionBlock(ch,**attn_kwargs)] 
-                               for _ in range(num_middle_res_blocks-1)],[])+
-                            [ResBlock(ch,**res_block_kwargs)])
+                middle_layers = (
+                    sum(
+                        [
+                            [
+                                ResBlock(ch, **res_block_kwargs),
+                                AttentionBlock(ch, **attn_kwargs),
+                            ]
+                            for _ in range(num_middle_res_blocks - 1)
+                        ],
+                        [],
+                    )
+                    + [ResBlock(ch, **res_block_kwargs)]
+                )
         else:
-            middle_layers = [ResBlock(ch,**res_block_kwargs) for _ in range(num_middle_res_blocks)]
+            middle_layers = [
+                ResBlock(ch, **res_block_kwargs) for _ in range(num_middle_res_blocks)
+            ]
 
         self.middle_block = TimestepEmbedSequential(*middle_layers)
 
         attn_kwargs["num_heads"] = num_heads_upsample
         self.output_blocks = nn.ModuleList([])
-        for level, mult, n_res_blocks in zip(reversed(list(range(len(channel_mult)))),channel_mult[::-1],num_res_blocks[::-1]):
+        for level, mult, n_res_blocks in zip(
+            reversed(list(range(len(channel_mult)))),
+            channel_mult[::-1],
+            num_res_blocks[::-1],
+        ):
             for i in range(n_res_blocks + 1):
                 if self.new_upsample_method:
                     ch = model_channels * mult
                     ch_in = ch
                 else:
-                    ch_in = ch+input_block_chans.pop()
+                    ch_in = ch + input_block_chans.pop()
                     ch = model_channels * mult
                 if resolution in self.attention_resolutions:
                     if self.mlp_attn:
-                        layers = [MLPBlock(ch,**res_block_kwargs),
-                                  AttentionBlock(ch,**attn_kwargs)]
+                        layers = [
+                            MLPBlock(ch, **res_block_kwargs),
+                            AttentionBlock(ch, **attn_kwargs),
+                        ]
                     else:
-                        layers = [ResBlock(ch_in,out_channels=ch,**res_block_kwargs),
-                                  AttentionBlock(ch,**attn_kwargs)]
+                        layers = [
+                            ResBlock(ch_in, out_channels=ch, **res_block_kwargs),
+                            AttentionBlock(ch, **attn_kwargs),
+                        ]
                 else:
-                    layers = [ResBlock(ch_in,out_channels=ch,**res_block_kwargs)]
+                    layers = [ResBlock(ch_in, out_channels=ch, **res_block_kwargs)]
                 if level and i == n_res_blocks:
                     resolution -= 1
-                    ch_out = channel_mult[resolution]*model_channels if self.new_upsample_method else None
-                    layers.append(Upsample(ch, conv_resample, dims=dims, channels_out=ch_out,
-                                           mode="bilinear" if self.new_upsample_method else "nearest"))
+                    ch_out = (
+                        channel_mult[resolution] * model_channels
+                        if self.new_upsample_method
+                        else None
+                    )
+                    layers.append(
+                        Upsample(
+                            ch,
+                            conv_resample,
+                            channels_out=ch_out,
+                            mode="bilinear" if self.new_upsample_method else "nearest",
+                        )
+                    )
                     
                 self.output_blocks.append(TimestepEmbedSequential(*layers))
 
@@ -303,95 +285,55 @@ class UNetModel(nn.Module):
             assert self.new_upsample_method, "one_skip_per_reso only works with new_upsample_method"
         else:
             self.input_skip = [True for _ in self.input_skip]
-
-        final_act_dict = {"none": nn.Identity(),
-                       "softmax": nn.Softmax(dim=1),
-                          "tanh": nn.Tanh()}
+        assert final_act.lower() in [
+            "none",
+            "softmax",
+            "tanh",
+            "sigmoid",
+        ], f"Unsupported final activation: {final_act}"
+        final_act_dict = {
+            "none": nn.Identity(),
+            "softmax": nn.Softmax(dim=1),
+            "tanh": nn.Tanh(),
+            "sigmoid": nn.Sigmoid(),
+        }
         self.out = nn.Sequential(
-            nn.Identity(),#unnecessary, but kept for key consistency
-            nn.GroupNorm32(ch),
+            nn.Identity(),  # unnecessary, but kept for key consistency
+            GroupNorm32(ch),
             self.act(),
             zero_module(nn.Conv2d(ch, out_channels, 3, padding=1)),
             final_act_dict[final_act.lower()]
         )
         self.out_channels = out_channels
+        # expose common attributes expected elsewhere in the repo
+        self.num_classes = out_channels
+        self.ssn = False
 
-    def initialize_as_identity(self,verbose=False):
-        """Initializes parameters in all modules such that the model behaves as an identity function. 
-        Convolutions are initialized with zeros, except for a 1 in their central pixel. Bias terms are set to zero.
-        BatchNorm layers are initialized such that their output is zero. 
-        """
-        start_names = ['input_blocks', 'middle_block', 'output_blocks', 'out']
-        success_params = 0
-        total_params = 0
-        t_before = total_model_norm(self)
-        total_params = sum([p.numel() for p in self.parameters()])
-        for name,m in self.named_modules():            
-            if isinstance(m,(nn.Linear,nn.Conv2d)) and any([name.startswith(n) for n in start_names]):
-                success = identity_module(m,raise_error=False)
-                if success:
-                    success_params += sum([p.numel() for p in m.parameters()])
-        t_after = total_model_norm(self)
-        if verbose:
-            print(f"Initialized {success_params}/{total_params} ({100*success_params/total_params:.2f}%) parameters as identity")
-            print(f"Model norm before: {t_before:.2f}, after: {t_after:.2f}, relative change: {100*(t_after-t_before)/t_before:.2f}%")
-
-    def convert_to_fp16(self):
-        """
-        Convert the torso of the model to float16.
-        """
-        for attr in self.fp16_attrs:
-            getattr(self,attr).apply(convert_module_to_f16)
-
-    def convert_to_fp32(self):
-        """
-        Convert the torso of the model to float32.
-        """
-        for attr in self.fp16_attrs:
-            getattr(self,attr).apply(convert_module_to_f32)
-
-    @property
-    def inner_dtype(self):
-        """
-        Get the dtype used by the torso of the model.
-        """
-        return next(self.input_blocks.parameters()).dtype
-
-    def to_xattn(self, vit_output, depth):
-        if self.vit_injection_type!="xattn":
-            out = None
-        else:
-            if self.block_info.iloc[depth]["has_attention"]:
-                out = vit_output
-            else:
-                out = None
-        return out
-
-    def apply_class_emb(self, classes):
-        emb = 0
-        for i,k in enumerate(self.class_dict.keys()):
-            emb += self.class_emb[k](classes[:,i])
-        return emb
-
-    def forward(self, image, sample, timesteps):
+    def forward(self, x: torch.Tensor, timesteps: torch.Tensor | None = None):
         """
         Apply the model to an input batch.
 
-        :param sample: an [N x C x ...] Diffusion sample tensor.
+        :param x: an [N x C x ...] input image tensor.
         :param timesteps: a 1-D batch of timesteps or a 0-D single timestep to repeat.
-        :param image: an [N x C x ...] image tensor.
         :return: an [N x C x ...] Tensor of predicted masks.
         """
-        bs = sample.shape[0]
-        if timesteps.numel() == 1:
-            timesteps = timesteps.expand(bs)
-        assert image.shape[1]==3 and sample.shape[1]==1, f"image shape: {image.shape}, sample shape: {sample.shape}" #TODO remove
-        h = torch.cat([sample, image], dim=1).type(self.inner_dtype)
-        emb = self.time_embed(timestep_embedding(timesteps, self.model_channels))
+        h = x
+        emb: torch.Tensor | None
+        if self.diffusion:
+            if timesteps is None:
+                raise ValueError("timesteps must be provided when diffusion=True")
+            if timesteps.numel() == 1:
+                timesteps = timesteps.expand(h.shape[0])
+            emb = self.time_embed(
+                timestep_embedding(timesteps, self.model_channels)
+            )
+        else:
+            # Non-diffusion mode: ignore timestep conditioning.
+            emb = None
 
         hs = []
         depth = 0
-        for module,skip in zip(self.input_blocks,self.input_skip):
+        for module, skip in zip(self.input_blocks, self.input_skip):
             h = module(h, emb)
             if skip:
                 hs.append(h)
@@ -407,7 +349,7 @@ class UNetModel(nn.Module):
                 cat_in = torch.cat([h, hs.pop()], dim=1)
             h = module(cat_in, emb)
             depth += 1
-        h = h.type(sample.dtype)
+        h = h.type(x.dtype)
         h = self.out(h)
         return h
 
@@ -424,19 +366,21 @@ class TimestepBlock(nn.Module):
 
 
 class TimestepEmbedSequential(nn.Sequential, TimestepBlock):
-    """
-    A sequential module that passes timestep embeddings to the children that
-    support it as an extra input.
+    """Sequential container that optionally passes timestep embeddings.
+
+    When ``emb`` is ``None``, any :class:`TimestepBlock` layers are called with
+    their default (unconditioned) behavior.
     """
 
-    def forward(self, x, emb, x_attn=None):
+    def forward(self, x, emb: torch.Tensor | None = None, x_attn=None):
         for layer in self:
             if isinstance(layer, AttentionBlock):
                 if x_attn is None:
                     x = layer(x)
                 else:
-                    x = layer(x,y=x_attn)
+                    x = layer(x, y=x_attn)
             elif isinstance(layer, TimestepBlock):
+                # Allow ``emb`` to be ``None`` (no conditioning).
                 x = layer(x, emb)
             else:
                 x = layer(x)
@@ -466,7 +410,6 @@ class MLPBlock(TimestepBlock):
         dropout=0.0,
         out_channels=None,
         use_scale_shift_norm=False,
-        use_checkpoint=False,
         act=nn.SiLU
     ):
         super().__init__()
@@ -477,9 +420,8 @@ class MLPBlock(TimestepBlock):
         self.out_channels = out_channels or channels
         self.use_scale_shift_norm = use_scale_shift_norm
         c = expansion_factor * channels
-        self.use_checkpoint = use_checkpoint
         self.in_layers = nn.Sequential(
-            nn.GroupNorm32(channels),
+            GroupNorm32(channels),
             nn.Conv2d(channels, c, 1),
             self.act(),
         )
@@ -496,34 +438,28 @@ class MLPBlock(TimestepBlock):
             self.skip_connection = nn.Identity()
         else:
             self.skip_connection = nn.Conv2d(channels, self.out_channels, 1)
-        
-    def forward(self, x, emb):
-        """
-        Apply the block to a Tensor, conditioned on a timestep embedding.
 
-        :param x: an [N x C x ...] Tensor of features.
-        :param emb: an [N x emb_channels] Tensor of timestep embeddings.
-        :return: an [N x C x ...] Tensor of outputs.
-        """
-        return checkpoint(
-            self._forward, (x, emb), self.parameters(), self.use_checkpoint
-        )
-
-    
-    def _forward(self, x, emb):
-        #b, c, *spatial = x.shape
-        #x = x.reshape(b, c, -1)
+    def forward(self, x, emb: torch.Tensor | None = None):
         h = self.in_layers(x)
-        emb_out = self.emb_layers(emb).type(h.dtype)
-        while len(emb_out.shape) < len(h.shape):
-            emb_out = emb_out[..., None]
-        if self.use_scale_shift_norm:
-            scale, shift = torch.chunk(emb_out, 2, dim=1)
-            h = h * (1 + scale) + shift
-        else:
-            h = h + emb_out
+        if emb is not None:
+            emb_out = self.emb_layers(emb).type(h.dtype)
+            while len(emb_out.shape) < len(h.shape):
+                emb_out = emb_out[..., None]
+            if self.use_scale_shift_norm:
+                scale, shift = torch.chunk(emb_out, 2, dim=1)
+                h = h * (1 + scale) + shift
+            else:
+                h = h + emb_out
         h = self.out_layers(h)
-        return (self.skip_connection(x) + h)#.reshape(b, c, *spatial)
+        return self.skip_connection(x) + h
+
+def zero_module(module):
+    """
+    Zero out the parameters of a module and return it.
+    """
+    for p in module.parameters():
+        p.detach().zero_()
+    return module
 
 class AttentionBlock(nn.Module):
     """
@@ -533,11 +469,10 @@ class AttentionBlock(nn.Module):
     https://github.com/hojonathanho/diffusion/blob/1e0dceb3b3495bbe19116a5e1b3596cd0706c543/diffusion_tf/models/unet.py#L66.
     """
 
-    def __init__(self, channels, num_heads=1, use_checkpoint=False, with_xattn=False, xattn_channels=None):
+    def __init__(self, channels, num_heads=1, with_xattn=False, xattn_channels=None):
         super().__init__()
         self.channels = channels
         self.num_heads = num_heads
-        self.use_checkpoint = use_checkpoint
         self.with_xattn = with_xattn
         if self.with_xattn:
             if xattn_channels is None:
@@ -545,15 +480,12 @@ class AttentionBlock(nn.Module):
             self.xattn_channels = xattn_channels
             self.qk_x = nn.Conv1d(xattn_channels, 2*channels, 1) 
             self.v_x = nn.Conv1d(channels, channels, 1)
-        self.norm = nn.GroupNorm32(channels)
+        self.norm = GroupNorm32(channels)
         self.qkv = nn.Conv1d(channels, channels * 3, 1)
         self.attention = QKVAttention()
         self.proj_out = zero_module(nn.Conv1d(channels, channels, 1))
 
-    def forward(self, x):
-        return checkpoint(self._forward, (x,), self.parameters(), self.use_checkpoint)
-
-    def _forward(self, x, y=None):
+    def forward(self, x, y=None):
         b, c, *spatial = x.shape
         #assert c==self.channels, f"expected {self.channels} channels, got {c} channels"
         x = x.reshape(b, c, -1)
@@ -649,7 +581,7 @@ class Upsample(nn.Module):
                  upsampling occurs in the inner-two dimensions.
     """
 
-    def __init__(self, channels, use_conv, channels_out=None, dims=2, mode="nearest"):
+    def __init__(self, channels, use_conv, channels_out=None, dims: int = 2, mode: str = "nearest"):
         super().__init__()
         if channels_out is None:
             channels_out = channels
@@ -662,6 +594,7 @@ class Upsample(nn.Module):
             self.conv = nn.Conv2d(channels_out, channels_out, 3, padding=1)
         if channels_out != channels:
             self.channel_mapper = nn.Conv2d(channels, channels_out, 1)
+
     def forward(self, x):
         assert x.shape[1] == self.channels
 
@@ -688,7 +621,7 @@ class Downsample(nn.Module):
                  downsampling occurs in the inner-two dimensions.
     """
 
-    def __init__(self, channels, use_conv, channels_out=None, dims=2):
+    def __init__(self, channels, use_conv, channels_out=None, dims: int = 2):
         super().__init__()
         if channels_out is None:
             channels_out = channels
@@ -723,7 +656,6 @@ class ResBlock(TimestepBlock):
         convolution instead of a smaller 1x1 convolution to change the
         channels in the skip connection.
     :param dims: determines if the signal is 1D, 2D, or 3D.
-    :param use_checkpoint: if True, use gradient checkpointing on this module.
     """
 
     def __init__(
@@ -734,7 +666,6 @@ class ResBlock(TimestepBlock):
         out_channels=None,
         use_conv=False,
         use_scale_shift_norm=False,
-        use_checkpoint=False,
         act=nn.SiLU
     ):
         super().__init__()
@@ -744,11 +675,10 @@ class ResBlock(TimestepBlock):
         self.dropout = dropout
         self.out_channels = out_channels or channels
         self.use_conv = use_conv
-        self.use_checkpoint = use_checkpoint
         self.use_scale_shift_norm = use_scale_shift_norm
 
         self.in_layers = nn.Sequential(
-            nn.GroupNorm32(channels),
+            GroupNorm32(channels),
             self.act(),
             nn.Conv2d(channels, self.out_channels, 3, padding=1),
         )
@@ -760,7 +690,7 @@ class ResBlock(TimestepBlock):
             ),
         )
         self.out_layers = nn.Sequential(
-            nn.GroupNorm32(self.out_channels),
+            GroupNorm32(self.out_channels),
             self.act(),
             nn.Dropout(p=dropout),
             zero_module(
@@ -775,192 +705,31 @@ class ResBlock(TimestepBlock):
         else:
             self.skip_connection = nn.Conv2d(channels, self.out_channels, 1)
 
-    def forward(self, x, emb):
-        """
-        Apply the block to a Tensor, conditioned on a timestep embedding.
-
-        :param x: an [N x C x ...] Tensor of features.
-        :param emb: an [N x emb_channels] Tensor of timestep embeddings.
-        :return: an [N x C x ...] Tensor of outputs.
-        """
-        return checkpoint(
-            self._forward, (x, emb), self.parameters(), self.use_checkpoint
-        )
-
-    def _forward(self, x, emb):
+    def forward(self, x, emb: torch.Tensor | None = None):
         h = self.in_layers(x)
-        
-        emb_out = self.emb_layers(emb).type(h.dtype)
-        while len(emb_out.shape) < len(h.shape):
-            emb_out = emb_out[..., None]
-        if self.use_scale_shift_norm:
-            out_norm, out_rest = self.out_layers[0], self.out_layers[1:]
-            scale, shift = torch.chunk(emb_out, 2, dim=1)
-            h = out_norm(h) * (1 + scale) + shift
-            h = out_rest(h)
+
+        if emb is not None:
+            emb_out = self.emb_layers(emb).type(h.dtype)
+            while len(emb_out.shape) < len(h.shape):
+                emb_out = emb_out[..., None]
+            if self.use_scale_shift_norm:
+                out_norm, out_rest = self.out_layers[0], self.out_layers[1:]
+                scale, shift = torch.chunk(emb_out, 2, dim=1)
+                h = out_norm(h) * (1 + scale) + shift
+                h = out_rest(h)
+            else:
+                h = h + emb_out
+                h = self.out_layers(h)
         else:
-            h = h + emb_out
+            # No timestep conditioning; just apply the output layers.
             h = self.out_layers(h)
         return self.skip_connection(x) + h
 
 
-class UnetModel(nn.Module):
-    def __init__(self, config, **kwargs):
-        global ALIGN_CORNERS
-        extra = config.MODEL.EXTRA
-        super(UnetModel, self).__init__()
-        ALIGN_CORNERS = config.MODEL.ALIGN_CORNERS
-        self.num_classes = config.DATASET.NUM_CLASSES
-
-        if self.ssn:
-            self.cov_factor_conv = nn.Sequential(
-                nn.Conv2d(
-                    in_channels=last_inp_channels,
-                    out_channels=last_inp_channels,
-                    kernel_size=1,
-                    stride=1,
-                    padding=0,
-                ),
-                nn.BatchNorm2d(last_inp_channels, momentum=BN_MOMENTUM),
-                nn.ReLU(inplace=relu_inplace),
-                nn.Conv2d(
-                    in_channels=last_inp_channels,
-                    out_channels=config.DATASET.NUM_CLASSES * self.rank,
-                    kernel_size=extra.FINAL_CONV_KERNEL,
-                    stride=1,
-                    padding=1 if extra.FINAL_CONV_KERNEL == 3 else 0,
-                ),
-            )
-
-    def unet_ssn(self, x, x_size, mean_only):
-        mean = self.last_layer(x)
-        mean = F.interpolate(
-            mean, size=x_size, mode="bilinear", align_corners=ALIGN_CORNERS
-        )
-        batch_size = mean.shape[0]
-        mean = mean.view((batch_size, -1))
-        # if mean_only:
-        #     return mean
-        cov_diag = self.last_layer(x).exp() + self.epsilon
-        cov_diag = F.interpolate(
-            cov_diag, size=x_size, mode="bilinear", align_corners=ALIGN_CORNERS
-        )
-        cov_diag = cov_diag.clamp(min=self.epsilon)
-        cov_diag = cov_diag.view((batch_size, -1))
-        if mean_only:
-            cov_factor = torch.zeros([*cov_diag.shape, self.rank])
-        else:
-            cov_factor = self.cov_factor_conv(x)
-            cov_factor = F.interpolate(
-                cov_factor, size=x_size, mode="bilinear", align_corners=ALIGN_CORNERS
-            )
-            cov_factor = cov_factor.view((batch_size, self.rank, self.num_classes, -1))
-            cov_factor = cov_factor.flatten(2, 3)
-            cov_factor = cov_factor.transpose(1, 2)
-        try:
-            distribution = td.LowRankMultivariateNormal(
-                loc=mean, cov_factor=cov_factor, cov_diag=cov_diag
-            )
-            cov_failed_flag = False
-        except:
-            cov_failed_flag = True
-            distribution = td.Independent(
-                td.Normal(loc=mean, scale=torch.sqrt(cov_diag)), 1
-            )
-
-        return distribution, cov_failed_flag
-
-    def forward(self, x, mean_only=False):
-
-        if self.ssn:
-            x, cov_failed_flag = self.unet_ssn(x, x_size, mean_only)
-            return x, cov_failed_flag
-        else:
-            x = self.last_layer(x)
-
-            x = F.interpolate(
-                x, size=x_size, mode="bilinear", align_corners=ALIGN_CORNERS
-            )
-            return x
-
-    def init_weights(self):
-        print("=> init weights from normal distribution")
-        for m in self.modules():
-            if isinstance(m, nn.Conv2d):
-                nn.init.normal_(m.weight, std=0.001)
-            elif isinstance(m, nn.BatchNorm2d):
-                nn.init.constant_(m.weight, 1)
-                nn.init.constant_(m.bias, 0)
-
-    def load_weights(self, pretrained):
-        if os.path.isfile(pretrained):
-            pretrained_dict = torch.load(pretrained, map_location={"cuda:0": "cpu"}, weights_only=True)
-            print("Loading pretrained weights {}".format(pretrained))
-
-            # some preprocessing
-            if "state_dict" in pretrained_dict.keys():
-                pretrained_dict = pretrained_dict["state_dict"]
-            if any([k.startswith("ema_model.") for k in pretrained_dict.keys()]):
-                raise ValueError("Unexpected EMA weights in pretrained model, probably missing code to handle this case.")
-            pretrained_dict = {
-                k.replace("model.", "")
-                .replace("module.", "")
-                .replace("backbone.", ""): v
-                for k, v in pretrained_dict.items()
-            }
-
-            model_dict = self.state_dict()
-
-            # find weights which match to the model
-            pretrained_dict = {
-                k: v for k, v in pretrained_dict.items() if k in model_dict.keys()
-            }
-            no_match = set(model_dict) - set(pretrained_dict)
-
-            # check if shape of pretrained weights match to the model
-            pretrained_dict = {
-                k: v
-                for k, v in pretrained_dict.items()
-                if v.shape == model_dict[k].shape
-            }
-            shape_mismatch = (set(model_dict) - set(pretrained_dict)) - no_match
-            total = len(model_dict)
-            # log info about weights which are not found and weights which have a shape mismatch
-            if len(no_match):
-                num = len(no_match)
-                if num >= 5:
-                    no_match = list(no_match)[:5]
-                    no_match.append("...")
-                print(f"No pretrained Weights found for {num}/{total} layers: {no_match}")
-            if len(shape_mismatch):
-                num = len(shape_mismatch)
-                if num >= 5:
-                    shape_mismatch = list(shape_mismatch)[:5]
-                    shape_mismatch.append("...")
-                print(f"Shape Mismatch for {num}/{total} layers: {shape_mismatch}")
-
-            # load weights
-            model_dict.update(pretrained_dict)
-            self.load_state_dict(model_dict)
-            del model_dict, pretrained_dict
-            print("Weights successfully loaded")
-        else:
-            raise NotImplementedError(f"No Pretrained Weights found for {pretrained}")
-
-
 def get_seg_model(cfg, **kwargs):
-    model = UnetModel(cfg)
-    if cfg.MODEL.PRETRAINED:
-        model.load_weights(cfg.MODEL.PRETRAINED_WEIGHTS)
+    """Factory that forwards config as kwargs, assuming keys match DiffUnet.__init__."""
+    cfg_dict = OmegaConf.to_container(cfg.MODEL, resolve=True)
+    #map keys to lower
+    cfg_dict = {k.lower(): v for k, v in cfg_dict.items()}
+    model = DiffUnet(**cfg_dict, **kwargs)
     return model
-
-
-if __name__ == "__main__":
-    args = OmegaConf.load("./configs/config.yaml")
-    unet = create_unet_from_args(args["unet"])
-    print(unet)
-    im = torch.randn(8, 3, 128, 128)
-    mask = torch.randn(8, 1, 128, 128)
-    t = torch.zeros([8])
-    out = unet(im, mask, t)
-    print(out.shape)

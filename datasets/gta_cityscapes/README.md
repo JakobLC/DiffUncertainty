@@ -121,6 +121,7 @@ python gta_cs_splits_first_cycle.py -d <path to both datasets with preprocessed 
 
 python gta_cs_splits_first_cycle.py -d /home/jloch/Desktop/diff/luzern/values_datasets/GTA/
 python gta_cs_splits_first_cycle.py -d /home/jloch/Desktop/diff/luzern/values_datasets/GTA_small/ -o /home/jloch/Desktop/diff/luzern/values_datasets/GTA/
+python gta_cs_splits_first_cycle.py -d /home/jloch/Desktop/diff/luzern/values_datasets/gta_xsmall/ -o /home/jloch/Desktop/diff/luzern/values_datasets/gta/
 ```
 
 You can also specify a different directory for the original dataset if your preprocessed data is stored in a different

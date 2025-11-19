@@ -1,0 +1,21 @@
+#@package _global_
+model:
+  _target_: uncertainty_modeling.models.diff_unet2D_module.get_seg_model
+  cfg:
+    MODEL: ${MODEL}
+    DATASET:
+      NUM_CLASSES: ${datamodule.num_classes}
+
+MODEL:
+  NAME: unet
+  IN_CHANNELS: 3
+  OUT_CHANNELS: ${datamodule.num_classes}
+  MODEL_CHANNELS: 32
+  NUM_RES_BLOCKS: [2, 2, 2, 2]
+  NUM_MIDDLE_RES_BLOCKS: 2
+  CHANNEL_MULT: [1, 2, 4, 8]
+  ATTENTION_RESOLUTIONS: [-2, -1]
+  DROPOUT: 0.0
+  FINAL_ACT: none
+  DIFFUSION: false
+  SSN: false
