@@ -4,12 +4,12 @@ model:
   cfg:
     MODEL: ${MODEL}
     DATASET:
-      NUM_CLASSES: ${datamodule.num_classes}
+      NUM_CLASSES: ${data.num_classes}
 
 MODEL:
   NAME: hrnet
   # Set to false, was initially true
-  PRETRAINED: false
+  PRETRAINED: False  # when resuming (ckpt_path is set), code forces this to False to avoid double-loading
   pretrained_on: ImageNet
   pretrained_path: /home/jloch/Desktop/diff/luzern/values/uncertainty_modeling/models/checkpoints
   PRETRAINED_WEIGHTS: ${MODEL.pretrained_path}/${MODEL.available_weights.${MODEL.pretrained_on}}
@@ -20,6 +20,9 @@ MODEL:
     #Mapillary: mapillary_ocrnet.HRNet_Mscale_fast-rattlesnake.pth
   ALIGN_CORNERS: False
   INPUT_CHANNELS: 3
+  SSN: True
+  SSN_RANK: 10
+  SSN_EPS: 1e-5
   EXTRA:
     FINAL_CONV_KERNEL: 1
     STAGE1:

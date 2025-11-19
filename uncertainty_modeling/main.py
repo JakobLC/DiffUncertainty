@@ -15,6 +15,7 @@ from omegaconf import DictConfig, OmegaConf, open_dict
 from uncertainty_modeling.callbacks import ScheduledCheckpointCallback
 from uncertainty_modeling.callbacks import GracefulShutdownCallback
 from uncertainty_modeling.lightning_experiment import LightningExperiment
+import uncertainty_modeling.data.torch_dataloader  # noqa: F401
 import warnings
 # warnings.filterwarnings("error")
 warnings.filterwarnings("ignore", message=r".*upsample_bilinear2d_backward_out_cuda does not have a deterministic implementation.*", category=UserWarning)
@@ -33,7 +34,7 @@ def set_seed(seed):
     random.seed(seed)
     os.environ["PYTHONHASHSEED"] = str(seed)
             
-@hydra.main(version_base=None, config_path="configs", config_name="softmax_config")
+@hydra.main(version_base=None, config_path="configs", config_name="standard")
 def main(cfg_hydra: DictConfig):
     """Uses the pl.Trainer to fit & test the model
 
@@ -43,12 +44,21 @@ def main(cfg_hydra: DictConfig):
     """
     config = cfg_hydra
     # Use Environment Variables if accessible
-    if "DATASET_LOCATION" in os.environ.keys():
-        config.data_input_dir = os.environ["DATASET_LOCATION"]
+    dataset_override = os.environ.get("DATASET_LOCATION")
+    if dataset_override is not None:
+        if "data" in config:
+            with open_dict(config.data):
+                config.data.data_input_dir = dataset_override
+        else:
+            config.data_input_dir = dataset_override
     if "EXPERIMENT_LOCATION" in os.environ.keys():
         config.save_dir = os.environ["EXPERIMENT_LOCATION"]
     if "LSB_JOBID" in os.environ.keys() and config.version is None:
         config.version = os.environ["LSB_JOBID"]
+
+    exp_name = getattr(config, "exp_name", None)
+    if OmegaConf.is_missing(config, "exp_name") or exp_name is None or (isinstance(exp_name, str) and exp_name.strip() == ""):
+        raise ValueError("`exp_name` must be set to a non-empty string in the training config.")
     if config.seed is not None:
         set_seed(config.seed)
 
@@ -103,12 +113,30 @@ def main(cfg_hydra: DictConfig):
         gradient_clip_val=gradient_clip_val,
         gradient_clip_algorithm=gradient_clip_algorithm,
     )
-    dm = hydra.utils.instantiate(
-        config.datamodule,
-        data_input_dir=config.data_input_dir,
-        seed=config.seed,
-        _recursive_=False,
-    )
+    data_cfg = config.get("data", None)
+    datamodule_cfg = config.get("datamodule", None)
+    if data_cfg is None and datamodule_cfg is None:
+        raise ValueError("No data configuration available. Provide either 'data' or 'datamodule'.")
+
+    if data_cfg is not None:
+        dm = hydra.utils.instantiate(
+            data_cfg,
+            seed=config.seed,
+            _recursive_=False,
+        )
+    else:
+        instantiate_kwargs = {
+            "data_input_dir": config.data_input_dir,
+            "seed": config.seed,
+        }
+        if hasattr(config, "AUGMENTATIONS"):
+            instantiate_kwargs["augmentations"] = config.AUGMENTATIONS
+
+        dm = hydra.utils.instantiate(
+            datamodule_cfg,
+            _recursive_=False,
+            **instantiate_kwargs,
+        )
     dm.prepare_data()
     # If resuming, do not load pretrained backbone weights when instantiating the model
     with open_dict(config):

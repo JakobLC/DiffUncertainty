@@ -4,12 +4,12 @@ model:
   cfg:
     MODEL: ${MODEL}
     DATASET:
-      NUM_CLASSES: ${datamodule.num_classes}
+      NUM_CLASSES: ${data.num_classes}
 
 MODEL:
   NAME: hrnet
   # Set to false, was initially true
-  PRETRAINED: true
+  PRETRAINED: false
   pretrained_on: ImageNet
   pretrained_path: /home/jloch/Desktop/diff/luzern/values/uncertainty_modeling/models/checkpoints
   PRETRAINED_WEIGHTS: ${MODEL.pretrained_path}/${MODEL.available_weights.${MODEL.pretrained_on}}
@@ -21,7 +21,6 @@ MODEL:
   ALIGN_CORNERS: False
   INPUT_CHANNELS: 3
   EXTRA:
-    DROPOUT_FINAL: True
     FINAL_CONV_KERNEL: 1
     STAGE1:
       NUM_MODULES: 1
@@ -55,6 +54,10 @@ MODEL:
         - 48
         - 96
         - 192
+      DROPOUT:
+        - false
+        - false
+        - false
       FUSE_METHOD: SUM
     STAGE4:
       NUM_MODULES: 3
@@ -65,6 +68,11 @@ MODEL:
         - 4
         - 4
         - 4
+      DROPOUT:
+        - false
+        - false
+        - false
+        - false
       NUM_CHANNELS:
         - 48
         - 96

@@ -4,7 +4,7 @@ model:
   cfg:
     MODEL: ${MODEL}
     DATASET:
-      NUM_CLASSES: ${datamodule.num_classes}
+      NUM_CLASSES: ${data.num_classes}
 
 MODEL:
   NAME: hrnet

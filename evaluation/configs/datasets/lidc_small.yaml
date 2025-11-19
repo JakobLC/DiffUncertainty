@@ -1,12 +1,11 @@
 #@package _global_
 defaults:
-  - /../../uncertainty_modeling/configs/datamodule/lidc_2d_small@datamodule_config
-  - /../../uncertainty_modeling/configs/data_augmentations/tta_lidc_2d_small
+  - /../../uncertainty_modeling/configs/data/lidc_2d_small
   - _self_
 
-augment_mult: null
 data_input_dir: "/home/jloch/Desktop/diff/luzern/values_datasets/lidc_2d_small"
-datamodule_config:
+datamodule_config: ${data}
+data:
   data_input_dir: ${data_input_dir}
 base_splits_path: "/home/jloch/Desktop/diff/luzern/values_datasets/lidc_2d_small/splits"
 experiments:

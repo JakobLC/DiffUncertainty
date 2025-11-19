@@ -1,26 +1,25 @@
 #@package _global_
 defaults:
-  - /../../uncertainty_modeling/configs/datamodule/gta_small@datamodule_config
-  - /../../uncertainty_modeling/configs/data_augmentations/tta_gta_small
+  - /../../uncertainty_modeling/configs/data/gta_small
   - _self_
 
-AUGMENTATIONS:
-  TEST:
-    - Compose:
-        transforms:
-          - Normalize:
-              mean: ${AUGMENTATIONS.mean}
-              std: ${AUGMENTATIONS.std}
-          - StochasticLabelSwitches:
-              always_apply: True
-              p: 1.0
-              n_reference_samples: ${GTA.n_reference_segs}
-          - ToTensorV2:
-
-augment_mult: null
 data_input_dir: "/home/jloch/Desktop/diff/luzern/values_datasets/gta_small"
-datamodule_config:
+datamodule_config: ${data}
+data:
   data_input_dir: ${data_input_dir}
+  augmentations:
+    VALIDATION:
+      - Compose:
+          transforms:
+            - Normalize:
+                mean: ${data.augmentations.mean}
+                std: ${data.augmentations.std}
+            - StochasticLabelSwitches:
+                always_apply: True
+                p: 1.0
+                n_reference_samples: ${GTA.n_reference_segs}
+            - ToTensorV2:
+    TEST: ${data.augmentations.VALIDATION}
 base_splits_path: "/home/jloch/Desktop/diff/luzern/values_datasets/gta_small/splits"
 experiments:
   - ${GTA}

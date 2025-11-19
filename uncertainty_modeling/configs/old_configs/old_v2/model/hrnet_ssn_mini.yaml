@@ -4,12 +4,12 @@ model:
   cfg:
     MODEL: ${MODEL}
     DATASET:
-      NUM_CLASSES: ${datamodule.num_classes}
+      NUM_CLASSES: ${data.num_classes}
 
 MODEL:
   NAME: hrnet
   # Set to false, was initially true
-  PRETRAINED: False  # when resuming (ckpt_path is set), code forces this to False to avoid double-loading
+  PRETRAINED: false  # when resuming (ckpt_path is set), code forces this to False to avoid double-loading
   pretrained_on: ImageNet
   pretrained_path: /home/jloch/Desktop/diff/luzern/values/uncertainty_modeling/models/checkpoints
   PRETRAINED_WEIGHTS: ${MODEL.pretrained_path}/${MODEL.available_weights.${MODEL.pretrained_on}}
@@ -32,7 +32,7 @@ MODEL:
       NUM_BLOCKS:
         - 4
       NUM_CHANNELS:
-        - 64
+        - 32
       FUSE_METHOD: SUM
     STAGE2:
       NUM_MODULES: 1
@@ -42,8 +42,8 @@ MODEL:
         - 4
         - 4
       NUM_CHANNELS:
+        - 24
         - 48
-        - 96
       FUSE_METHOD: SUM
     STAGE3:
       NUM_MODULES: 4
@@ -54,9 +54,9 @@ MODEL:
         - 4
         - 4
       NUM_CHANNELS:
+        - 24
         - 48
         - 96
-        - 192
       DROPOUT:
         - false
         - false
@@ -77,8 +77,8 @@ MODEL:
         - false
         - false
       NUM_CHANNELS:
+        - 24
         - 48
         - 96
         - 192
-        - 384
       FUSE_METHOD: SUM

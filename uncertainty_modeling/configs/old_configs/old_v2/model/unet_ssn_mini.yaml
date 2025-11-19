@@ -4,12 +4,12 @@ model:
   cfg:
     MODEL: ${MODEL}
     DATASET:
-      NUM_CLASSES: ${datamodule.num_classes}
+      NUM_CLASSES: ${data.num_classes}
 
 MODEL:
   NAME: unet
   IN_CHANNELS: 3
-  OUT_CHANNELS: ${datamodule.num_classes}
+  OUT_CHANNELS: ${data.num_classes}
   MODEL_CHANNELS: 32
   NUM_RES_BLOCKS: [2, 2, 2, 2]
   NUM_MIDDLE_RES_BLOCKS: 2
@@ -18,4 +18,6 @@ MODEL:
   DROPOUT: 0.0
   FINAL_ACT: none
   DIFFUSION: false
-  SSN: false
+  SSN: true
+  SSN_RANK: 10
+  SSN_EPS: 1e-5

@@ -16,7 +16,7 @@ import pytorch_lightning as pl
 from torch.optim.swa_utils import AveragedModel
 
 import torchvision
-from omegaconf import DictConfig, OmegaConf
+from omegaconf import DictConfig, OmegaConf, open_dict
 #from evaluation.metrics.dice_old_torchmetrics import dice
 from evaluation.metrics.dice_wrapped import dice
 
@@ -75,15 +75,67 @@ class LightningExperiment(pl.LightningModule):
         super(LightningExperiment, self).__init__()
         if isinstance(hparams, dict):
             hparams = Namespace(**hparams)
-        if "DATASET_LOCATION" in os.environ.keys():
-            hparams.data_input_dir = os.environ["DATASET_LOCATION"]
+        dataset_override = os.environ.get("DATASET_LOCATION")
+        if dataset_override is not None:
+            if isinstance(hparams, DictConfig):
+                if "data" in hparams:
+                    with open_dict(hparams.data):
+                        hparams.data.data_input_dir = dataset_override
+                else:
+                    hparams.data_input_dir = dataset_override
+            else:
+                data_section = getattr(hparams, "data", None)
+                if isinstance(data_section, dict):
+                    data_section["data_input_dir"] = dataset_override
+                elif data_section is not None and hasattr(data_section, "__dict__"):
+                    setattr(data_section, "data_input_dir", dataset_override)
+                else:
+                    setattr(hparams, "data_input_dir", dataset_override)
+
+        def _get_section(cfg, key):
+            if isinstance(cfg, DictConfig):
+                return cfg.get(key, None)
+            if isinstance(cfg, dict):
+                return cfg.get(key, None)
+            return getattr(cfg, key, None)
+
+        def _get_value(cfg, key, default=None):
+            if cfg is None:
+                return default
+            if isinstance(cfg, DictConfig):
+                return cfg.get(key, default)
+            if isinstance(cfg, dict):
+                return cfg.get(key, default)
+            return getattr(cfg, key, default)
+
+        data_cfg = _get_section(hparams, "data")
+        datamodule_cfg = _get_section(hparams, "datamodule")
+        active_data_cfg = data_cfg if data_cfg is not None else datamodule_cfg
+        if active_data_cfg is None:
+            raise ValueError(
+                "LightningExperiment requires either 'data' or legacy 'datamodule' configuration."
+            )
+
+        self.ignore_index = _get_value(active_data_cfg, "ignore_index", 0) or 0
+        self.evaluate_all_raters = bool(
+            _get_value(
+                active_data_cfg,
+                "evaluate_all_raters",
+                getattr(hparams, "evaluate_all_raters", True),
+            )
+        )
+        self._train_batch_size = _get_value(
+            active_data_cfg, "batch_size", getattr(hparams, "batch_size", None)
+        )
+        self._dataset_name = _get_value(
+            active_data_cfg, "name", getattr(hparams, "dataset", None)
+        )
+
         self.save_hyperparameters(OmegaConf.to_container(hparams))
         self.nested_hparam_dict = nested_hparam_dict
 
-        if "ignore_index" in hparams.datamodule:
-            self.ignore_index = hparams.datamodule.ignore_index
-        else:
-            self.ignore_index = 0
+        if not hasattr(self.hparams, "batch_size") and self._train_batch_size is not None:
+            setattr(self.hparams, "batch_size", self._train_batch_size)
 
         if aleatoric_loss:
             self.model = hydra.utils.instantiate(
@@ -116,9 +168,6 @@ class LightningExperiment(pl.LightningModule):
         # By default, only compute GED (and the standard per-image dice is logged separately).
         # Users can override this in hparams to include extra metrics like ["dice", "major_dice", ...].
         self._validation_additional_metrics = []
-        self.evaluate_all_raters = bool(
-            getattr(hparams, "evaluate_all_raters", True)
-        )
 
         if "optimizer" in hparams:
             self.optimizer_conf = hparams.optimizer
@@ -342,6 +391,9 @@ class LightningExperiment(pl.LightningModule):
                 loss = self.dice_loss(output_softmax, target) + self.ce_loss(
                     output, target
                 )
+        log_batch_size = (
+            self._train_batch_size if self._train_batch_size is not None else target.shape[0]
+        )
         self.log(
             "training/train_loss",
             loss,
@@ -349,7 +401,7 @@ class LightningExperiment(pl.LightningModule):
             on_step=True,
             on_epoch=True,
             logger=True,
-            batch_size=self.hparams.batch_size,
+            batch_size=log_batch_size,
         )
         return loss
 
@@ -369,7 +421,8 @@ class LightningExperiment(pl.LightningModule):
             split = f"val_{dataloader_idx}"
 
         target_full = batch["seg"].long()
-        is_lidc_dataset = hasattr(self.hparams, "dataset") and "lidc" in self.hparams.dataset
+        dataset_name = self._dataset_name or getattr(self.hparams, "dataset", None)
+        is_lidc_dataset = bool(dataset_name and "lidc" in str(dataset_name).lower())
         if target_full.ndim == 3:
             if is_lidc_dataset and self.evaluate_all_raters:
                 raise ValueError(

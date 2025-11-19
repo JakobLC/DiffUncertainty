@@ -194,6 +194,8 @@ class BaseDataModule(LightningDataModule):
         val_batch_size: int,
         num_workers: int,
         augmentations: DictConfig,
+        name: str = None,
+        data_fold_id: int = 0,
         evaluate_training_data: bool = False,
         evaluate_all_raters: bool = True,
         tta: bool = False,
@@ -225,6 +227,8 @@ class BaseDataModule(LightningDataModule):
         # self.augmentations = get_augmentations()
         self.augmentations = augmentations
         self.data_input_dir = data_input_dir
+        self.data_fold_id = data_fold_id
+        self.dataset_name = name
         # dataset which is defined in the config
         self.dataset = dataset
         self.test_split = kwargs.get("test_split", None)
@@ -262,6 +266,7 @@ class BaseDataModule(LightningDataModule):
                 split="train",
                 transforms=transforms_train,
             )
+            train_kwargs["data_fold_id"] = self.data_fold_id
             if is_lidc2d:
                 train_kwargs["return_all_raters"] = False
             self.DS_train = hydra.utils.instantiate(self.dataset, **train_kwargs)
@@ -273,6 +278,7 @@ class BaseDataModule(LightningDataModule):
                 transforms=transforms_val,
                 tta=self.tta,
             )
+            val_kwargs["data_fold_id"] = self.data_fold_id
             if is_lidc2d:
                 val_kwargs["return_all_raters"] = self.evaluate_all_raters
             self.DS_val = hydra.utils.instantiate(self.dataset, **val_kwargs)
@@ -285,6 +291,7 @@ class BaseDataModule(LightningDataModule):
                     transforms=transforms_val,
                     tta=self.tta,
                 )
+                train_eval_kwargs["data_fold_id"] = self.data_fold_id
                 if is_lidc2d:
                     train_eval_kwargs["return_all_raters"] = self.evaluate_all_raters
                 DS_train_full_for_eval = hydra.utils.instantiate(
@@ -311,6 +318,7 @@ class BaseDataModule(LightningDataModule):
                 transforms=transforms_test,
                 tta=self.tta,
             )
+            test_kwargs["data_fold_id"] = self.data_fold_id
             if is_lidc2d:
                 test_kwargs["return_all_raters"] = True
             self.DS_test = hydra.utils.instantiate(self.dataset, **test_kwargs)

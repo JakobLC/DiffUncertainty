@@ -77,6 +77,8 @@ class DiffUnet(nn.Module):
         act="silu",
         name="unet",
         ssn=False,
+        ssn_rank=10,
+        ssn_eps=1e-5,
     ):
         super().__init__()
         if isinstance(act, str):
@@ -88,6 +90,9 @@ class DiffUnet(nn.Module):
         self.name = name
         self.act = act
         self.mlp_attn = mlp_attn
+        self.ssn = bool(ssn)
+        self.ssn_rank = ssn_rank
+        self.ssn_eps = ssn_eps
         self.new_upsample_method = new_upsample_method
         self.one_skip_per_reso = one_skip_per_reso
         if num_heads_upsample == -1:
@@ -307,7 +312,6 @@ class DiffUnet(nn.Module):
         self.out_channels = out_channels
         # expose common attributes expected elsewhere in the repo
         self.num_classes = out_channels
-        self.ssn = False
 
     def forward(self, x: torch.Tensor, timesteps: torch.Tensor | None = None):
         """

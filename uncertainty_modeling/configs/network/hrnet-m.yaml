@@ -1,0 +1,54 @@
+# @package _global_
+network:
+  _target_: uncertainty_modeling.models.hrnet_module.get_seg_model
+  target: ${network._target_}
+  num_classes: ${oc.select:data.num_classes,${oc.select:datamodule.num_classes,???}}
+  cfg:
+    MODEL:
+      NAME: hrnet
+      PRETRAINED: false
+      pretrained_on: ImageNet
+      pretrained_path: /home/jloch/Desktop/diff/luzern/values/uncertainty_modeling/models/checkpoints
+      PRETRAINED_WEIGHTS: ${network.cfg.MODEL.pretrained_path}/${network.cfg.MODEL.available_weights.${network.cfg.MODEL.pretrained_on}}
+      available_weights:
+        ImageNet: hrnetv2_w48_imagenet_pretrained.pth
+        Paddle: HRNet_W48_C_ssld_pretrained.pth
+      ALIGN_CORNERS: False
+      INPUT_CHANNELS: 3
+      SSN: false
+      SSN_RANK: 10
+      SSN_EPS: 1e-5
+      EXTRA:
+        FINAL_CONV_KERNEL: 1
+        STAGE1:
+          NUM_MODULES: 1
+          NUM_BRANCHES: 1
+          BLOCK: BOTTLENECK
+          NUM_BLOCKS: [4]
+          NUM_CHANNELS: [64]
+          FUSE_METHOD: SUM
+        STAGE2:
+          NUM_MODULES: 1
+          NUM_BRANCHES: 2
+          BLOCK: BASIC
+          NUM_BLOCKS: [4, 4]
+          NUM_CHANNELS: [48, 96]
+          FUSE_METHOD: SUM
+        STAGE3:
+          NUM_MODULES: 4
+          NUM_BRANCHES: 3
+          BLOCK: BASIC
+          NUM_BLOCKS: [4, 4, 4]
+          NUM_CHANNELS: [48, 96, 192]
+          DROPOUT: [false, false, false]
+          FUSE_METHOD: SUM
+        STAGE4:
+          NUM_MODULES: 3
+          NUM_BRANCHES: 4
+          BLOCK: BASIC
+          NUM_BLOCKS: [4, 4, 4, 4]
+          NUM_CHANNELS: [48, 96, 192, 384]
+          DROPOUT: [false, false, false, false]
+          FUSE_METHOD: SUM
+      DATASET:
+        NUM_CLASSES: ${network.num_classes}

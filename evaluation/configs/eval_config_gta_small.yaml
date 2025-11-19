@@ -8,7 +8,7 @@ base_path: "/home/jloch/Desktop/diff/luzern/values/saves"
 second_cycle_path: "/home/jloch/Desktop/diff/luzern/values/experiments/SecondCycle"
 evaluate_training_data: null
 
-tasks: ["aggregation","ood_detection","ambiguity_modeling","calibration"]
+tasks: ["aggregation","ood_detection","ambiguity_modeling","calibration", "cleanup"]
 
 task_params:
   aggregation: ${AGG_PATCH_IMAGE}
