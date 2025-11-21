@@ -813,5 +813,8 @@ def get_seg_model(cfg, **kwargs):
     cfg_dict = OmegaConf.to_container(cfg.MODEL, resolve=True)
     #map keys to lower
     cfg_dict = {k.lower(): v for k, v in cfg_dict.items()}
-    model = DiffUnet(**cfg_dict, **kwargs)
+    # Hydra can pass extra metadata (e.g., nickname) that DiffUnet does not accept.
+    meta_keys = {"nickname"}
+    sanitized_kwargs = {k: v for k, v in kwargs.items() if k not in meta_keys}
+    model = DiffUnet(**cfg_dict, **sanitized_kwargs)
     return model

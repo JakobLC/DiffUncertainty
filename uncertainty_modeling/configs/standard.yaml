@@ -8,6 +8,7 @@ defaults:
 exp_name: null
 version: null
 ckpt_path: null
+resume_from_ckpt: null
 
 save_dir: "/home/jloch/Desktop/diff/luzern/values/saves"
 

@@ -36,7 +36,7 @@ class LightningExperiment(pl.LightningModule):
         nested_hparam_dict: Optional[dict] = None,
         aleatoric_loss: bool = False,
         n_aleatoric_samples: int = 10,
-        pretrain_epochs: int = 5,
+        ssn_pretrain_epochs: int = 5,
         *args,
         **kwargs
     ):
@@ -122,7 +122,7 @@ class LightningExperiment(pl.LightningModule):
             self.model = hydra.utils.instantiate(hparams.model)
         self.weight_decay = weight_decay
         self.learning_rate = learning_rate
-        self.pretrain_epochs = pretrain_epochs
+        self.ssn_pretrain_epochs = ssn_pretrain_epochs
 
         ckpt_cfg = hparams.get("ckpt_save_freq", None)
         self.track_ema_weights = bool(getattr(ckpt_cfg, "track_ema_weights", False))
@@ -280,7 +280,7 @@ class LightningExperiment(pl.LightningModule):
         return self.model(x, **kwargs)
 
     def forward_ssn(self, batch: dict, target: torch.Tensor, val: bool = False):
-        if self.current_epoch < self.pretrain_epochs:
+        if self.current_epoch < self.ssn_pretrain_epochs:
             mean, cov_failed_flag = self.forward(batch["data"], mean_only=True)
             samples = mean.rsample([self.n_aleatoric_samples])
         else:

@@ -3,16 +3,16 @@ network:
   _target_: uncertainty_modeling.models.diff_unet2D_module.get_seg_model
   target: ${network._target_}
   num_classes: ${oc.select:data.num_classes,${oc.select:datamodule.num_classes,???}}
-  nickname: "unet_s"
+  nickname: "unet_m"
   cfg:
     MODEL:
       NAME: unet
       IN_CHANNELS: 3
       OUT_CHANNELS: ${network.num_classes}
       MODEL_CHANNELS: 32
-      NUM_RES_BLOCKS: [2, 2, 2, 2]
+      NUM_RES_BLOCKS: [2, 2, 3, 4, 4]
       NUM_MIDDLE_RES_BLOCKS: 2
-      CHANNEL_MULT: [1, 2, 4, 8]
+      CHANNEL_MULT: [1, 2, 4, 8, 12]
       ATTENTION_RESOLUTIONS: [-2, -1]
       DROPOUT: 0.0
       FINAL_ACT: none
