@@ -2,6 +2,7 @@
 data:
   _target_: uncertainty_modeling.data.torch_dataloader.BaseDataModule
   name: "gta"
+  nickname: "gta"
   data_input_dir: "/home/jloch/Desktop/diff/luzern/values_datasets/gta"
   num_classes: 24
   ignore_index: 255

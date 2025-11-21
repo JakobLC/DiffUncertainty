@@ -82,8 +82,8 @@ def platt_scale_params(val_exp_dataloader: ExperimentDataloader, ignore_value=No
         if saw_oob:
             warnings.warn(
                 (
-                    f"Uncertainty values outside [1e-10, 1e-2] for '{unc_type}': "
-                    f"{oob_low_count} below 1e-10, {oob_high_count} above 1e-2. "
+                    f"Uncertainty values outside [1e-12, 1e2] for '{unc_type}': "
+                    f"{oob_low_count} below 1e-12, {oob_high_count} above 1e2. "
                     "They were clamped to the nearest end bin."
                 ),
                 RuntimeWarning,

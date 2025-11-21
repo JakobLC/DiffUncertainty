@@ -19,35 +19,12 @@ import torchvision
 from omegaconf import DictConfig, OmegaConf, open_dict
 #from evaluation.metrics.dice_old_torchmetrics import dice
 from evaluation.metrics.dice_wrapped import dice
+from evaluation.metrics.ged_fast import ged_binary_fast
 
-import uncertainty_modeling.models.ssn_unet3D_module
 from loss_modules import SoftDiceLoss
-from data_carrier_3D import DataCarrier3D
-from global_utils.checkpoint_format import format_checkpoint_subdir
 
 import uncertainty_modeling.data.cityscapes_labels as cs_labels
-
-
-_calculate_ged_fn = None
-_calculate_ged_fast_fn = None
-
-
-def _get_calculate_ged():
-    global _calculate_ged_fn
-    if _calculate_ged_fn is None:
-        from uncertainty_modeling.test_3D import calculate_ged as _calc
-
-        _calculate_ged_fn = _calc
-    return _calculate_ged_fn
-
-
-def _get_calculate_ged_fast():
-    global _calculate_ged_fast_fn
-    if _calculate_ged_fast_fn is None:
-        from evaluation.metrics.ged_fast import ged_binary_fast as _calc_fast
-
-        _calculate_ged_fast_fn = _calc_fast
-    return _calculate_ged_fast_fn
+from uncertainty_modeling.unc_mod_utils.test_utils import calculate_ged
 
 
 class LightningExperiment(pl.LightningModule):
@@ -163,7 +140,6 @@ class LightningExperiment(pl.LightningModule):
         self.ce_loss = torch.nn.CrossEntropyLoss()
         self.nll_loss = torch.nn.NLLLoss()
 
-        self.test_datacarrier = DataCarrier3D()
         self._val_metric_accumulators = {}
         # By default, only compute GED (and the standard per-image dice is logged separately).
         # Users can override this in hparams to include extra metrics like ["dice", "major_dice", ...].
@@ -292,14 +268,14 @@ class LightningExperiment(pl.LightningModule):
 
     def forward(
         self, x: torch.Tensor, **kwargs
-    ) -> torch.Tensor | td.LowRankMultivariateNormal:
+    ) -> torch.Tensor | tuple[td.LowRankMultivariateNormal, bool]:
         """Forward pass through the network
 
         Args:
             x: The input batch
 
         Returns:
-            [torch.Tensor]: The result of the V-Net
+            torch.Tensor or (distribution, cov_failed_flag)
         """
         return self.model(x, **kwargs)
 
@@ -357,11 +333,7 @@ class LightningExperiment(pl.LightningModule):
         """
         target = batch["seg"].long().squeeze(1)
         # TODO: check if this works with all models
-        if type(
-            self.model
-        ) is uncertainty_modeling.models.ssn_unet3D_module.SsnUNet3D or (
-            hasattr(self.model, "ssn") and self.model.ssn
-        ):
+        if getattr(self.model, "ssn", False):
             loss = self.forward_ssn(batch, target)
         elif self.aleatoric_loss:
             device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -438,10 +410,7 @@ class LightningExperiment(pl.LightningModule):
             inputs = inputs[0]
         inputs = inputs.float()
 
-        is_ssn_model = (
-            type(self.model)
-            is uncertainty_modeling.models.ssn_unet3D_module.SsnUNet3D
-        ) or (hasattr(self.model, "ssn") and self.model.ssn)
+        is_ssn_model = bool(getattr(self.model, "ssn", False))
 
         softmax_stack: Optional[torch.Tensor] = None
 
@@ -527,11 +496,6 @@ class LightningExperiment(pl.LightningModule):
                 is_lidc_dataset
                 and self.model.num_classes == 2
             )
-            if use_fast:
-                calculate_ged_fast = _get_calculate_ged_fast()
-            else:
-                calculate_ged = _get_calculate_ged()
-
             for idx in range(batch_size):
                 pred_stack = predictions[:, idx]
                 if pred_stack.ndim == 3:
@@ -542,7 +506,7 @@ class LightningExperiment(pl.LightningModule):
                 # Always request 'dice' for internal use, but only 'ged' will be logged unless enabled in settings.
                 requested_metrics = list(set((self._validation_additional_metrics or []) + ["dice"]))
                 if use_fast:
-                    ged_result = calculate_ged_fast(
+                    ged_result = ged_binary_fast(
                         pred_stack,
                         gt_stack,
                         ignore_index=self.ignore_index if self.ignore_index != 0 else None,
@@ -725,23 +689,9 @@ class LightningExperiment(pl.LightningModule):
                         ignore_index       = self.ignore_index,
                         binary_dice        = self.model.num_classes == 2,
                         is_softmax         = True)
-        self.test_datacarrier.concat_data(batch=batch, softmax_pred=output_softmax)
-
         log = {"test/test_loss": test_loss, "test/test_dice": test_dice}
         self.log_dict(log, prog_bar=False, on_step=False, on_epoch=True, logger=True)
         return test_loss
-
-    def on_test_end(self) -> None:
-        checkpoint_tag = format_checkpoint_subdir(
-            getattr(self.hparams, "checkpoint_epoch", None),
-            getattr(self.hparams, "ema", None),
-        )
-        self.test_datacarrier.save_data(
-            root_dir=self.hparams.save_dir,
-            exp_name=self.hparams.exp_name,
-            version=self.logger.version,
-            checkpoint_tag=checkpoint_tag,
-        )
 
     @staticmethod
     def add_module_specific_args(parent_parser: ArgumentParser) -> ArgumentParser:

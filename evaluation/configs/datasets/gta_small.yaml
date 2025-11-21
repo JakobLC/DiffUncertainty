@@ -17,18 +17,62 @@ data:
             - StochasticLabelSwitches:
                 always_apply: True
                 p: 1.0
-                n_reference_samples: ${GTA.n_reference_segs}
+                n_reference_samples: ${GTA3.n_reference_segs}
             - ToTensorV2:
     TEST: ${data.augmentations.VALIDATION}
 base_splits_path: "/home/jloch/Desktop/diff/luzern/values_datasets/gta_small/splits"
 experiments:
-  - ${GTA}
+  - ${GTA3}
 
-GTA:
+GTA3:
   iter_params:
     pred_model: [ "SSN" ]
     seed: [ "120" ]
     version: [ "aug0_s12[0,1,2]" ]
+    epochs: [ 10, 20, 40, 80, 160, 320 ]
+    ema: [ "_ema" ]
+  naming_scheme_pred_model: "gta-small-ssn"
+  naming_scheme_version: "{version}/e{epochs}{ema}"
+  aggregations: [ "image_level", "patch_level" ]
+  fold: 0
+  rank: 10
+  n_classes: 19
+  image_ending: ".png"
+  unc_ending: ".tif"
+  n_reference_segs: 5
+  only_pu: false
+  pred_seg_loading:
+    _target_: evaluation.utils.gta.pred_seg_loading
+  gt_unc_map_loading:
+    _target_: evaluation.utils.gta.gt_unc_map
+
+GTA5:
+  iter_params:
+    pred_model: [ "SSN" ]
+    seed: [ "120" ]
+    version: [ "aug0_s12[0,1,2,3,4]" ]
+    epochs: [ 10, 20, 40, 80, 160, 320 ]
+    ema: [ "_ema" ]
+  naming_scheme_pred_model: "gta-small-ssn"
+  naming_scheme_version: "{version}/e{epochs}{ema}"
+  aggregations: [ "image_level", "patch_level" ]
+  fold: 0
+  rank: 10
+  n_classes: 19
+  image_ending: ".png"
+  unc_ending: ".tif"
+  n_reference_segs: 5
+  only_pu: false
+  pred_seg_loading:
+    _target_: evaluation.utils.gta.pred_seg_loading
+  gt_unc_map_loading:
+    _target_: evaluation.utils.gta.gt_unc_map
+
+GTA1:
+  iter_params:
+    pred_model: [ "SSN" ]
+    seed: [ "120" ]
+    version: [ "aug0_s120" ]
     epochs: [ 10, 20, 40, 80, 160, 320 ]
     ema: [ "_ema" ]
   naming_scheme_pred_model: "gta-small-ssn"

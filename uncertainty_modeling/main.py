@@ -34,6 +34,29 @@ def set_seed(seed):
     random.seed(seed)
     os.environ["PYTHONHASHSEED"] = str(seed)
             
+def _extract_component_name(section, fallback_label):
+    """Return a short token for config sections, preferring explicit nicknames."""
+    def _maybe_token(value):
+        if isinstance(value, str):
+            token = value.strip()
+            if token:
+                return token.replace(" ", "_")
+        return None
+
+    if section is None:
+        return fallback_label
+
+    lookup_keys = ("nickname", "name", "target", "_target_")
+    for key in lookup_keys:
+        if isinstance(section, DictConfig):
+            value = OmegaConf.select(section, key, default=None)
+        else:
+            value = getattr(section, key, None)
+        token = _maybe_token(value)
+        if token is not None:
+            return token
+    return fallback_label
+
 @hydra.main(version_base=None, config_path="configs", config_name="standard")
 def main(cfg_hydra: DictConfig):
     """Uses the pl.Trainer to fit & test the model
@@ -58,16 +81,21 @@ def main(cfg_hydra: DictConfig):
 
     exp_name = getattr(config, "exp_name", None)
     if OmegaConf.is_missing(config, "exp_name") or exp_name is None or (isinstance(exp_name, str) and exp_name.strip() == ""):
-        raise ValueError("`exp_name` must be set to a non-empty string in the training config.")
+        data_section = config.get("data", None) or config.get("datamodule", None)
+        network_section = config.get("network", None)
+        model_section = config.get("model", None)
+        auto_name = "-".join(
+            [
+                _extract_component_name(data_section, "data"),
+                _extract_component_name(network_section, "network"),
+                _extract_component_name(model_section, "model"),
+            ]
+        )
+        with open_dict(config):
+            config.exp_name = auto_name
+        exp_name = auto_name
     if config.seed is not None:
         set_seed(config.seed)
-
-    if "gradient_clip_val" in config.keys():
-        gradient_clip_val = config.gradient_clip_val
-        gradient_clip_algorithm = "norm"
-    else:
-        gradient_clip_val = None
-        gradient_clip_algorithm = None
 
     logger = hydra.utils.instantiate(config.logger, version=config.version)
     progress_bar = hydra.utils.instantiate(config.progress_bar)
@@ -107,11 +135,7 @@ def main(cfg_hydra: DictConfig):
     trainer = pl.Trainer(
         **config.trainer,
         logger=logger,
-        profiler="simple",
         callbacks=callbacks,
-        deterministic="warn",
-        gradient_clip_val=gradient_clip_val,
-        gradient_clip_algorithm=gradient_clip_algorithm,
     )
     data_cfg = config.get("data", None)
     datamodule_cfg = config.get("datamodule", None)

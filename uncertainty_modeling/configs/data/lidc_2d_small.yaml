@@ -2,6 +2,7 @@
 data:
   _target_: uncertainty_modeling.data.torch_dataloader.BaseDataModule
   name: "lidc_2d_small"
+  nickname: "lidc_s"
   data_input_dir: "/home/jloch/Desktop/diff/luzern/values_datasets/lidc_2d_small"
   num_classes: 2
   ignore_index: -1

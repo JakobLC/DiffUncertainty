@@ -17,7 +17,7 @@ sys.path.append(Path(__file__).parent.parent.as_posix())
 from evaluation.metrics.dice_wrapped import dice
 from evaluation.metrics.ged_fast import ged_binary_fast
 from uncertainty_modeling.main import set_seed
-from uncertainty_modeling.test_3D import (
+from uncertainty_modeling.unc_mod_utils.test_utils import (
     test_cli,
     load_models_from_checkpoint,
     calculate_ged,

@@ -1,8 +1,10 @@
 import math
+import warnings
 from abc import abstractmethod
 
 import numpy as np
 import torch
+import torch.distributions as td
 import torch.nn as nn
 import torch.nn.functional as F
 from omegaconf import OmegaConf
@@ -309,11 +311,30 @@ class DiffUnet(nn.Module):
             zero_module(nn.Conv2d(ch, out_channels, 3, padding=1)),
             final_act_dict[final_act.lower()]
         )
+        if self.ssn:
+            if self.ssn_rank <= 0:
+                raise ValueError("ssn_rank must be positive when ssn=True")
+
+            def _make_ssn_head(out_ch: int) -> nn.Sequential:
+                return nn.Sequential(
+                    nn.Identity(),
+                    GroupNorm32(ch),
+                    self.act(),
+                    zero_module(nn.Conv2d(ch, out_ch, 3, padding=1)),
+                )
+
+            self.ssn_cov_head = _make_ssn_head(out_channels)
+            self.ssn_factor_head = _make_ssn_head(out_channels * self.ssn_rank)
         self.out_channels = out_channels
         # expose common attributes expected elsewhere in the repo
         self.num_classes = out_channels
 
-    def forward(self, x: torch.Tensor, timesteps: torch.Tensor | None = None):
+    def forward(
+        self,
+        x: torch.Tensor,
+        timesteps: torch.Tensor | None = None,
+        mean_only: bool = False,
+    ) -> torch.Tensor | tuple[td.LowRankMultivariateNormal, bool]:
         """
         Apply the model to an input batch.
 
@@ -354,8 +375,65 @@ class DiffUnet(nn.Module):
             h = module(cat_in, emb)
             depth += 1
         h = h.type(x.dtype)
-        h = self.out(h)
-        return h
+        if not self.ssn:
+            return self.out(h)
+
+        mean_logits = self.out(h)
+        distribution, cov_failed_flag = self._build_ssn_distribution(
+            features=h, mean_logits=mean_logits, mean_only=mean_only
+        )
+        return distribution, cov_failed_flag
+
+    def _build_ssn_distribution(
+        self,
+        features: torch.Tensor,
+        mean_logits: torch.Tensor,
+        mean_only: bool,
+    ) -> tuple[td.LowRankMultivariateNormal, bool]:
+        batch_size = mean_logits.shape[0]
+        spatial_dims = mean_logits.shape[2:]
+        mean = mean_logits.view(batch_size, -1)
+
+        cov_logits = self.ssn_cov_head(features)
+        cov_diag = F.softplus(cov_logits) + self.ssn_eps
+        cov_diag = torch.nan_to_num(
+            cov_diag, nan=1.0, posinf=1e6, neginf=self.ssn_eps
+        ).clamp(min=self.ssn_eps)
+        cov_diag = cov_diag.view(batch_size, -1)
+
+        if mean_only:
+            cov_factor = torch.zeros(
+                (batch_size, mean.shape[1], self.ssn_rank),
+                device=mean_logits.device,
+                dtype=mean_logits.dtype,
+            )
+        else:
+            cov_factor = self.ssn_factor_head(features)
+            cov_factor = cov_factor.view(
+                batch_size, self.ssn_rank, self.num_classes, *spatial_dims
+            )
+            cov_factor = cov_factor.view(batch_size, self.ssn_rank, -1)
+            cov_factor = cov_factor.transpose(1, 2)
+
+        try:
+            distribution = td.LowRankMultivariateNormal(
+                loc=mean, cov_factor=cov_factor, cov_diag=cov_diag
+            )
+            cov_failed_flag = False
+        except Exception:
+            cov_failed_flag = True
+            safe_diag = torch.nan_to_num(
+                cov_diag, nan=1.0, posinf=1e6, neginf=self.ssn_eps
+            ).clamp(min=self.ssn_eps)
+            if not torch.all(torch.isfinite(safe_diag)):
+                warnings.warn(
+                    "Non-finite values encountered in covariance diagonal.",
+                    RuntimeWarning,
+                )
+            scale = torch.sqrt(safe_diag).clamp(min=self.ssn_eps)
+            distribution = td.Independent(td.Normal(loc=mean, scale=scale), 1)
+
+        return distribution, cov_failed_flag
 
 class TimestepBlock(nn.Module):
     """

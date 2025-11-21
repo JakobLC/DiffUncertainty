@@ -103,9 +103,6 @@ class LightningExperimentEMATest(unittest.TestCase):
         with patch(
             "uncertainty_modeling.lightning_experiment.hydra.utils.instantiate",
             return_value=dummy_model,
-        ), patch(
-            "uncertainty_modeling.lightning_experiment.DataCarrier3D",
-            return_value=MagicMock(),
         ):
             module = LightningExperiment(cfg)
         module._ensure_ema_model()

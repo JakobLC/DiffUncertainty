@@ -1,5 +1,6 @@
 # @package _global_
 network:
+  nickname: "hrnet_s"
   _target_: uncertainty_modeling.models.hrnet_module.get_seg_model
   target: ${network._target_}
   num_classes: ${oc.select:data.num_classes,${oc.select:datamodule.num_classes,???}}

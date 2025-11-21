@@ -1,7 +1,7 @@
 # Training and Inference of the models
 
-This part of the repository contains the code for training the models and infering on the test sets.  
-The entry point for training the models is thereby ```main.py``` and the enrty points for the inference are ```test_3D.py``` and ```test_2D.py``` for the 3D datasets (Toy data and LIDC data) and the 2D datasets (GTA 5/Cityscapes) repectively.  
+This part of the repository contains the code for training the models and inferring on the test sets.  
+With the repository now focused purely on 2D segmentation, ```main.py``` remains the training entry point and ```test_2D.py``` is the single inference entry point (its CLI helpers live in ```unc_mod_utils/test_utils.py```).  
 The following sections will explain the configs for how to start a training and the settings for starting an inference in more detail. Note that it is assumed that you have preprocessed the datasets as described in the respecive ```datasets``` subfolder at this point.
 
 
@@ -75,8 +75,7 @@ The datamodule and model configs are really dependent on the implementations of 
 
 ## Running inference
 
-For running the inference after you performed a training, execute ```test_3D.py``` for 3D datasets (Toy dataset, LIDC) and ```test_2D.py``` for 2D datasets (GTA5/Cityscapes). 
-For the parameters that you can specify, run ```python test_3D.py -h```.  
+For running inference after training, execute ```test_2D.py``` with the appropriate checkpoint arguments (see ```python uncertainty_modeling/test_2D.py -h``` for the up-to-date interface that is generated from ```unc_mod_utils/test_utils.py```). 
 The only parameter that is not optional, is ```checkpoint_paths``` where you define the checkpoint based on which you want to perform the inference. For ensemble inference, specify all the paths that you want to use for inference.  
 Another parameter that you mostly need to specify are the number of predictions that you want to make (```--n_pred```) if you want to sample multiple output segmentations.  
 All other parameters like the dataset location etc. can be inferred from the checkpoint itself, although you may want to change them, e.g. if you train and infere on different machines or if your testset is located in a special directory.

@@ -1,6 +1,7 @@
 # @package _global_
 model:
-  _target_: uncertainty_modeling.global_utils.model_factory.instantiate_network
+  nickname: "softmax"
+  _target_: uncertainty_modeling.unc_mod_utils.model_factory.instantiate_network
   target: ${network.target}
   cfg: ${network.cfg}
   overrides:
