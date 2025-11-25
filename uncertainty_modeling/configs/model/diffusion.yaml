@@ -1,6 +1,6 @@
 # @package _global_
 model:
-  nickname: "diffusion"
+  nickname: "au=diff"
   _target_: uncertainty_modeling.unc_mod_utils.model_factory.instantiate_network
   target: ${network.target}
   cfg: ${network.cfg}

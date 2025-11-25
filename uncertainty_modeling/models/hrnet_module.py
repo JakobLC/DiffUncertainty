@@ -345,6 +345,17 @@ class HighResolutionNet(nn.Module):
         super(HighResolutionNet, self).__init__()
         ALIGN_CORNERS = config.MODEL.ALIGN_CORNERS
         self.num_classes = config.DATASET.NUM_CLASSES
+        model_section = getattr(config, "MODEL", None)
+        if model_section is None:
+            swag_flag = False
+        else:
+            swag_flag = bool(getattr(model_section, "SWAG", False))
+            if hasattr(model_section, "get"):
+                try:
+                    swag_flag = bool(model_section.get("SWAG", swag_flag))
+                except Exception:
+                    swag_flag = bool(swag_flag)
+        self.swag_enabled = swag_flag
 
         # stem net
         self.conv1 = nn.Conv2d(

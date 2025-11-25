@@ -5,7 +5,7 @@ defaults:
   - network: unet-s
   - model: softmax
   - eu_method: none
-  
+
 exp_name: null
 version: null
 ckpt_path: null
@@ -21,9 +21,11 @@ learning_rate: 0.001
 weight_decay: 0.0
 
 optimizer:
-  _target_: torch.optim.AdamW
+  _target_: torch.optim.SGD
   lr: ${learning_rate}
   weight_decay: ${weight_decay}
+  momentum: 0.9
+  nesterov: true
 
 logger:
   _target_: pytorch_lightning.loggers.TensorBoardLogger

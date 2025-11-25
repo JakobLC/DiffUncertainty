@@ -1,0 +1,4 @@
+# @package _global_
+eu_method:
+  name: "none"
+  nickname: "eu=none"

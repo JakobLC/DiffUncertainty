@@ -1,0 +1,15 @@
+# @package _global_
+eu_method:
+  name: "swag"
+  nickname: "eu=swag"
+
+model:
+  overrides:
+    MODEL:
+      SWAG: true
+
+swag:
+  enabled: true
+  snapshot_frequency: 1
+  max_snapshots: 30
+  min_variance: 1e-30

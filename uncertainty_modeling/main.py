@@ -84,11 +84,13 @@ def main(cfg_hydra: DictConfig):
         data_section = config.get("data", None) or config.get("datamodule", None)
         network_section = config.get("network", None)
         model_section = config.get("model", None)
+        eu_method_section = config.get("eu_method", None)
         auto_name = "-".join(
             [
                 _extract_component_name(data_section, "data"),
                 _extract_component_name(network_section, "network"),
                 _extract_component_name(model_section, "model"),
+                _extract_component_name(eu_method_section, "eu"),
             ]
         )
         with open_dict(config):
@@ -123,7 +125,7 @@ def main(cfg_hydra: DictConfig):
         filename="epoch{epoch}_step{step}",
         auto_insert_metric_name=False,
         save_last=True,
-        save_top_k=1,
+        save_top_k=0,
         save_weights_only=not full_last_ckpt,
     )
     callbacks = [progress_bar, checkpoint_cb]

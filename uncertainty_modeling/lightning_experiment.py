@@ -1,11 +1,12 @@
 import math
 import os
 from random import randrange
-from typing import Optional, Tuple, List
+from typing import Optional, Tuple, List, Mapping, Any
 from argparse import Namespace, ArgumentParser
 
 import hydra
 import yaml
+import warnings
 
 import torch
 import torch.nn.functional as F
@@ -25,6 +26,116 @@ from loss_modules import SoftDiceLoss
 
 import uncertainty_modeling.data.cityscapes_labels as cs_labels
 from uncertainty_modeling.unc_mod_utils.test_utils import calculate_ged
+
+
+class SwagTracker:
+    """Minimal diagonal SWAG accumulator tracking mean and variance of weights."""
+
+    def __init__(
+        self,
+        model: torch.nn.Module,
+        cfg: DictConfig | Mapping[str, Any] | None,
+        trainer_max_epochs: int | None = None,
+    ) -> None:
+        self._raw_config = self._to_plain_dict(cfg)
+        self.enabled: bool = bool(self._raw_config.get("enabled", False))
+        self.snapshot_freq: int = max(1, int(self._raw_config.get("snapshot_frequency", 1)))
+        self.max_snapshots: int = max(1, int(self._raw_config.get("max_snapshots", 20)))
+        self.min_variance: float = float(self._raw_config.get("min_variance", 1e-30))
+        self.storage_device = torch.device("cpu")
+        self.dtype = torch.float32
+        self.n_snapshots: int = 0
+        self.trainer_max_epochs: int | None = trainer_max_epochs
+        self.start_epoch: int = self._derive_start_epoch(self.trainer_max_epochs)
+        if not self.enabled:
+            self.param_count = 0
+            self.mean = torch.tensor([], device=self.storage_device, dtype=self.dtype)
+            self.sq_mean = torch.tensor([], device=self.storage_device, dtype=self.dtype)
+            return
+        sample_vec = self._vectorize(model)
+        self.param_count = sample_vec.numel()
+        self.mean = torch.zeros_like(sample_vec)
+        self.sq_mean = torch.zeros_like(sample_vec)
+
+    def _vectorize(self, model: torch.nn.Module) -> torch.Tensor:
+        views = []
+        for param in model.parameters():
+            if not param.requires_grad:
+                continue
+            tensor = param.detach().to(self.storage_device, dtype=self.dtype)
+            views.append(tensor.reshape(-1))
+        if not views:
+            raise RuntimeError("SWAG tracking requires at least one trainable parameter.")
+        return torch.cat(views, dim=0)
+
+    @staticmethod
+    def _to_plain_dict(cfg: DictConfig | Mapping[str, Any] | None) -> dict[str, Any]:
+        if cfg is None:
+            return {}
+        if isinstance(cfg, DictConfig):
+            return OmegaConf.to_container(cfg, resolve=True)  # type: ignore[return-value]
+        if isinstance(cfg, Mapping):
+            return dict(cfg)
+        return {}
+
+    def _derive_start_epoch(self, trainer_max_epochs: int | None) -> int:
+        if trainer_max_epochs is None or trainer_max_epochs <= 0:
+            return 0
+        last_epoch_index = trainer_max_epochs - 1
+        span = self.snapshot_freq * max(self.max_snapshots - 1, 0)
+        start_epoch = last_epoch_index - span
+        return max(start_epoch, 0)
+
+    def set_trainer_max_epochs(self, trainer_max_epochs: int | None) -> None:
+        """Update start epoch once the actual trainer schedule is known."""
+        self.trainer_max_epochs = trainer_max_epochs
+        self.start_epoch = self._derive_start_epoch(trainer_max_epochs)
+
+    def maybe_collect(self, model: torch.nn.Module, epoch: int) -> bool:
+        if not self.enabled:
+            return False
+        if self.n_snapshots >= self.max_snapshots:
+            return False
+        if epoch < self.start_epoch:
+            return False
+        if (epoch - self.start_epoch) % self.snapshot_freq != 0:
+            return False
+        vec = self._vectorize(model)
+        total = self.n_snapshots + 1
+        old_fac = self.n_snapshots / total if self.n_snapshots > 0 else 0.0
+        new_fac = 1.0 / total
+        self.mean.mul_(old_fac).add_(vec, alpha=new_fac)
+        self.sq_mean.mul_(old_fac).add_(vec.square(), alpha=new_fac)
+        self.n_snapshots += 1
+        return True
+
+    def diag_variance(self) -> torch.Tensor | None:
+        if not self.enabled or self.n_snapshots < 2:
+            return None
+        variances = torch.clamp(self.sq_mean - self.mean.square(), min=self.min_variance)
+        return variances
+
+    def state_dict(self) -> dict[str, Any]:
+        if not self.enabled:
+            return {}
+        return {
+            "mean": self.mean.clone(),
+            "sq_mean": self.sq_mean.clone(),
+            "n_snapshots": self.n_snapshots,
+            "config": self._raw_config,
+        }
+
+    def load_state_dict(self, state: Mapping[str, Any]) -> None:
+        if not self.enabled or not state:
+            return
+        mean = state.get("mean")
+        sq_mean = state.get("sq_mean")
+        if mean is not None and mean.shape == self.mean.shape:
+            self.mean.copy_(mean)
+        if sq_mean is not None and sq_mean.shape == self.sq_mean.shape:
+            self.sq_mean.copy_(sq_mean)
+        self.n_snapshots = int(state.get("n_snapshots", self.n_snapshots))
+
 
 
 class LightningExperiment(pl.LightningModule):
@@ -88,11 +199,14 @@ class LightningExperiment(pl.LightningModule):
 
         data_cfg = _get_section(hparams, "data")
         datamodule_cfg = _get_section(hparams, "datamodule")
+        trainer_cfg = _get_section(hparams, "trainer")
         active_data_cfg = data_cfg if data_cfg is not None else datamodule_cfg
         if active_data_cfg is None:
             raise ValueError(
                 "LightningExperiment requires either 'data' or legacy 'datamodule' configuration."
             )
+
+        self._trainer_max_epochs = _get_value(trainer_cfg, "max_epochs", None)
 
         self.ignore_index = _get_value(active_data_cfg, "ignore_index", 0) or 0
         self.evaluate_all_raters = bool(
@@ -161,6 +275,21 @@ class LightningExperiment(pl.LightningModule):
         else:
             self.lr_scheduler_conf = None
 
+        swag_cfg = getattr(hparams, "swag", None)
+        self.swag_tracker: SwagTracker | None = None
+        if getattr(self.model, "swag_enabled", False):
+            self.swag_tracker = SwagTracker(
+                self.model,
+                swag_cfg,
+                trainer_max_epochs=self._trainer_max_epochs,
+            )
+            if not self.swag_tracker.enabled:
+                warnings.warn(
+                    "SWAG was enabled for the model, but config.swag.enabled is false; skipping SWAG tracking.",
+                    RuntimeWarning,
+                )
+                self.swag_tracker = None
+
     def configure_optimizers(self) -> Tuple[List[optim.Adam], List[dict]]:
         """Define the optimizers and learning rate schedulers. Adam is used as optimizer.
 
@@ -226,6 +355,9 @@ class LightningExperiment(pl.LightningModule):
     def on_train_start(self) -> None:
         super().on_train_start()
         self._ensure_ema_model()
+        if self.swag_tracker is not None:
+            trainer_max_epochs = getattr(self.trainer, "max_epochs", None) if self.trainer is not None else None
+            self.swag_tracker.set_trainer_max_epochs(trainer_max_epochs)
 
     def optimizer_step(self, *args, **kwargs):  # type: ignore[override]
         output = super().optimizer_step(*args, **kwargs)
@@ -233,11 +365,19 @@ class LightningExperiment(pl.LightningModule):
         return output
     
     def on_load_checkpoint(self, checkpoint: dict) -> None:
-        if not self.track_ema_weights:
-            return
-        self._ensure_ema_model()
-        if self.ema_model is not None and "ema_state_dict" in checkpoint:
-            self.ema_model.load_state_dict(checkpoint["ema_state_dict"])  # type: ignore[arg-type]
+        if self.track_ema_weights:
+            self._ensure_ema_model()
+            if self.ema_model is not None and "ema_state_dict" in checkpoint:
+                self.ema_model.load_state_dict(checkpoint["ema_state_dict"])  # type: ignore[arg-type]
+        swag_state = checkpoint.get("swag_state_dict")
+        if self.swag_tracker is not None and swag_state is not None:
+            self.swag_tracker.load_state_dict(swag_state)
+
+    def on_save_checkpoint(self, checkpoint: dict) -> None:
+        if self.track_ema_weights and self.ema_model is not None:
+            checkpoint["ema_state_dict"] = self.ema_model.state_dict()  # type: ignore[assignment]
+        if self.swag_tracker is not None:
+            checkpoint["swag_state_dict"] = self.swag_tracker.state_dict()
 
     def on_fit_start(self):
         """Called when fit begins
@@ -445,6 +585,12 @@ class LightningExperiment(pl.LightningModule):
             batch_size=log_batch_size,
         )
         return loss
+
+    def on_train_epoch_end(self) -> None:
+        super().on_train_epoch_end()
+        if self.swag_tracker is None:
+            return
+        collected = self.swag_tracker.maybe_collect(self.model, self.current_epoch)
 
     def on_validation_epoch_start(self) -> None:
         self._val_metric_accumulators = {}

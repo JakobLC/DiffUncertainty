@@ -87,6 +87,7 @@ class DiffUnet(nn.Module):
         diffusion_kwargs=None,
         diffusion_num_steps: int = 50,
         diffusion_sampler_type: str = "ddpm",
+        swag_enabled: bool = False,
     ):
         super().__init__()
         if isinstance(act, str):
@@ -101,6 +102,7 @@ class DiffUnet(nn.Module):
         self.ssn = bool(ssn)
         self.ssn_rank = ssn_rank
         self.ssn_eps = ssn_eps
+        self.swag_enabled = bool(swag_enabled)
         self.new_upsample_method = new_upsample_method
         self.one_skip_per_reso = one_skip_per_reso
         if num_heads_upsample == -1:
@@ -890,6 +892,7 @@ def get_seg_model(cfg, **kwargs):
     cfg_dict = OmegaConf.to_container(cfg.MODEL, resolve=True)
     #map keys to lower
     cfg_dict = {k.lower(): v for k, v in cfg_dict.items()}
+    swag_requested = bool(cfg_dict.pop("swag", False))
     diffusion_kwargs_cfg = cfg_dict.pop("diffusion_kwargs", None)
     diffusion_sampling_cfg = cfg_dict.pop("diffusion_sampling", None)
     if cfg_dict.get("diffusion", False):
@@ -910,6 +913,7 @@ def get_seg_model(cfg, **kwargs):
         cfg_dict["diffusion_num_steps"] = num_steps
     if sampler is not None:
         cfg_dict["diffusion_sampler_type"] = sampler
+    cfg_dict["swag_enabled"] = swag_requested
     # Hydra can pass extra metadata (e.g., nickname) that DiffUnet does not accept.
     meta_keys = {"nickname"}
     sanitized_kwargs = {k: v for k, v in kwargs.items() if k not in meta_keys}

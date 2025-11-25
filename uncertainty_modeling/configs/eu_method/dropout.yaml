@@ -1,0 +1,11 @@
+# @package _global_
+eu_method:
+  name: "dropout"
+  nickname: "eu=dropout"
+
+model:
+  overrides:
+    MODEL:
+      PRETRAINED: true
+      EXTRA:
+        DROPOUT_FINAL: true

@@ -21,6 +21,7 @@ network:
       SSN: false
       SSN_RANK: 10
       SSN_EPS: 1e-5
+      SWAG: false
       EXTRA:
         FINAL_CONV_KERNEL: 1
         STAGE1:
