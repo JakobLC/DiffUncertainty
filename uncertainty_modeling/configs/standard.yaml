@@ -32,13 +32,13 @@ logger:
 
 progress_bar:
   _target_: pytorch_lightning.callbacks.TQDMProgressBar
-  refresh_rate: 10
+  refresh_rate: 2
 
 trainer:
   max_epochs: 320
   accelerator: gpu
   devices: 1
-  precision: 32 # bf16-mixed
+  precision: bf16-mixed #32 # bf16-mixed #36,3:12
   deterministic: "warn" 
   gradient_clip_val: 0.5
   gradient_clip_algorithm: norm

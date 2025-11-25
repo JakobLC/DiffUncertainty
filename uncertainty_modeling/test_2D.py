@@ -352,11 +352,12 @@ class Tester:
                 "gt": gt,
                 "dataset": batch["dataset"],
             }
-            # If we ensemble multiple generative models (e.g., SSNs),
+            # If we ensemble multiple generative models (e.g., SSNs, diffusion),
             # average the inner samples per model and only aggregate across models.
-            multiple_generative = sum(getattr(m, "ssn", False) for m in self.models) > 1
+            multiple_generative = sum(1 for m in self.models if getattr(m, "is_generative", False)) > 1
             for model in self.models:
-                if model.ssn:
+                au_type = getattr(model, "AU_type", "softmax")
+                if au_type == "ssn":
                     distribution, cov_failed_flag = model.forward(batch["data"].to(self.device))
                     assert not cov_failed_flag, "Covariance matrix was not positive definite"
                     output_samples = distribution.sample([self.n_pred])
@@ -377,6 +378,37 @@ class Tester:
                         for output_sample in output_samples:
                             output_softmax = F.softmax(output_sample, dim=1)
                             all_preds["softmax_pred"].append(output_softmax)
+                elif au_type == "diffusion":
+                    inputs = batch["data"]
+                    if isinstance(inputs, list):
+                        inputs = inputs[0]
+                    inputs = inputs.to(self.device).float()
+                    sample_list = []
+                    num_steps = int(getattr(model, "diffusion_num_steps", self.n_pred))
+                    sampler_type = getattr(model, "diffusion_sampler_type", "ddpm") or "ddpm"
+                    for _ in range(self.n_pred):
+                        x_init = torch.randn(
+                            (inputs.shape[0], model.num_classes, *inputs.shape[2:]),
+                            device=self.device,
+                            dtype=inputs.dtype,
+                        )
+                        sample_output = model.diffusion_sample_loop(
+                            x_init=x_init,
+                            im=inputs,
+                            num_steps=num_steps,
+                            sampler_type=sampler_type,
+                            clip_x=False,
+                            guidance_weight=0.0,
+                            progress_bar=False,
+                            self_cond=False,
+                        )
+                        sample_list.append(F.softmax(sample_output, dim=1))
+                    sample_stack = torch.stack(sample_list)
+                    if multiple_generative:
+                        all_preds["softmax_pred"].append(sample_stack.mean(dim=0))
+                    else:
+                        for sample in sample_stack:
+                            all_preds["softmax_pred"].append(sample)
                 elif self.tta:
                     for index, image in enumerate(batch["data"]):
                         output = model.forward(image.to(self.device))

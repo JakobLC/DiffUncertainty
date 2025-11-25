@@ -28,6 +28,7 @@ from uncertainty_modeling.unc_mod_utils.test_utils import calculate_ged
 
 
 class LightningExperiment(pl.LightningModule):
+
     def __init__(
         self,
         hparams: DictConfig,
@@ -120,6 +121,12 @@ class LightningExperiment(pl.LightningModule):
             )
         else:
             self.model = hydra.utils.instantiate(hparams.model)
+        self.AU_type = getattr(self.model, "AU_type", None)
+        if self.AU_type not in {"softmax", "ssn", "diffusion"}:
+            raise ValueError(f"Unsupported AU_type '{self.AU_type}'.")
+        self.is_generative = bool(getattr(self.model, "is_generative", None))
+        self.diffusion_num_steps = int(getattr(self.model, "diffusion_num_steps", 50))
+        self.diffusion_sampler_type = getattr(self.model, "diffusion_sampler_type", "ddpm") or "ddpm"
         self.weight_decay = weight_decay
         self.learning_rate = learning_rate
         self.ssn_pretrain_epochs = ssn_pretrain_epochs
@@ -321,6 +328,52 @@ class LightningExperiment(pl.LightningModule):
             return loss, output, softmax_samples
         return loss
 
+    def _prepare_diffusion_target(
+        self, target: torch.Tensor, device: torch.device
+    ) -> tuple[torch.Tensor, torch.Tensor | None]:
+        target = target.to(device)
+        if target.ndim == 4 and target.shape[1] == 1:
+            target = target.squeeze(1)
+        ignore_mask: torch.Tensor | None = None
+        if isinstance(self.ignore_index, int) and self.ignore_index >= 0:
+            ignore_mask = target == self.ignore_index
+            if ignore_mask.any():
+                target = target.masked_fill(ignore_mask, 0)
+        one_hot = F.one_hot(target, num_classes=self.model.num_classes)
+        one_hot = one_hot.permute(0, 3, 1, 2).float()
+        loss_mask: torch.Tensor | None = None
+        if ignore_mask is not None:
+            valid = (~ignore_mask).float()
+            loss_mask = valid.unsqueeze(1).expand(-1, self.model.num_classes, -1, -1)
+            if ignore_mask.any():
+                one_hot = one_hot * loss_mask
+        return one_hot, loss_mask
+
+    def _diffusion_sample_predictions(self, inputs: torch.Tensor) -> torch.Tensor:
+        if not hasattr(self.model, "diffusion_sample_loop"):
+            raise RuntimeError("Model does not implement diffusion_sample_loop")
+        batch_size = inputs.shape[0]
+        spatial_shape = inputs.shape[2:]
+        samples: List[torch.Tensor] = []
+        for _ in range(self.n_aleatoric_samples):
+            x_init = torch.randn(
+                (batch_size, self.model.num_classes, *spatial_shape),
+                device=inputs.device,
+                dtype=inputs.dtype,
+            )
+            sample_output = self.model.diffusion_sample_loop(
+                x_init=x_init,
+                im=inputs,
+                num_steps=self.diffusion_num_steps,
+                sampler_type=self.diffusion_sampler_type,
+                clip_x=False,
+                guidance_weight=0.0,
+                progress_bar=False,
+                self_cond=False,
+            )
+            samples.append(torch.softmax(sample_output, dim=1))
+        return torch.stack(samples)
+
     def training_step(self, batch: dict, batch_idx: int) -> torch.Tensor:
         """Perform a training step, i.e. pass a batch to the network and calculate the loss.
 
@@ -331,13 +384,29 @@ class LightningExperiment(pl.LightningModule):
         Returns:
             loss [torch.Tensor]: The computed loss
         """
-        target = batch["seg"].long().squeeze(1)
-        # TODO: check if this works with all models
-        if getattr(self.model, "ssn", False):
+        inputs = batch["data"]
+        if isinstance(inputs, list):
+            inputs = inputs[0]
+        inputs = inputs.float()
+        batch["data"] = inputs
+        target = batch["seg"].long().squeeze(1).to(inputs.device)
+        if self.AU_type == "ssn":
             loss = self.forward_ssn(batch, target)
+        elif self.AU_type == "diffusion":
+            if not hasattr(self.model, "diffusion_train_loss_step"):
+                raise RuntimeError("Model does not implement diffusion training logic.")
+            diffusion_target, diffusion_mask = self._prepare_diffusion_target(target, inputs.device)
+            loss, _ = self.model.diffusion_train_loss_step(
+                x=diffusion_target,
+                im=inputs,
+                loss_mask=diffusion_mask,
+                eps=None,
+                t=None,
+                self_cond=False,
+            )
         elif self.aleatoric_loss:
             device = "cuda" if torch.cuda.is_available() else "cpu"
-            mu, s = self.forward(batch["data"])
+            mu, s = self.forward(inputs)
             sigma = torch.exp(s / 2)
             all_samples = torch.zeros(
                 (self.n_aleatoric_samples, *mu.size()), device=device
@@ -354,7 +423,7 @@ class LightningExperiment(pl.LightningModule):
                 log_sample_avg, target
             )
         else:
-            output = self.forward(batch["data"])
+            output = self.forward(inputs)
             output_softmax = F.softmax(output, dim=1)
 
             if self.ignore_index != 0:
@@ -410,11 +479,8 @@ class LightningExperiment(pl.LightningModule):
             inputs = inputs[0]
         inputs = inputs.float()
 
-        is_ssn_model = bool(getattr(self.model, "ssn", False))
-
         softmax_stack: Optional[torch.Tensor] = None
-
-        if is_ssn_model:
+        if self.AU_type == "ssn":
             eval_loss, output, softmax_stack = self.forward_ssn(
                 batch, target, val=True
             )
@@ -432,6 +498,35 @@ class LightningExperiment(pl.LightningModule):
                 )
                 per_sample_dice.append(d if isinstance(d, torch.Tensor) else torch.tensor(float(d), device=inputs.device))
             eval_dice = torch.stack(per_sample_dice).mean()
+        elif self.AU_type == "diffusion":
+            diffusion_target, diffusion_mask = self._prepare_diffusion_target(target, inputs.device)
+            if not hasattr(self.model, "diffusion_train_loss_step"):
+                raise RuntimeError("Model does not implement diffusion training logic.")
+            with torch.no_grad():
+                eval_loss, _ = self.model.diffusion_train_loss_step(
+                    x=diffusion_target,
+                    im=inputs,
+                    loss_mask=diffusion_mask,
+                    eps=None,
+                    t=None,
+                    self_cond=False,
+                )
+            softmax_stack = self._diffusion_sample_predictions(inputs)
+            per_sample_dice = []
+            for t in range(softmax_stack.shape[0]):
+                d = dice(
+                    softmax_stack[t],
+                    target,
+                    num_classes=self.model.num_classes,
+                    ignore_index=self.ignore_index if self.ignore_index != 0 else None,
+                    binary_dice=self.model.num_classes == 2,
+                    is_softmax=True,
+                )
+                per_sample_dice.append(
+                    d if isinstance(d, torch.Tensor) else torch.tensor(float(d), device=inputs.device)
+                )
+            eval_dice = torch.stack(per_sample_dice).mean()
+            output = softmax_stack.mean(dim=0)
         elif self.aleatoric_loss:
             mu, s = self.forward(inputs)
             sigma = torch.exp(s / 2)
@@ -676,6 +771,9 @@ class LightningExperiment(pl.LightningModule):
         Returns:
             test_loss [torch.Tensor]: The computed loss
         """
+        raise NotImplementedError(
+            "Lightning test_step is unused for this project; please run dedicated testers for evaluation."
+        )
         output = self.forward(batch["data"].float())
         output_softmax = F.softmax(output, dim=1)
 

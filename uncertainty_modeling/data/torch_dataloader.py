@@ -199,6 +199,7 @@ class BaseDataModule(LightningDataModule):
         evaluate_training_data: bool = False,
         evaluate_all_raters: bool = True,
         tta: bool = False,
+        validation_ratio: float = 1.0,
         **kwargs,
     ) -> None:
         """
@@ -238,6 +239,7 @@ class BaseDataModule(LightningDataModule):
         self.evaluate_all_raters = evaluate_all_raters
         # placeholder for optional evaluation dataset based on training data
         self.DS_train_eval = None
+        self.validation_ratio = float(validation_ratio)
 
     def _is_lidc2d_dataset(self) -> bool:
         target = ""
@@ -246,6 +248,23 @@ class BaseDataModule(LightningDataModule):
         elif isinstance(self.dataset, dict):
             target = self.dataset.get("_target_", "")
         return "LIDC2DDataset" in str(target)
+
+    def _maybe_subset_dataset(self, dataset, ratio: float, name: str):
+        if dataset is None:
+            return dataset
+        ratio = float(ratio)
+        if ratio >= 1.0:
+            return dataset
+        if ratio <= 0.0:
+            raise ValueError(
+                f"validation_ratio must be greater than 0 when subsetting {name} dataset."
+            )
+        total = len(dataset)
+        target_size = max(1, int(np.ceil(total * ratio)))
+        if target_size >= total:
+            return dataset
+        indices = np.random.permutation(total)[:target_size]
+        return Subset(dataset, indices.tolist())
 
     def setup(self, stage: str = None) -> None:
         """
@@ -282,6 +301,9 @@ class BaseDataModule(LightningDataModule):
             if is_lidc2d:
                 val_kwargs["return_all_raters"] = self.evaluate_all_raters
             self.DS_val = hydra.utils.instantiate(self.dataset, **val_kwargs)
+            self.DS_val = self._maybe_subset_dataset(
+                self.DS_val, self.validation_ratio, "validation"
+            )
             # Optionally build a validation-view of the training set (independent of train dataloader)
             if self.evaluate_training_data:
                 # create a training dataset instance but with validation transforms

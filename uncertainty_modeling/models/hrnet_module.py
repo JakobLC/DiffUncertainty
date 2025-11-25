@@ -748,6 +748,11 @@ class HighResolutionNet(nn.Module):
             raise NotImplementedError(f"No Pretrained Weights found for {pretrained}")
 
 def get_seg_model(cfg, **kwargs):
+    diffusion_requested = bool(getattr(cfg.MODEL, "DIFFUSION", False))
+    if diffusion_requested:
+        raise NotImplementedError(
+            "HRNet is not wired for diffusion yet; please select a diffusion-capable network such as DiffUNet."
+        )
     model = HighResolutionNet(cfg)
     if cfg.MODEL.PRETRAINED:
         model.load_weights(cfg.MODEL.PRETRAINED_WEIGHTS)

@@ -1,13 +1,16 @@
 import math
 import warnings
 from abc import abstractmethod
+from typing import Any, Mapping
 
 import numpy as np
 import torch
 import torch.distributions as td
 import torch.nn as nn
 import torch.nn.functional as F
-from omegaconf import OmegaConf
+from omegaconf import DictConfig, OmegaConf
+
+from .diffusion import ContinuousGaussianDiffusion
 
 def timestep_embedding(timesteps, dim, max_period=10):
     """
@@ -81,6 +84,9 @@ class DiffUnet(nn.Module):
         ssn=False,
         ssn_rank=10,
         ssn_eps=1e-5,
+        diffusion_kwargs=None,
+        diffusion_num_steps: int = 50,
+        diffusion_sampler_type: str = "ddpm",
     ):
         super().__init__()
         if isinstance(act, str):
@@ -130,14 +136,20 @@ class DiffUnet(nn.Module):
 
         # Only create timestep embedding network when diffusion is enabled.
         if self.diffusion:
+            assert not ssn, "SSN with diffusion is not supported."
             self.fp16_attrs.append("time_embed")
             self.time_embed = nn.Sequential(
                 nn.Linear(model_channels, time_embed_dim),
                 self.act(),
                 nn.Linear(time_embed_dim, time_embed_dim),
             )
+            diffusion_kwargs = diffusion_kwargs or {}
+            self.diffusion_process = ContinuousGaussianDiffusion(**diffusion_kwargs)
         else:
             self.time_embed = None
+            self.diffusion_process = None
+        self.diffusion_num_steps = int(diffusion_num_steps) if diffusion_num_steps is not None else 50
+        self.diffusion_sampler_type = diffusion_sampler_type or "ddpm"
         self.in_channels = in_channels
 
         self.input_blocks = nn.ModuleList(
@@ -353,6 +365,7 @@ class DiffUnet(nn.Module):
                 timestep_embedding(timesteps, self.model_channels)
             )
         else:
+            assert timesteps is None, "timesteps must be None when diffusion=False"
             # Non-diffusion mode: ignore timestep conditioning.
             emb = None
 
@@ -434,6 +447,54 @@ class DiffUnet(nn.Module):
             distribution = td.Independent(td.Normal(loc=mean, scale=scale), 1)
 
         return distribution, cov_failed_flag
+
+    def diffusion_train_loss_step(
+        self,
+        x,
+        im,
+        loss_mask=None,
+        eps=None,
+        t=None,
+        self_cond=False,
+    ):
+        """Proxy ContinuousGaussianDiffusion.train_loss_step so callers can use this module directly."""
+        if self.diffusion_process is None:
+            raise RuntimeError("diffusion_train_loss_step called but diffusion is disabled for this model")
+        return self.diffusion_process.train_loss_step(
+            model=self,
+            x=x,
+            im=im,
+            loss_mask=loss_mask,
+            eps=eps,
+            t=t,
+            self_cond=self_cond,
+        )
+
+    def diffusion_sample_loop(
+        self,
+        x_init,
+        im,
+        num_steps,
+        sampler_type="ddpm",
+        clip_x=False,
+        guidance_weight=0.0,
+        progress_bar=False,
+        self_cond=False,
+    ):
+        """Proxy ContinuousGaussianDiffusion.sample_loop for downstream sampling utilities."""
+        if self.diffusion_process is None:
+            raise RuntimeError("diffusion_sample_loop called but diffusion is disabled for this model")
+        return self.diffusion_process.sample_loop(
+            model=self,
+            x_init=x_init,
+            im=im,
+            num_steps=num_steps,
+            sampler_type=sampler_type,
+            clip_x=clip_x,
+            guidance_weight=guidance_weight,
+            progress_bar=progress_bar,
+            self_cond=self_cond,
+        )
 
 class TimestepBlock(nn.Module):
     """
@@ -808,13 +869,49 @@ class ResBlock(TimestepBlock):
         return self.skip_connection(x) + h
 
 
+def _normalize_sampling_config(config: Any) -> dict[str, Any]:
+    """Return a lower-cased plain dict for diffusion sampling overrides."""
+    if config is None:
+        return {}
+    if isinstance(config, DictConfig):
+        config = OmegaConf.to_container(config, resolve=True)
+    if not isinstance(config, Mapping):
+        raise TypeError(
+            f"diffusion_sampling must be a mapping when provided, got {type(config)!r}."
+        )
+    normalized = {}
+    for key, value in config.items():
+        normalized[str(key).lower()] = value
+    return normalized
+
+
 def get_seg_model(cfg, **kwargs):
     """Factory that forwards config as kwargs, assuming keys match DiffUnet.__init__."""
     cfg_dict = OmegaConf.to_container(cfg.MODEL, resolve=True)
     #map keys to lower
     cfg_dict = {k.lower(): v for k, v in cfg_dict.items()}
+    diffusion_kwargs_cfg = cfg_dict.pop("diffusion_kwargs", None)
+    diffusion_sampling_cfg = cfg_dict.pop("diffusion_sampling", None)
+    if cfg_dict.get("diffusion", False):
+        cfg_dict["in_channels"] += cfg_dict["out_channels"]
+    diffusion_kwargs_override = kwargs.pop("diffusion_kwargs", None)
+    if diffusion_kwargs_override is not None:
+        diffusion_kwargs = diffusion_kwargs_override
+    else:
+        diffusion_kwargs = diffusion_kwargs_cfg
+    diffusion_sampling_override = kwargs.pop("diffusion_sampling", None)
+    if diffusion_sampling_override is not None:
+        diffusion_sampling = _normalize_sampling_config(diffusion_sampling_override)
+    else:
+        diffusion_sampling = _normalize_sampling_config(diffusion_sampling_cfg)
+    num_steps = diffusion_sampling.get("num_steps")
+    sampler = diffusion_sampling.get("sampler")
+    if num_steps is not None:
+        cfg_dict["diffusion_num_steps"] = num_steps
+    if sampler is not None:
+        cfg_dict["diffusion_sampler_type"] = sampler
     # Hydra can pass extra metadata (e.g., nickname) that DiffUnet does not accept.
     meta_keys = {"nickname"}
     sanitized_kwargs = {k: v for k, v in kwargs.items() if k not in meta_keys}
-    model = DiffUnet(**cfg_dict, **sanitized_kwargs)
+    model = DiffUnet(**cfg_dict, diffusion_kwargs=diffusion_kwargs, **sanitized_kwargs)
     return model

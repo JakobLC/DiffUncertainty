@@ -1,0 +1,24 @@
+# @package _global_
+model:
+  nickname: "diffusion"
+  _target_: uncertainty_modeling.unc_mod_utils.model_factory.instantiate_network
+  target: ${network.target}
+  cfg: ${network.cfg}
+  overrides:
+    MODEL:
+      DIFFUSION: true
+      SSN: false
+      DIFFUSION_SAMPLING:
+        NUM_STEPS: 10
+        SAMPLER: "ddpm"
+      DIFFUSION_KWARGS:
+        schedule_name: "cosine"
+        input_scale: 0.1
+        model_pred_type: "X"
+        weights_type: "sigmoid_-4"
+        sampler_type: "uniform_low_d"
+        var_type: "large"
+        loss_type: "MSE"
+        logsnr_min: -10.0
+        logsnr_max: 10.0
+        decouple_loss_weights: true

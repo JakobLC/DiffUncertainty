@@ -17,10 +17,40 @@ def _clone_config(cfg: DictConfig | Mapping[str, Any]) -> DictConfig:
     raise TypeError(f"Unsupported config type: {type(cfg).__name__}")
 
 
+ALLOWED_AU_TYPES = {"softmax", "ssn", "diffusion"}
+
+
+def _normalize_au_type(value: Any | None) -> str | None:
+    if value is None:
+        return None
+    token = str(value).strip().lower()
+    if token in ALLOWED_AU_TYPES:
+        return token
+    return None
+
+
+def _infer_model_au_type(model: Any, nickname: Any | None) -> str:
+    explicit = _normalize_au_type(nickname)
+    if explicit is not None:
+        return explicit
+    if bool(getattr(model, "diffusion", False)):
+        return "diffusion"
+    if bool(getattr(model, "ssn", False)):
+        return "ssn"
+    return "softmax"
+
+
+def _attach_au_metadata(model: Any, nickname: Any | None) -> None:
+    au_type = _infer_model_au_type(model, nickname)
+    setattr(model, "AU_type", au_type)
+    setattr(model, "is_generative", au_type != "softmax")
+
+
 def instantiate_network(
     target: str,
     cfg: DictConfig | Mapping[str, Any],
     overrides: DictConfig | Mapping[str, Any] | None = None,
+    nickname: str | None = None,
     **kwargs: Any,
 ) -> Any:
     """Instantiate a model network with optional configuration overrides.
@@ -47,4 +77,6 @@ def instantiate_network(
     if kwargs:
         instantiate_conf.update(kwargs)
 
-    return hydra.utils.instantiate(instantiate_conf)
+    model = hydra.utils.instantiate(instantiate_conf)
+    _attach_au_metadata(model, nickname)
+    return model

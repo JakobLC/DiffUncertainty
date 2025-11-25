@@ -7,11 +7,12 @@ data:
   num_classes: 24
   ignore_index: 255
   num_workers: 10
-  batch_size: 32
-  val_batch_size: 32
+  batch_size: 16
+  val_batch_size: 16
   data_fold_id: 0
   evaluate_training_data: true
   evaluate_all_raters: true
+  validation_ratio: 1.0
   augmentations:
     rotation_limit: 22.5
     scale_limit: [ -0.2, 0.2 ]

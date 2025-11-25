@@ -16,6 +16,8 @@ network:
         Paddle: HRNet_W48_C_ssld_pretrained.pth
       ALIGN_CORNERS: False
       INPUT_CHANNELS: 3
+      DIFFUSION: false
+      DIFFUSION_KWARGS: null
       SSN: false
       SSN_RANK: 10
       SSN_EPS: 1e-5
