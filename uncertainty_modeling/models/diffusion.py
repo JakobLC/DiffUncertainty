@@ -12,7 +12,7 @@ def mse_loss(pred, gt, loss_mask=None, batch_dim=0):
     """mean squared error loss reduced over all dimensions except batch"""
     non_batch_dims = [i for i in range(len(gt.shape)) if i!=batch_dim]
     if loss_mask is None:
-        loss_mask = torch.ones_like(gt)*(1/torch.numel(gt[0])).to(pred.device)
+        loss_mask = (torch.ones_like(gt)*(1/torch.numel(gt[0]))).to(pred.device)
     else:
         div = torch.sum(loss_mask,dim=non_batch_dims,keepdim=True)+1e-14
         loss_mask = (loss_mask/div).to(pred.device)
@@ -22,7 +22,7 @@ def bce_loss(pred, gt, loss_mask=None, batch_dim=0):
     """crossentropy loss reduced over all dimensions except batch"""
     non_batch_dims = [i for i in range(len(gt.shape)) if i!=batch_dim]
     if loss_mask is None:
-        loss_mask = torch.ones_like(gt)*(1/torch.numel(gt[0])).to(pred.device)
+        loss_mask = (torch.ones_like(gt)*(1/torch.numel(gt[0]))).to(pred.device)
     else:
         div = torch.sum(loss_mask,dim=non_batch_dims,keepdim=True)+1e-14
         loss_mask = (loss_mask/div).to(pred.device)
@@ -233,9 +233,10 @@ class ContinuousGaussianDiffusion():
                 bias = 0# aka simply the gamma function
             else:
                 bias = float(self.weights_type.split("_")[1])
-            weights = torch.sigmoid(self.logsnr(t)-bias)
+            weights = torch.sigmoid(self.logsnr(t)+bias)
         else:
             raise NotImplementedError(self.weights_type)
+
         if self.decouple_loss_weights:
             weights *= -self.diff_logsnr(t)
         return weights

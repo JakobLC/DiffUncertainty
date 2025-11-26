@@ -148,7 +148,6 @@ class LightningExperiment(pl.LightningModule):
         nested_hparam_dict: Optional[dict] = None,
         aleatoric_loss: bool = False,
         n_aleatoric_samples: int = 10,
-        ssn_pretrain_epochs: int = 5,
         *args,
         **kwargs
     ):
@@ -243,8 +242,9 @@ class LightningExperiment(pl.LightningModule):
         self.diffusion_sampler_type = getattr(self.model, "diffusion_sampler_type", "ddpm") or "ddpm"
         self.weight_decay = weight_decay
         self.learning_rate = learning_rate
-        self.ssn_pretrain_epochs = ssn_pretrain_epochs
-
+        self.ssn_pretrain_epochs = int(getattr(hparams, "pretrain_epochs", 5))
+        print(self.ssn_pretrain_epochs)
+        exit()
         ckpt_cfg = hparams.get("ckpt_save_freq", None)
         self.track_ema_weights = bool(getattr(ckpt_cfg, "track_ema_weights", False))
         self.ema_decay = float(getattr(ckpt_cfg, "ema_decay", 0.999))

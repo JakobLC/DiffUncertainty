@@ -1,4 +1,6 @@
 # @package _global_
+
+pretrain_epochs: 10
 model:
   nickname: "au=ssn"
   _target_: uncertainty_modeling.unc_mod_utils.model_factory.instantiate_network

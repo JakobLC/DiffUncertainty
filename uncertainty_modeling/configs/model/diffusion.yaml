@@ -15,10 +15,10 @@ model:
         schedule_name: "cosine"
         input_scale: 0.1
         model_pred_type: "X"
-        weights_type: "sigmoid_-4"
+        weights_type: "uniform"
         sampler_type: "uniform_low_d"
         var_type: "large"
         loss_type: "MSE"
         logsnr_min: -10.0
         logsnr_max: 10.0
-        decouple_loss_weights: true
+        decouple_loss_weights: false

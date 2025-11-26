@@ -3,7 +3,7 @@ import os
 from argparse import ArgumentParser, Namespace
 from collections import OrderedDict
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Tuple
 
 import hydra
 import torch
@@ -13,8 +13,17 @@ import yaml
 from evaluation.metrics.dice_wrapped import dice
 
 
-def test_cli(config_file: Optional[str] = None) -> Namespace:
-    """Common CLI used by 2D testing utilities."""
+def test_cli(
+    config_file: Optional[str] = None,
+    extra_args_fn: Optional[Callable[[ArgumentParser], None]] = None,
+) -> Namespace:
+    """Common CLI used by 2D testing utilities.
+
+    Args:
+        config_file: Optional path to a YAML file with default argument values.
+        extra_args_fn: Optional callback that can register additional CLI arguments
+            on the parser before parsing occurs (used by specialized scripts).
+    """
     parser = ArgumentParser()
     parser.add_argument(
         "--checkpoint_paths",
@@ -120,6 +129,9 @@ def test_cli(config_file: Optional[str] = None) -> Namespace:
             "Skip evaluation when metrics.json already contains a mean entry for the job (best-effort check)."
         ),
     )
+
+    if extra_args_fn is not None:
+        extra_args_fn(parser)
 
     if config_file is not None:
         config_path = os.path.join(os.path.dirname(__file__), "..", config_file)

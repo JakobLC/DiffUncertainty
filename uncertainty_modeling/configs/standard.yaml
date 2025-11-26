@@ -14,10 +14,9 @@ resume_from_ckpt: null
 save_dir: "/home/jloch/Desktop/diff/luzern/values/saves"
 
 seed: 123
-pretrain_epochs: 5
 
 # training hyperparams
-learning_rate: 0.001
+learning_rate: 0.0001
 weight_decay: 0.0
 
 optimizer:
