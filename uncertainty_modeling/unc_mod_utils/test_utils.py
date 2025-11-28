@@ -66,7 +66,25 @@ def test_cli(
         "--n_pred",
         type=int,
         default=10,
-        help="Number of predictions to sample per model (for generative models).",
+        help="Number of predictions to sample per model (for generative AU models).",
+    )
+    parser.add_argument(
+        "--n_models",
+        type=int,
+        default=10,
+        help="Number of models to sample (for EU models (SWAG, MC Dropout, etc.)).",
+    )
+    parser.add_argument(
+        "--swag-blockwise",
+        action="store_true",
+        default=False,
+        help="Use blockwise SWAG sampling when generating ensemble members.",
+    )
+    parser.add_argument(
+        "--swag-low-rank-cov",
+        action="store_true",
+        default=False,
+        help="Include the low-rank covariance component during SWAG sampling (ignored for diag-only stats).",
     )
     parser.add_argument(
         "--n_reference_samples",

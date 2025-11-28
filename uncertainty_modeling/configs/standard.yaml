@@ -66,3 +66,4 @@ swag:
   snapshot_frequency: 1
   max_snapshots: 20
   min_variance: 1e-30
+  diag_only: true

@@ -575,10 +575,9 @@ class MLPBlock(TimestepBlock):
                 2 * c if use_scale_shift_norm else c,
             )
         self.out_layers = nn.Sequential(
-            nn.Dropout(p=dropout),
+            nn.Dropout2d(p=dropout),
             nn.Conv2d(c, self.out_channels, 1),
         )
-
         if self.out_channels == channels:
             self.skip_connection = nn.Identity()
         else:
@@ -837,12 +836,12 @@ class ResBlock(TimestepBlock):
         self.out_layers = nn.Sequential(
             GroupNorm32(self.out_channels),
             self.act(),
-            nn.Dropout(p=dropout),
+            nn.Dropout2d(p=dropout),
             zero_module(
                 nn.Conv2d(self.out_channels, self.out_channels, 3, padding=1)
             ),
         )
-
+        
         if self.out_channels == channels:
             self.skip_connection = nn.Identity()
         elif use_conv:
@@ -893,8 +892,19 @@ def get_seg_model(cfg, **kwargs):
     #map keys to lower
     cfg_dict = {k.lower(): v for k, v in cfg_dict.items()}
     swag_requested = bool(cfg_dict.pop("swag", False))
+    dropout_rate_override = cfg_dict.pop("dropout_rate", None)
     diffusion_kwargs_cfg = cfg_dict.pop("diffusion_kwargs", None)
     diffusion_sampling_cfg = cfg_dict.pop("diffusion_sampling", None)
+    if dropout_rate_override is not None:
+        try:
+            prob = float(dropout_rate_override)
+        except (TypeError, ValueError):
+            prob = None
+        if prob is not None:
+            cfg_dict["dropout"] = prob
+    # Remove keys that DiffUnet.__init__ does not accept but might be present in shared configs.
+    for stray_key in ("pretrained", "pretrained_weights"):
+        cfg_dict.pop(stray_key, None)
     if cfg_dict.get("diffusion", False):
         cfg_dict["in_channels"] += cfg_dict["out_channels"]
     diffusion_kwargs_override = kwargs.pop("diffusion_kwargs", None)

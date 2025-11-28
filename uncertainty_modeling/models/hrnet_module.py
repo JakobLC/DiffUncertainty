@@ -35,6 +35,35 @@ BN_MOMENTUM = 0.1
 ALIGN_CORNERS = None
 
 
+def _lookup_config_value(section, key, default=None):
+    if section is None:
+        return default
+    if isinstance(section, dict):
+        return section.get(key, default)
+    getter = getattr(section, "get", None)
+    if callable(getter):
+        try:
+            return getter(key, default)
+        except Exception:
+            pass
+    try:
+        return getattr(section, key)
+    except AttributeError:
+        return default
+    except Exception:
+        return default
+
+
+def _dropout_rate_or_zero(value) -> float:
+    if value is None:
+        return 0.0
+    try:
+        prob = float(value)
+    except (TypeError, ValueError):
+        return 0.0
+    return prob if prob > 0.0 else 0.0
+
+
 def conv3x3(in_planes, out_planes, stride=1):
     """3x3 convolution with padding"""
     return nn.Conv2d(
@@ -50,8 +79,9 @@ class BasicBlock(nn.Module):
         self.conv1 = conv3x3(inplanes, planes, stride)
         self.bn1 = BatchNorm2d(planes, momentum=BN_MOMENTUM)
         self.relu = nn.ReLU(inplace=relu_inplace)
-        if dropout:
-            self.dropout = nn.Dropout(p=0.5)
+        dropout_prob = _dropout_rate_or_zero(dropout)
+        if dropout_prob > 0.0:
+            self.dropout = nn.Dropout(p=dropout_prob)
         self.conv2 = conv3x3(planes, planes)
         self.bn2 = BatchNorm2d(planes, momentum=BN_MOMENTUM)
         self.downsample = downsample
@@ -179,6 +209,19 @@ class HighResolutionModule(nn.Module):
             )
 
             raise ValueError(error_msg)
+
+    def _coerce_branch_dropout(self, value) -> float:
+        if isinstance(value, bool):
+            return self._dropout_flag_rate if value else 0.0
+        return _dropout_rate_or_zero(value)
+
+    def _resolve_stage_dropout(self, layer_config, num_branches):
+        raw = layer_config.get("DROPOUT")
+        if raw is None:
+            if self._global_dropout_rate > 0.0:
+                return [self._global_dropout_rate] * num_branches
+            return [0.0] * num_branches
+        return [self._coerce_branch_dropout(entry) for entry in raw]
 
     def _make_one_branch(
         self, branch_index, block, num_blocks, num_channels, dropout, stride=1
@@ -341,7 +384,8 @@ blocks_dict = {"BASIC": BasicBlock, "BOTTLENECK": Bottleneck}
 class HighResolutionNet(nn.Module):
     def __init__(self, config, **kwargs):
         global ALIGN_CORNERS
-        extra = config.MODEL.EXTRA
+        model_section = config.MODEL
+        extra = model_section.EXTRA
         super(HighResolutionNet, self).__init__()
         ALIGN_CORNERS = config.MODEL.ALIGN_CORNERS
         self.num_classes = config.DATASET.NUM_CLASSES
@@ -356,6 +400,10 @@ class HighResolutionNet(nn.Module):
                 except Exception:
                     swag_flag = bool(swag_flag)
         self.swag_enabled = swag_flag
+        self._global_dropout_rate = _dropout_rate_or_zero(
+            _lookup_config_value(model_section, "DROPOUT_RATE", 0.0)
+        )
+        self._dropout_flag_rate = self._global_dropout_rate
 
         # stem net
         self.conv1 = nn.Conv2d(
@@ -413,10 +461,10 @@ class HighResolutionNet(nn.Module):
             self.stage4_cfg, num_channels, multi_scale_output=True
         )
 
-        if "DROPOUT_FINAL" in extra:
-            self.dropout_final = extra["DROPOUT_FINAL"]
-        else:
-            self.dropout_final = False
+        raw_final_dropout = _lookup_config_value(extra, "DROPOUT_FINAL", False)
+        self.dropout_final_rate = self._coerce_branch_dropout(raw_final_dropout)
+        if self.dropout_final_rate <= 0.0 and self._global_dropout_rate > 0.0:
+            self.dropout_final_rate = self._global_dropout_rate
 
         last_inp_channels = int(np.sum(pre_stage_channels))
 
@@ -540,10 +588,7 @@ class HighResolutionNet(nn.Module):
         num_channels = layer_config["NUM_CHANNELS"]
         block = blocks_dict[layer_config["BLOCK"]]
         fuse_method = layer_config["FUSE_METHOD"]
-        if "DROPOUT" in layer_config:
-            dropout = layer_config["DROPOUT"]
-        else:
-            dropout = [False] * num_branches
+        dropout = self._resolve_stage_dropout(layer_config, num_branches)
 
         modules = []
         for i in range(num_modules):
@@ -663,11 +708,11 @@ class HighResolutionNet(nn.Module):
         x1 = x[1]
         x2 = x[2]
         x3 = x[3]
-        if self.dropout_final:
-            x0 = F.dropout(x0, 0.5, training=True)
-            x1 = F.dropout(x1, 0.5, training=True)
-            x2 = F.dropout(x2, 0.5, training=True)
-            x3 = F.dropout(x3, 0.5, training=True)
+        if self.dropout_final_rate > 0.0:
+            x0 = F.dropout(x0, self.dropout_final_rate, training=True)
+            x1 = F.dropout(x1, self.dropout_final_rate, training=True)
+            x2 = F.dropout(x2, self.dropout_final_rate, training=True)
+            x3 = F.dropout(x3, self.dropout_final_rate, training=True)
 
         # Upsampling
         x0_h, x0_w = x[0].size(2), x[0].size(3)

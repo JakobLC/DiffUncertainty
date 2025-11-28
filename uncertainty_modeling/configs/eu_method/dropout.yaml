@@ -3,9 +3,12 @@ eu_method:
   name: "dropout"
   nickname: "eu=dropout"
 
+dropout:
+  enabled: true
+  probability: 0.2
+
 model:
   overrides:
     MODEL:
       PRETRAINED: true
-      EXTRA:
-        DROPOUT_FINAL: true
+  dropout_cfg: ${dropout}

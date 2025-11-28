@@ -1,3 +1,4 @@
+import copy
 import json
 import os
 from argparse import Namespace
@@ -27,24 +28,37 @@ from uncertainty_modeling.unc_mod_utils.test_utils import (
 )
 import uncertainty_modeling.data.cityscapes_labels as cs_labels
 from global_utils.checkpoint_format import format_checkpoint_subdir
+from uncertainty_modeling.unc_mod_utils.swag import SWAG
 
 
 class Tester:
     def __init__(self, args: Namespace):
-        self.all_checkpoints = self.get_checkpoints(args.checkpoint_paths)
+        checkpoint_paths = getattr(args, "checkpoint_paths", None)
+        self.checkpoint_paths = list(checkpoint_paths) if checkpoint_paths is not None else []
+        if not self.checkpoint_paths:
+            raise ValueError("Tester requires at least one checkpoint path.")
+        self.all_checkpoints = self.get_checkpoints(self.checkpoint_paths)
         hparams = self.all_checkpoints[0]["hyper_parameters"]
         set_seed(hparams["seed"])
-        self.ignore_index = hparams["datamodule"]["ignore_index"]
+        self.ignore_index = hparams["data"]["ignore_index"]
         #self.evaluate_all_raters = True#bool(hparams.get("evaluate_all_raters", True))
         self.skip_ged = args.skip_ged
         self.test_batch_size = args.test_batch_size
         self.tta = args.tta
         self.test_dataloader = self.get_test_dataloader(args, hparams)
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
-        self.models = load_models_from_checkpoint(
+        self.swag_blockwise = bool(getattr(args, "swag_blockwise", False))
+        self.swag_low_rank_cov = bool(getattr(args, "swag_low_rank_cov", False))
+        base_models = load_models_from_checkpoint(
             self.all_checkpoints,
             device=self.device,
             use_ema=bool(getattr(args, "use_ema", False)),
+        )
+        self.n_models = max(int(getattr(args, "n_models", 0) or 0), 0)
+        self.models = self._maybe_expand_swag_models(
+            base_models,
+            self.all_checkpoints,
+            self.checkpoint_paths,
         )
         self.n_pred = args.n_pred
         self.results_dict = {}
@@ -69,19 +83,19 @@ class Tester:
         all_checkpoints = []
         for checkpoint_path in checkpoint_paths:
             checkpoint = torch.load(checkpoint_path, weights_only=False)
-            checkpoint["hyper_parameters"]["MODEL"]["PRETRAINED"] = False
             # Minimal fix: if top-level hyper_parameters is a Lightning AttributeDict, cast to plain dict
             if checkpoint["hyper_parameters"].__class__.__name__ == "AttributeDict":
                 checkpoint["hyper_parameters"] = dict(checkpoint["hyper_parameters"])
             conf = OmegaConf.create(checkpoint["hyper_parameters"])
             resolved = OmegaConf.to_container(conf, resolve=True)
+            Tester._disable_hrnet_pretrained_flag(resolved)
             checkpoint["hyper_parameters"] = resolved
             all_checkpoints.append(checkpoint)
         return all_checkpoints
 
     @staticmethod
     def set_n_reference_samples(hparams, n_reference_samples):
-        transforms_cfg = hparams["AUGMENTATIONS"].get("TEST", [])
+        transforms_cfg = hparams["data"]["augmentations"].get("TEST", [])
         updated = False
         for compose in transforms_cfg:
             compose_cfg = compose.get("Compose")
@@ -94,6 +108,144 @@ class Tester:
                     ] = n_reference_samples
                     updated = True
         return hparams
+
+    @staticmethod
+    def _disable_hrnet_pretrained_flag(hparams):
+        if not isinstance(hparams, dict):
+            return
+
+        def _set_flag(section):
+            if isinstance(section, dict) and "PRETRAINED" in section:
+                section["PRETRAINED"] = False
+                return True
+            return False
+
+        legacy_model = hparams.get("MODEL") if isinstance(hparams, dict) else None
+        if _set_flag(legacy_model):
+            return
+
+        network_section = hparams.get("network") if isinstance(hparams, dict) else None
+        if not isinstance(network_section, dict):
+            return
+
+        candidates = []
+        cfg_section = network_section.get("cfg")
+        if isinstance(cfg_section, dict):
+            candidates.append(cfg_section.get("MODEL"))
+
+        nested_model = network_section.get("model")
+        if isinstance(nested_model, dict):
+            if isinstance(nested_model.get("cfg"), dict):
+                candidates.append(nested_model["cfg"].get("MODEL"))
+            candidates.append(nested_model.get("MODEL"))
+
+        for candidate in candidates:
+            if _set_flag(candidate):
+                return
+
+    @staticmethod
+    def _normalize_swag_config(cfg):
+        base = {
+            "enabled": False,
+            "snapshot_frequency": 1,
+            "max_snapshots": 20,
+            "min_variance": 1e-30,
+            "diag_only": True,
+        }
+        if cfg is None:
+            return base
+        container = None
+        if isinstance(cfg, dict):
+            container = cfg
+        else:
+            try:
+                container = OmegaConf.to_container(cfg, resolve=True)
+            except Exception:
+                try:
+                    container = OmegaConf.to_container(OmegaConf.create(cfg), resolve=True)
+                except Exception:
+                    container = None
+        if isinstance(container, dict):
+            for key in base:
+                if key in container:
+                    base[key] = container[key]
+        base["snapshot_frequency"] = max(1, int(base["snapshot_frequency"]))
+        base["max_snapshots"] = max(1, int(base["max_snapshots"]))
+        base["min_variance"] = float(base["min_variance"])
+        base["diag_only"] = bool(base["diag_only"])
+        base["enabled"] = bool(base["enabled"])
+        return base
+
+    def _maybe_expand_swag_models(self, base_models, checkpoints, checkpoint_paths):
+        if not base_models or not checkpoints:
+            return base_models
+        if self.n_models <= 0:
+            return base_models
+        expanded_models = []
+        total = len(base_models)
+        for idx in range(total):
+            model = base_models[idx]
+            checkpoint = checkpoints[idx] if idx < len(checkpoints) else None
+            if checkpoint is None:
+                expanded_models.append(model)
+                continue
+            swag_state = checkpoint.get("swag_state_dict")
+            swag_config = checkpoint.get("swag_config") or checkpoint.get("hyper_parameters", {}).get("swag")
+            ckpt_label = checkpoint_paths[idx] if idx < len(checkpoint_paths) else f"checkpoint_{idx}"
+            swag_models = self._sample_swag_draws(model, swag_state, swag_config, ckpt_label)
+            if swag_models:
+                expanded_models.extend(swag_models)
+            else:
+                expanded_models.append(model)
+        return expanded_models
+
+    def _sample_swag_draws(self, template_model, swag_state, swag_config, checkpoint_label):
+        if not swag_state or self.n_models <= 0:
+            return []
+        if isinstance(swag_state, dict) and "mean" in swag_state and "sq_mean" in swag_state:
+            print(
+                f"[SWAG] Checkpoint '{checkpoint_label}' uses an unsupported legacy SWAG format. "
+                "Please regenerate checkpoints with the updated SWAG implementation."
+            )
+            return []
+        config = self._normalize_swag_config(swag_config)
+        swag = SWAG(
+            diag_only=config["diag_only"],
+            max_num_models=config["max_snapshots"],
+            var_clamp=config["min_variance"],
+        )
+        swag.prepare(template_model)
+        try:
+            swag.load_state_dict(swag_state)
+        except RuntimeError as exc:
+            print(f"[SWAG] Failed to load statistics for '{checkpoint_label}': {exc}")
+            return []
+        snapshots = int(swag.n_models.item())
+        if snapshots < 2:
+            print(
+                f"[SWAG] Checkpoint '{checkpoint_label}' has only {snapshots} snapshot(s); sampling skipped."
+            )
+            return []
+        use_low_rank = self.swag_low_rank_cov and not config["diag_only"]
+        if self.swag_low_rank_cov and config["diag_only"]:
+            print(
+                f"[SWAG] Checkpoint '{checkpoint_label}' stores diagonal-only stats; ignoring --swag-low-rank-cov."
+            )
+        sampled_models = []
+        for sample_idx in range(self.n_models):
+            sampled_model = copy.deepcopy(template_model)
+            swag.sample(
+                sampled_model,
+                scale=1.0,
+                use_low_rank=use_low_rank,
+                blockwise=self.swag_blockwise,
+            )
+            sampled_model.eval()
+            sampled_models.append(sampled_model.to(self.device))
+        print(
+            f"[SWAG] Sampled {len(sampled_models)} model(s) from '{checkpoint_label}' (n_snapshots={snapshots})."
+        )
+        return sampled_models
 
     def create_save_dirs(self):
         path_parts = [
@@ -133,19 +285,19 @@ class Tester:
         data_input_dir = (
             args.data_input_dir
             if args.data_input_dir is not None
-            else hparams["data_input_dir"]
+            else hparams["data"]["data_input_dir"]
         )
         if args.data_input_dir is not None:
-            hparams["datamodule"]["dataset"]["splits_path"] = hparams["datamodule"][
+            hparams["data"]["dataset"]["splits_path"] = hparams["data"][
                 "dataset"
-            ]["splits_path"].replace(hparams["data_input_dir"], args.data_input_dir)
+            ]["splits_path"].replace(hparams["data"]["data_input_dir"], args.data_input_dir)
         hparams = self.set_n_reference_samples(hparams, args.n_reference_samples)
         if self.test_batch_size:
-            hparams["datamodule"]["val_batch_size"] = self.test_batch_size
+            hparams["data"]["val_batch_size"] = self.test_batch_size
         dm = hydra.utils.instantiate(
-            hparams["datamodule"],
+            hparams["data"],
             data_input_dir=data_input_dir,
-            augmentations=hparams["AUGMENTATIONS"],
+            augmentations=hparams["data"]["augmentations"],
             seed=hparams["seed"],
             test_split=args.test_split,
             tta=self.tta,

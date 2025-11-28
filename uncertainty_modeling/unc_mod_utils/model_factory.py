@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any, Mapping
 
 import hydra.utils
-from omegaconf import DictConfig, OmegaConf
+from omegaconf import DictConfig, OmegaConf, open_dict
 
 
 def _clone_config(cfg: DictConfig | Mapping[str, Any]) -> DictConfig:
@@ -15,6 +15,47 @@ def _clone_config(cfg: DictConfig | Mapping[str, Any]) -> DictConfig:
     if isinstance(cfg, Mapping):
         return OmegaConf.create(dict(cfg))
     raise TypeError(f"Unsupported config type: {type(cfg).__name__}")
+
+
+def _normalize_dropout_cfg(dropout_cfg: DictConfig | Mapping[str, Any] | None) -> tuple[bool, float]:
+    if dropout_cfg is None:
+        return False, 0.0
+    if isinstance(dropout_cfg, DictConfig):
+        dropout_cfg = OmegaConf.to_container(dropout_cfg, resolve=True)
+    if not isinstance(dropout_cfg, Mapping):
+        raise TypeError(
+            f"dropout_cfg must be a mapping when provided, got {type(dropout_cfg).__name__}."
+        )
+    enabled = bool(dropout_cfg.get("enabled", True))
+    value = dropout_cfg.get("probability")
+    if value is None:
+        value = dropout_cfg.get("p", dropout_cfg.get("rate", 0.0))
+    try:
+        probability = float(value)
+    except (TypeError, ValueError):
+        probability = 0.0
+    if probability < 0:
+        probability = 0.0
+    if probability > 1:
+        probability = 1.0
+    return enabled and probability > 0.0, probability if probability > 0.0 else 0.0
+
+
+def _apply_dropout_overrides(cfg: DictConfig, dropout_cfg: DictConfig | Mapping[str, Any] | None) -> None:
+    enabled, probability = _normalize_dropout_cfg(dropout_cfg)
+    if not enabled:
+        return
+    model_section = cfg.get("MODEL")
+    if model_section is None or not isinstance(model_section, DictConfig):
+        with open_dict(cfg):
+            cfg["MODEL"] = OmegaConf.create({
+                "DROPOUT_RATE": probability,
+                "DROPOUT": probability,
+            })
+        return
+    with open_dict(model_section):
+        model_section["DROPOUT_RATE"] = probability
+        model_section["DROPOUT"] = probability
 
 
 ALLOWED_AU_TYPES = {"softmax", "ssn", "diffusion"}
@@ -51,6 +92,7 @@ def instantiate_network(
     cfg: DictConfig | Mapping[str, Any],
     overrides: DictConfig | Mapping[str, Any] | None = None,
     nickname: str | None = None,
+    dropout_cfg: DictConfig | Mapping[str, Any] | None = None,
     **kwargs: Any,
 ) -> Any:
     """Instantiate a model network with optional configuration overrides.
@@ -72,6 +114,8 @@ def instantiate_network(
     if overrides is not None:
         override_cfg = _clone_config(overrides)
         merged_cfg = OmegaConf.merge(merged_cfg, override_cfg)
+
+    _apply_dropout_overrides(merged_cfg, dropout_cfg)
 
     instantiate_conf = {"_target_": target, "cfg": merged_cfg}
     if kwargs:
