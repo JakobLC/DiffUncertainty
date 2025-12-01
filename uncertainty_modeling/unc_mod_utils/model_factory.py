@@ -20,78 +20,90 @@ def _clone_config(cfg: DictConfig | Mapping[str, Any]) -> DictConfig:
 def _normalize_dropout_cfg(dropout_cfg: DictConfig | Mapping[str, Any] | None) -> tuple[bool, float]:
     if dropout_cfg is None:
         return False, 0.0
-    if isinstance(dropout_cfg, DictConfig):
-        dropout_cfg = OmegaConf.to_container(dropout_cfg, resolve=True)
-    if not isinstance(dropout_cfg, Mapping):
-        raise TypeError(
-            f"dropout_cfg must be a mapping when provided, got {type(dropout_cfg).__name__}."
-        )
-    enabled = bool(dropout_cfg.get("enabled", True))
-    value = dropout_cfg.get("probability")
-    if value is None:
-        value = dropout_cfg.get("p", dropout_cfg.get("rate", 0.0))
-    try:
-        probability = float(value)
-    except (TypeError, ValueError):
-        probability = 0.0
-    if probability < 0:
-        probability = 0.0
-    if probability > 1:
-        probability = 1.0
-    return enabled and probability > 0.0, probability if probability > 0.0 else 0.0
+    if isinstance(dropout_cfg, (DictConfig, Mapping)):
+        probability = float(dropout_cfg["probability"])
+        if not 0.0 < probability <= 1.0:
+            raise ValueError("dropout probability must lie in (0, 1].")
+        return bool(dropout_cfg.get("enabled", True)), probability
+    raise TypeError(f"dropout_cfg must be a mapping, got {type(dropout_cfg).__name__}.")
 
 
 def _apply_dropout_overrides(cfg: DictConfig, dropout_cfg: DictConfig | Mapping[str, Any] | None) -> None:
     enabled, probability = _normalize_dropout_cfg(dropout_cfg)
     if not enabled:
         return
-    model_section = cfg.get("MODEL")
-    if model_section is None or not isinstance(model_section, DictConfig):
-        with open_dict(cfg):
-            cfg["MODEL"] = OmegaConf.create({
-                "DROPOUT_RATE": probability,
-                "DROPOUT": probability,
-            })
-        return
+    model_section = cfg["MODEL"]
     with open_dict(model_section):
         model_section["DROPOUT_RATE"] = probability
         model_section["DROPOUT"] = probability
 
 
-ALLOWED_AU_TYPES = {"softmax", "ssn", "diffusion"}
+def _infer_model_au_type(model: Any) -> str:
+    candidates = []
+    if getattr(model, "diffusion", False):
+        candidates.append("diffusion")
+    if getattr(model, "ssn", False):
+        candidates.append("ssn")
+    if len(candidates) > 1:
+        raise ValueError(f"Conflicting AU indicators: {candidates}")
+    return candidates[0] if candidates else "softmax"
 
 
-def _normalize_au_type(value: Any | None) -> str | None:
-    if value is None:
-        return None
-    token = str(value).strip().lower()
-    if token in ALLOWED_AU_TYPES:
-        return token
-    return None
-
-
-def _infer_model_au_type(model: Any, nickname: Any | None) -> str:
-    explicit = _normalize_au_type(nickname)
-    if explicit is not None:
-        return explicit
-    if bool(getattr(model, "diffusion", False)):
-        return "diffusion"
-    if bool(getattr(model, "ssn", False)):
-        return "ssn"
-    return "softmax"
-
-
-def _attach_au_metadata(model: Any, nickname: Any | None) -> None:
-    au_type = _infer_model_au_type(model, nickname)
+def _attach_au_metadata(model: Any) -> None:
+    au_type = _infer_model_au_type(model)
     setattr(model, "AU_type", au_type)
     setattr(model, "is_generative", au_type != "softmax")
+
+
+def _infer_model_eu_type(model: Any, cfg: Any | None) -> str:
+    """Infer ensembling/epistemic uncertainty method for a model.
+
+    Order of precedence:
+    - explicit 'eu_method' / 'EU_METHOD' key in provided cfg (if present and valid)
+    - model attributes (e.g., 'swag_enabled') and cfg.swag.diag_only when available
+    - presence of a positive dropout rate on the model
+    - fallback to 'none'
+    """
+    allowed = {"none", "dropout", "swag", "swag_diag"}
+    cfg_map = cfg if isinstance(cfg, (DictConfig, Mapping)) else None
+    candidates: set[str] = set()
+    explicit = None
+    if cfg_map is not None:
+        explicit = cfg_map.get("EU_METHOD") or cfg_map.get("eu_method")
+    if explicit is not None:
+        token = str(explicit).strip().lower()
+        if token not in allowed:
+            raise ValueError(f"Unsupported EU method '{explicit}'.")
+        if token != "none":
+            candidates.add(token)
+    if getattr(model, "swag_enabled", False):
+        swag_type = "swag"
+        if cfg_map is not None:
+            swag_cfg = cfg_map.get("swag") or cfg_map.get("SWAG")
+            if swag_cfg and swag_cfg.get("diag_only"):
+                swag_type = "swag_diag"
+        candidates.add(swag_type)
+    for attr in ("_global_dropout_rate", "_dropout_rate", "dropout"):
+        rate = getattr(model, attr, None)
+        if rate is not None and float(rate) > 0.0:
+            candidates.add("dropout")
+            break
+    if len(candidates) > 1:
+        raise ValueError(f"Conflicting EU indicators: {sorted(candidates)}")
+    if candidates:
+        return candidates.pop()
+    return "none"
+
+
+def _attach_eu_metadata(model: Any, cfg: Any | None) -> None:
+    eu_type = _infer_model_eu_type(model, cfg)
+    setattr(model, "EU_type", eu_type)
 
 
 def instantiate_network(
     target: str,
     cfg: DictConfig | Mapping[str, Any],
     overrides: DictConfig | Mapping[str, Any] | None = None,
-    nickname: str | None = None,
     dropout_cfg: DictConfig | Mapping[str, Any] | None = None,
     **kwargs: Any,
 ) -> Any:
@@ -122,5 +134,6 @@ def instantiate_network(
         instantiate_conf.update(kwargs)
 
     model = hydra.utils.instantiate(instantiate_conf)
-    _attach_au_metadata(model, nickname)
+    _attach_au_metadata(model)
+    _attach_eu_metadata(model, merged_cfg)
     return model

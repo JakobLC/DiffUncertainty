@@ -41,7 +41,6 @@ class Tester:
         hparams = self.all_checkpoints[0]["hyper_parameters"]
         set_seed(hparams["seed"])
         self.ignore_index = hparams["data"]["ignore_index"]
-        #self.evaluate_all_raters = True#bool(hparams.get("evaluate_all_raters", True))
         self.skip_ged = args.skip_ged
         self.test_batch_size = args.test_batch_size
         self.tta = args.tta
@@ -55,7 +54,7 @@ class Tester:
             use_ema=bool(getattr(args, "use_ema", False)),
         )
         self.n_models = max(int(getattr(args, "n_models", 0) or 0), 0)
-        self.models = self._maybe_expand_swag_models(
+        self.models = self.expand_eu_models(
             base_models,
             self.all_checkpoints,
             self.checkpoint_paths,
@@ -70,8 +69,8 @@ class Tester:
         self.version = str(getattr(args, "version_override", None) or hparams["version"])
         self.test_split = args.test_split
         self.use_ema = bool(getattr(args, "use_ema", False))
-        self.dataset_name = hparams.get("dataset") if isinstance(hparams, dict) else None
-        self.checkpoint_epoch = self.all_checkpoints[0].get("epoch")+1 if self.all_checkpoints else None
+        self.dataset_name = hparams["data"]["name"]
+        self.checkpoint_epoch = self.all_checkpoints[0]["epoch"] + 1
         self.checkpoint_subdir = format_checkpoint_subdir(
             self.checkpoint_epoch, self.use_ema
         )
@@ -143,94 +142,46 @@ class Tester:
             if _set_flag(candidate):
                 return
 
-    @staticmethod
-    def _normalize_swag_config(cfg):
-        base = {
-            "enabled": False,
-            "snapshot_frequency": 1,
-            "max_snapshots": 20,
-            "min_variance": 1e-30,
-            "diag_only": True,
-        }
-        if cfg is None:
-            return base
-        container = None
-        if isinstance(cfg, dict):
-            container = cfg
-        else:
-            try:
-                container = OmegaConf.to_container(cfg, resolve=True)
-            except Exception:
-                try:
-                    container = OmegaConf.to_container(OmegaConf.create(cfg), resolve=True)
-                except Exception:
-                    container = None
-        if isinstance(container, dict):
-            for key in base:
-                if key in container:
-                    base[key] = container[key]
-        base["snapshot_frequency"] = max(1, int(base["snapshot_frequency"]))
-        base["max_snapshots"] = max(1, int(base["max_snapshots"]))
-        base["min_variance"] = float(base["min_variance"])
-        base["diag_only"] = bool(base["diag_only"])
-        base["enabled"] = bool(base["enabled"])
-        return base
-
-    def _maybe_expand_swag_models(self, base_models, checkpoints, checkpoint_paths):
-        if not base_models or not checkpoints:
-            return base_models
-        if self.n_models <= 0:
-            return base_models
+    def expand_eu_models(self, base_models, checkpoints, checkpoint_paths):
         expanded_models = []
         total = len(base_models)
         for idx in range(total):
             model = base_models[idx]
-            checkpoint = checkpoints[idx] if idx < len(checkpoints) else None
-            if checkpoint is None:
-                expanded_models.append(model)
-                continue
-            swag_state = checkpoint.get("swag_state_dict")
-            swag_config = checkpoint.get("swag_config") or checkpoint.get("hyper_parameters", {}).get("swag")
-            ckpt_label = checkpoint_paths[idx] if idx < len(checkpoint_paths) else f"checkpoint_{idx}"
-            swag_models = self._sample_swag_draws(model, swag_state, swag_config, ckpt_label)
-            if swag_models:
-                expanded_models.extend(swag_models)
+            checkpoint = checkpoints[idx]
+            if self.n_models > 0:
+                if model.EU_type in ["swag", "swag_diag"]:
+                    if "swag_config" in checkpoint:
+                        swag_config = checkpoint["swag_config"]
+                    else:
+                        hyper_params = checkpoint["hyper_parameters"]
+                        swag_config = hyper_params["swag"]
+                    swag_models = self._sample_swag_draws(
+                        model,
+                        checkpoint["swag_state_dict"],
+                        swag_config,
+                        checkpoint_paths[idx],
+                    )
+                    expanded_models.extend(swag_models)
+                elif model.EU_type=="dropout":
+                    expanded_models.extend([model]*self.n_models)
             else:
                 expanded_models.append(model)
         return expanded_models
 
     def _sample_swag_draws(self, template_model, swag_state, swag_config, checkpoint_label):
-        if not swag_state or self.n_models <= 0:
+        if self.n_models <= 0:
             return []
-        if isinstance(swag_state, dict) and "mean" in swag_state and "sq_mean" in swag_state:
-            print(
-                f"[SWAG] Checkpoint '{checkpoint_label}' uses an unsupported legacy SWAG format. "
-                "Please regenerate checkpoints with the updated SWAG implementation."
-            )
-            return []
-        config = self._normalize_swag_config(swag_config)
+        config = swag_config
         swag = SWAG(
             diag_only=config["diag_only"],
             max_num_models=config["max_snapshots"],
             var_clamp=config["min_variance"],
         )
         swag.prepare(template_model)
-        try:
-            swag.load_state_dict(swag_state)
-        except RuntimeError as exc:
-            print(f"[SWAG] Failed to load statistics for '{checkpoint_label}': {exc}")
-            return []
-        snapshots = int(swag.n_models.item())
-        if snapshots < 2:
-            print(
-                f"[SWAG] Checkpoint '{checkpoint_label}' has only {snapshots} snapshot(s); sampling skipped."
-            )
-            return []
+        swag.load_state_dict(swag_state)
         use_low_rank = self.swag_low_rank_cov and not config["diag_only"]
         if self.swag_low_rank_cov and config["diag_only"]:
-            print(
-                f"[SWAG] Checkpoint '{checkpoint_label}' stores diagonal-only stats; ignoring --swag-low-rank-cov."
-            )
+            raise ValueError(f"Checkpoint '{checkpoint_label}' stores diagonal-only stats; cannot use --swag-low-rank-cov.")
         sampled_models = []
         for sample_idx in range(self.n_models):
             sampled_model = copy.deepcopy(template_model)
@@ -243,7 +194,7 @@ class Tester:
             sampled_model.eval()
             sampled_models.append(sampled_model.to(self.device))
         print(
-            f"[SWAG] Sampled {len(sampled_models)} model(s) from '{checkpoint_label}' (n_snapshots={snapshots})."
+            f"[SWAG] Sampled {len(sampled_models)} model(s) from '{checkpoint_label}' (n_snapshots={config['max_snapshots']})"
         )
         return sampled_models
 
@@ -272,13 +223,14 @@ class Tester:
         metrics_path = os.path.join(self.save_dir, "metrics.json")
         if not os.path.exists(metrics_path):
             return False
-        try:
-            with open(metrics_path, "r") as f:
-                data = json.load(f)
-            if isinstance(data, dict) and "mean" in data:
-                return True
-        except Exception:
-            return False
+        with open(metrics_path, "r") as f:
+            data = json.load(f)
+        if not isinstance(data, dict):
+            raise TypeError(
+                f"Expected metrics.json at '{metrics_path}' to contain a dict, got {type(data)}."
+            )
+        if "mean" in data:
+            return True
         return False
 
     def get_test_dataloader(self, args: Namespace, hparams):
@@ -326,7 +278,7 @@ class Tester:
                 else f"{image_id}_{str(output_idx).zfill(2)}"
             )
 
-            if self.dataset_name and "lidc" in self.dataset_name.lower():
+            if "lidc" in self.dataset_name.lower():
                 mask = output_np.squeeze(-1)
                 ignore_mask = np.asarray(ignore_index_map, dtype=bool)
                 if ignore_mask.shape != mask.shape:
@@ -369,13 +321,12 @@ class Tester:
         - Use a vectorized binary Dice path for LIDC (two-class) datasets.
         """
         metrics_dict = {}
-        is_lidc = self.dataset_name and "lidc" in self.dataset_name.lower()
 
         # output_softmax: (C,H,W) for this image
         # Convert to predicted indices once
         pred_idx = output_softmax.argmax(dim=0)  # (H,W)
 
-        if is_lidc:
+        if "lidc" in self.dataset_name.lower():
             # Vectorized binary dice versus all raters on device
             gt = ground_truth.to(pred_idx.device)  # (R,H,W)
             ignore = self.ignore_index
@@ -442,8 +393,7 @@ class Tester:
             )
             if compute_ged:
                 # Fast GED path for binary LIDC: compute with argmax on-device
-                is_lidc = self.dataset_name and "lidc" in self.dataset_name.lower()
-                if is_lidc:
+                if "lidc" in self.dataset_name.lower():
                     fast_ged = ged_binary_fast(
                         image_preds,
                         all_preds["gt"][image_idx],

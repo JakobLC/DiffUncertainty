@@ -35,6 +35,30 @@ BN_MOMENTUM = 0.1
 ALIGN_CORNERS = None
 
 
+# MC dropout wrappers: always apply dropout with training=True so MC Dropout works in eval()
+class MC_Dropout(nn.Module):
+    def __init__(self, p: float = 0.5, inplace: bool = False):
+        super().__init__()
+        self.p = float(p) if p is not None else 0.0
+        self.inplace = bool(inplace)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        if self.p <= 0.0:
+            return x
+        return F.dropout(x, p=self.p, training=True, inplace=self.inplace)
+
+
+class MC_Dropout2d(nn.Module):
+    def __init__(self, p: float = 0.5):
+        super().__init__()
+        self.p = float(p) if p is not None else 0.0
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        if self.p <= 0.0:
+            return x
+        return F.dropout2d(x, p=self.p, training=True)
+
+
 def _lookup_config_value(section, key, default=None):
     if section is None:
         return default
@@ -81,7 +105,7 @@ class BasicBlock(nn.Module):
         self.relu = nn.ReLU(inplace=relu_inplace)
         dropout_prob = _dropout_rate_or_zero(dropout)
         if dropout_prob > 0.0:
-            self.dropout = nn.Dropout(p=dropout_prob)
+            self.dropout = MC_Dropout2d(p=dropout_prob)
         self.conv2 = conv3x3(planes, planes)
         self.bn2 = BatchNorm2d(planes, momentum=BN_MOMENTUM)
         self.downsample = downsample

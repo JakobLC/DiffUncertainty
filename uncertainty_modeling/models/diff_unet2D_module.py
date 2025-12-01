@@ -12,6 +12,29 @@ from omegaconf import DictConfig, OmegaConf
 
 from .diffusion import ContinuousGaussianDiffusion
 
+# MC dropout wrappers: always apply dropout with training=True so MC Dropout works in eval()
+class MC_Dropout(nn.Module):
+    def __init__(self, p: float = 0.5, inplace: bool = False):
+        super().__init__()
+        self.p = float(p) if p is not None else 0.0
+        self.inplace = bool(inplace)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        if self.p <= 0.0:
+            return x
+        return F.dropout(x, p=self.p, training=True, inplace=self.inplace)
+
+
+class MC_Dropout2d(nn.Module):
+    def __init__(self, p: float = 0.5):
+        super().__init__()
+        self.p = float(p) if p is not None else 0.0
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        if self.p <= 0.0:
+            return x
+        return F.dropout2d(x, p=self.p, training=True)
+
 def timestep_embedding(timesteps, dim, max_period=10):
     """
     Create sinusoidal timestep embeddings.
@@ -440,11 +463,6 @@ class DiffUnet(nn.Module):
             safe_diag = torch.nan_to_num(
                 cov_diag, nan=1.0, posinf=1e6, neginf=self.ssn_eps
             ).clamp(min=self.ssn_eps)
-            if not torch.all(torch.isfinite(safe_diag)):
-                warnings.warn(
-                    "Non-finite values encountered in covariance diagonal.",
-                    RuntimeWarning,
-                )
             scale = torch.sqrt(safe_diag).clamp(min=self.ssn_eps)
             distribution = td.Independent(td.Normal(loc=mean, scale=scale), 1)
 
@@ -575,7 +593,7 @@ class MLPBlock(TimestepBlock):
                 2 * c if use_scale_shift_norm else c,
             )
         self.out_layers = nn.Sequential(
-            nn.Dropout2d(p=dropout),
+            MC_Dropout2d(p=dropout),
             nn.Conv2d(c, self.out_channels, 1),
         )
         if self.out_channels == channels:
@@ -836,7 +854,7 @@ class ResBlock(TimestepBlock):
         self.out_layers = nn.Sequential(
             GroupNorm32(self.out_channels),
             self.act(),
-            nn.Dropout2d(p=dropout),
+            MC_Dropout2d(p=dropout),
             zero_module(
                 nn.Conv2d(self.out_channels, self.out_channels, 3, padding=1)
             ),
