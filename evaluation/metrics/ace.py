@@ -38,10 +38,13 @@ def platt_scale_params(val_exp_dataloader: ExperimentDataloader, ignore_value=No
             reference_segs = val_exp_dataloader.get_reference_segs(image_id)
             pred_seg = val_exp_dataloader.get_mean_pred_seg(image_id)
             unc_map = val_exp_dataloader.get_unc_map(image_id, unc_type)
+            reference_segs = np.asarray(reference_segs)
+            pred_seg = np.asarray(pred_seg)
             # 2d unc map is loaded in shape (W, H)
             if pred_seg.shape != unc_map.shape:
                 unc_map = np.swapaxes(unc_map, 0, 1)
-
+            assert reference_segs.ndim == pred_seg.ndim + 1, f"Reference segs should have shape (n_raters, W, H), pred_seg (W, H). found {reference_segs.shape} vs {pred_seg.shape}"
+            assert reference_segs.shape[1:] == pred_seg.shape, f"Reference segs and pred_seg spatial dimensions should match. found {reference_segs.shape} vs {pred_seg.shape}"
             # Broadcast instead of repeat to avoid copies
             rater_correct = (reference_segs == pred_seg[None, ...])
 
@@ -129,6 +132,7 @@ def platt_scale_params(val_exp_dataloader: ExperimentDataloader, ignore_value=No
 
 
 def platt_scale_params_old(val_exp_dataloader: ExperimentDataloader, ignore_value=None):
+    raise ValueError("platt_scale_params_old has been deprecated. Use platt_scale_params instead.")
     ps_params_dict = {}
     for unc_type in val_exp_dataloader.exp_version.unc_types:
         ps_params_dict[unc_type] = {"a": [], "b": []}

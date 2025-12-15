@@ -1,0 +1,49 @@
+#@package _global_
+defaults:
+  - /../../uncertainty_modeling/configs/data/gta_xsmall
+  - _self_
+
+data_input_dir: "/home/jloch/Desktop/diff/luzern/values_datasets/gta_xsmall"
+datamodule_config: ${data}
+data:
+  data_input_dir: ${data_input_dir}
+  augmentations:
+    VALIDATION:
+      - Compose:
+          transforms:
+            - Normalize:
+                mean: ${data.augmentations.mean}
+                std: ${data.augmentations.std}
+            - StochasticLabelSwitches:
+                always_apply: True
+                p: 1.0
+                n_reference_samples: 5
+            - ToTensorV2:
+    TEST: ${data.augmentations.VALIDATION}
+base_splits_path: "/home/jloch/Desktop/diff/luzern/values_datasets/gta_xsmall/splits"
+experiments:
+  - ${EU_TESTS}
+
+EU_TESTS:
+  iter_params:
+    pred_model: [ "ssn", "diffusion" ]
+    seed: [ "120" ]
+    eu: [ "swag_diag", "swag", "dropout" ]
+    epochs: [ 320 ]
+    ema: [ "_ema" ]
+    cfg: [ "standard", "sgd" ]
+    data: [ "gta_xsmall" ] #, "lidc_2d_small" ]
+  naming_scheme_pred_model: "eu_tests"
+  naming_scheme_version: "{eu}_{pred_model}_{cfg}_{data}/e{epochs}{ema}"
+  aggregations: [ "image_level", "patch_level" ]
+  fold: 0
+  rank: 10
+  n_classes: 19
+  image_ending: ".png"
+  unc_ending: ".tif"
+  n_reference_segs: 5
+  only_pu: false
+  pred_seg_loading:
+    _target_: evaluation.utils.gta.pred_seg_loading
+  gt_unc_map_loading:
+    _target_: evaluation.utils.gta.gt_unc_map

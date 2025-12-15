@@ -9,8 +9,45 @@ data:
   data_input_dir: ${data_input_dir}
 base_splits_path: "/home/jloch/Desktop/diff/luzern/values_datasets/lidc_2d_small/splits"
 experiments:
-  - ${AUG_SSN_ENSEMBLE}
-  - ${BIG_SSN}
+  - ${EU_TESTS}
+
+EU_FIX:
+  iter_params:
+    shift: [ "texture" ]
+    pred_model: [ "diffusion" ]
+    seed: [ "120" ]
+    eu: [ "swag_diag" ]
+    cfg: [ "standard" ]
+    data: [ "lidc_2d_small" ] #, "gta_xsmall" ]
+  naming_scheme_pred_model: "eu_tests"
+  naming_scheme_version: "swag_diag_diffusion_standard_lidc_2d_small/e320_ema"
+  aggregations: [ "patch_level", "threshold" ]
+  fold: 0
+  rank: 5
+  image_ending: ".png"
+  unc_ending: ".tif"
+  n_reference_segs: 4
+  only_pu: false
+  evaluate_training_data: ${evaluate_training_data}
+
+EU_TESTS:
+  iter_params:
+    shift: [ "texture" ]
+    pred_model: [ "ssn", "diffusion" ]
+    seed: [ "120" ]
+    eu: [ "swag" ] #"swag_diag", "swag", "dropout" ]
+    cfg: [ "standard", "sgd" ]
+    data: [ "lidc_2d_small" ] #, "gta_xsmall" ]
+  naming_scheme_pred_model: "eu_tests"
+  naming_scheme_version: "{eu}_{pred_model}_{cfg}_{data}/e320_ema"
+  aggregations: [ "patch_level", "threshold" ]
+  fold: 0
+  rank: 5
+  image_ending: ".png"
+  unc_ending: ".tif"
+  n_reference_segs: 4
+  only_pu: false
+  evaluate_training_data: ${evaluate_training_data}
 
 BIG_SSN:
   iter_params:

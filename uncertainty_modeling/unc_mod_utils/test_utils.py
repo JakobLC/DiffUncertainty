@@ -82,9 +82,16 @@ def test_cli(
     )
     parser.add_argument(
         "--swag-low-rank-cov",
+        dest="swag_low_rank_cov",
         action="store_true",
-        default=False,
+        default=True,
         help="Include the low-rank covariance component during SWAG sampling (ignored for diag-only stats).",
+    )
+    parser.add_argument(
+        "--no-swag-low-rank-cov",
+        dest="swag_low_rank_cov",
+        action="store_false",
+        help="Disable the low-rank covariance component even when checkpoints provide it.",
     )
     parser.add_argument(
         "--n_reference_samples",

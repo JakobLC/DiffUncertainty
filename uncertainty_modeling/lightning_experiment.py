@@ -172,7 +172,7 @@ class LightningExperiment(pl.LightningModule):
         if getattr(self.model, "swag_enabled", False) and swag_cfg is not None:
             enabled = bool(getattr(swag_cfg, "enabled", False))
             if enabled:
-                diag_only = bool(getattr(swag_cfg, "diag_only", True))
+                diag_only = bool(getattr(swag_cfg, "diag_only"))
                 max_snapshots = max(1, int(getattr(swag_cfg, "max_snapshots", 20)))
                 var_clamp = float(getattr(swag_cfg, "min_variance", 1e-30))
                 freq_value = getattr(swag_cfg, "snapshot_frequency", 1)

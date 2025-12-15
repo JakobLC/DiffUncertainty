@@ -49,4 +49,4 @@ class ExperimentVersion:
         self.version_params = kwargs
 
     def _build_version_name(self, naming_scheme_version: str, **kwargs):
-        return naming_scheme_version.format(**kwargs)
+        return naming_scheme_version.format(pred_model=self.pred_model, **kwargs)

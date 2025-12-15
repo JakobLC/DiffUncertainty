@@ -47,7 +47,7 @@ class Tester:
         self.test_dataloader = self.get_test_dataloader(args, hparams)
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         self.swag_blockwise = bool(getattr(args, "swag_blockwise", False))
-        self.swag_low_rank_cov = bool(getattr(args, "swag_low_rank_cov", False))
+        self.swag_low_rank_cov = bool(getattr(args, "swag_low_rank_cov", True))
         base_models = load_models_from_checkpoint(
             self.all_checkpoints,
             device=self.device,
@@ -179,9 +179,12 @@ class Tester:
         )
         swag.prepare(template_model)
         swag.load_state_dict(swag_state)
-        use_low_rank = self.swag_low_rank_cov and not config["diag_only"]
-        if self.swag_low_rank_cov and config["diag_only"]:
-            raise ValueError(f"Checkpoint '{checkpoint_label}' stores diagonal-only stats; cannot use --swag-low-rank-cov.")
+        requested_low_rank = self.swag_low_rank_cov
+        use_low_rank = requested_low_rank and not config["diag_only"]
+        if requested_low_rank and config["diag_only"]:
+            print(
+                f"[SWAG] Checkpoint '{checkpoint_label}' only stores diagonal statistics; falling back to diagonal sampling."
+            )
         sampled_models = []
         for sample_idx in range(self.n_models):
             sampled_model = copy.deepcopy(template_model)
