@@ -195,7 +195,7 @@ class EvalExperiments:
                             print(f"Failed removing {target}: {e}")
 
 
-@hydra.main(config_path="configs", config_name="eval_config_lidc_small", version_base=None)
+@hydra.main(config_path="configs", config_name="eval_config_lidc", version_base=None)
 def main(eval_config):
     evaluator = EvalExperiments(eval_config)
     evaluator.analyse()

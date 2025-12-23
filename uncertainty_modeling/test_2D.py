@@ -1,6 +1,7 @@
 import copy
 import json
 import os
+import pickle
 from argparse import Namespace
 from pathlib import Path
 
@@ -30,6 +31,9 @@ import uncertainty_modeling.data.cityscapes_labels as cs_labels
 from global_utils.checkpoint_format import format_checkpoint_subdir
 from uncertainty_modeling.unc_mod_utils.swag import SWAG
 
+LIDC_PATIENT_AUG_SCHEMA = "lidc_patient_aug_v1"
+AUGMENTED_TEST_SPLITS = {"ood_noise", "ood_blur", "ood_contrast", "ood_jpeg"}
+
 
 class Tester:
     def __init__(self, args: Namespace):
@@ -42,6 +46,18 @@ class Tester:
         set_seed(hparams["seed"])
         self.ignore_index = hparams["data"]["ignore_index"]
         self.skip_ged = args.skip_ged
+        dataset_cfg = hparams.get("data", {}).get("dataset", {})
+        if not isinstance(dataset_cfg, dict):
+            dataset_cfg = {}
+        splits_path = dataset_cfg.get("splits_path")
+        (
+            self.split_schema,
+            self.available_splits,
+            self.has_unlabeled_pool,
+        ) = self._inspect_splits_file(splits_path)
+        normalized_split = self._normalize_split_name(args.test_split)
+        self._ensure_split_is_supported(args.test_split, normalized_split)
+        args.test_split = normalized_split
         self.test_batch_size = args.test_batch_size
         self.tta = args.tta
         self.test_dataloader = self.get_test_dataloader(args, hparams)
@@ -68,6 +84,7 @@ class Tester:
         # Prefer an override when running ensembles so saved folder reflects all members
         self.version = str(getattr(args, "version_override", None) or hparams["version"])
         self.test_split = args.test_split
+        self.save_split_name = self._format_split_for_output(self.test_split)
         self.use_ema = bool(getattr(args, "use_ema", False))
         self.dataset_name = hparams["data"]["name"]
         self.checkpoint_epoch = self.all_checkpoints[0]["epoch"] + 1
@@ -142,6 +159,77 @@ class Tester:
             if _set_flag(candidate):
                 return
 
+    @staticmethod
+    def _inspect_splits_file(splits_path):
+        with open(splits_path, "rb") as handle:
+            splits_obj = pickle.load(handle)
+        entry = splits_obj[0]
+        meta = entry.get("_meta", {})
+        schema = meta.get("schema")
+        available = {k for k in entry.keys() if not k.startswith("_")}
+
+        id_pool = entry.get("id_unlabeled_pool")
+        if id_pool is None:
+            id_count = 0
+        elif isinstance(id_pool, np.ndarray):
+            id_count = int(id_pool.size)
+        else:
+            id_count = len(id_pool)
+
+        ood_pool = entry.get("ood_unlabeled_pool")
+        if ood_pool is None:
+            ood_count = 0
+        elif isinstance(ood_pool, np.ndarray):
+            ood_count = int(ood_pool.size)
+        else:
+            ood_count = len(ood_pool)
+
+        unlabeled_pool_nonempty = (id_count + ood_count) > 0
+        return schema, available, unlabeled_pool_nonempty
+
+    def _normalize_split_name(self, split_name):
+        available = self.available_splits or set()
+        if split_name == "id" and "id_test" in available:
+            return "id_test"
+        if split_name == "ood" and "ood_test" in available:
+            return "ood_test"
+        return split_name
+
+    @staticmethod
+    def _format_split_for_output(split_name):
+        if split_name in ["ood_test", "id_test"]:
+            return split_name.replace("_test", "")
+        return split_name
+
+    def _ensure_split_is_supported(self, requested_split, normalized_split):
+        if not requested_split:
+            raise ValueError("Test split must be provided.")
+        available = self.available_splits or set()
+
+        if requested_split == "unlabeled":
+            if self.has_unlabeled_pool:
+                return
+            raise ValueError(
+                "Requested split 'unlabeled' but both id/ood unlabeled pools are empty in the splits file."
+            )
+
+        if (
+            self.split_schema == LIDC_PATIENT_AUG_SCHEMA
+            and requested_split in {"ood", "ood_test"}
+            and any(name in available for name in AUGMENTED_TEST_SPLITS)
+        ):
+            options = ", ".join(sorted(name for name in AUGMENTED_TEST_SPLITS if name in available))
+            raise ValueError(
+                "This LIDC schema stores OOD variants separately. Use one of: "
+                + (options or "<none>")
+            )
+
+        if available and normalized_split not in available:
+            choices = ", ".join(sorted(available))
+            raise ValueError(
+                f"Requested split '{requested_split}' is not present in the configured splits file. Available: {choices}"
+            )
+
     def expand_eu_models(self, base_models, checkpoints, checkpoint_paths):
         expanded_models = []
         total = len(base_models)
@@ -210,7 +298,7 @@ class Tester:
         ]
         if self.checkpoint_subdir:
             path_parts.append(self.checkpoint_subdir)
-        path_parts.append(self.test_split)
+        path_parts.append(self.save_split_name)
         self.save_dir = os.path.join(*path_parts)
         print(f"saving to results dir {self.save_dir}")
         self.save_pred_dir = os.path.join(self.save_dir, "pred_seg")

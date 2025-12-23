@@ -8,6 +8,8 @@ import albumentations
 import numpy as np
 import torch
 
+AUGMENTED_SPLITS = {"ood_noise", "ood_blur", "ood_contrast", "ood_jpeg"}
+
 class LIDC2DDataset(torch.utils.data.Dataset):
     """LIDC 2D (cropped nodule) dataset for 2D segmentation.
 
@@ -53,28 +55,20 @@ class LIDC2DDataset(torch.utils.data.Dataset):
         self.return_all_raters = return_all_raters
         self.num_raters = 4
 
-        # load splits (same structure as cityscapes & 3D LIDC datamodule)
         with open(self.splits_path, "rb") as f:
             splits = pickle.load(f)
-        if split == "train":
-            subject_ids = splits[data_fold_id]["train"]
-        elif split == "val":
-            subject_ids = splits[data_fold_id]["val"]
-        elif split == "id_test":
-            subject_ids = splits[data_fold_id]["id_test"]
-        elif split == "ood_test":
-            subject_ids = splits[data_fold_id]["ood_test"]
-        elif split == "unlabeled":
-            subject_ids = splits[data_fold_id]["id_unlabeled_pool"]
-            subject_ids = np.concatenate(
-                (subject_ids, splits[data_fold_id]["ood_unlabeled_pool"])
-            )
-        else:
-            raise ValueError(f"Unknown split '{split}'")
+        if not isinstance(splits, (list, tuple)) or not splits:
+            raise ValueError("Expected splits.pkl to contain a non-empty list of fold dicts.")
+        fold_entry = splits[data_fold_id]
+        if not isinstance(fold_entry, dict):
+            raise ValueError("Each fold entry inside splits.pkl must be a dictionary.")
+        self.split_metadata = fold_entry.get("_meta", {})
+        self.split_schema = self.split_metadata.get("schema")
+        subject_ids = self._resolve_subject_ids(fold_entry, split)
         assert "lidc" in base_dir, f"Did not find expected string 'licd' in {base_dir}"
         # Directory that contains the preprocessed images/labels folders
         proc_dir = os.path.join(base_dir, "preprocessed")
-        image_dir = os.path.join(proc_dir, "images")
+        image_dir = self._resolve_image_dir(proc_dir, split)
         label_dir = os.path.join(proc_dir, "labels")
 
         self.samples = get_lidc2d_samples(
@@ -94,6 +88,41 @@ class LIDC2DDataset(torch.utils.data.Dataset):
 
     def __len__(self):
         return len(self.imgs)
+
+    def _resolve_subject_ids(self, fold_entry, split):
+        if split == "unlabeled":
+            id_pool = np.asarray(fold_entry.get("id_unlabeled_pool", []), dtype=object)
+            ood_pool = np.asarray(fold_entry.get("ood_unlabeled_pool", []), dtype=object)
+            return np.concatenate((id_pool, ood_pool)).tolist()
+        key = "id_test" if split == "id" else split
+        if key not in fold_entry:
+            if split in {"ood", "ood_test"} and any(name in fold_entry for name in AUGMENTED_SPLITS):
+                available = ", ".join(sorted(name for name in AUGMENTED_SPLITS if name in fold_entry)) or "<none>"
+                raise ValueError(
+                    "Requested split '" + split + "' is not available for schema '"
+                    + str(self.split_schema or "unknown")
+                    + "'. Pick one of: "
+                    + available
+                )
+            available = sorted(k for k in fold_entry.keys() if not k.startswith("_"))
+            raise ValueError(
+                f"Unknown split '{split}'. Available options: {', '.join(available)}"
+            )
+        values = fold_entry[key]
+        if isinstance(values, np.ndarray):
+            return values.tolist()
+        return list(values)
+
+    def _resolve_image_dir(self, proc_dir: str, split: str) -> str:
+        if split in AUGMENTED_SPLITS:
+            candidate = os.path.join(proc_dir, "augmented", split, "images")
+        else:
+            candidate = os.path.join(proc_dir, "images")
+        if not os.path.isdir(candidate):
+            raise FileNotFoundError(
+                f"Expected directory '{candidate}' for split '{split}', but it does not exist."
+            )
+        return candidate
 
     def _load_image(self, path: str) -> np.ndarray:
         img = np.load(path)  # shape (H, W)

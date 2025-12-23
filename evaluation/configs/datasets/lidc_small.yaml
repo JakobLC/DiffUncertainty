@@ -33,11 +33,11 @@ EU_FIX:
 EU_TESTS:
   iter_params:
     shift: [ "texture" ]
-    pred_model: [ "ssn", "diffusion" ]
+    pred_model: [ "softmax" ] #"ssn", "diffusion" ]
     seed: [ "120" ]
-    eu: [ "swag" ] #"swag_diag", "swag", "dropout" ]
+    eu: [ "swag_diag", "swag", "dropout" ]
     cfg: [ "standard", "sgd" ]
-    data: [ "lidc_2d_small" ] #, "gta_xsmall" ]
+    data: [ "lidc_2d_small" ]
   naming_scheme_pred_model: "eu_tests"
   naming_scheme_version: "{eu}_{pred_model}_{cfg}_{data}/e320_ema"
   aggregations: [ "patch_level", "threshold" ]

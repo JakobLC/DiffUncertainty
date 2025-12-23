@@ -13,6 +13,7 @@ data:
   evaluate_training_data: true
   evaluate_all_raters: true
   validation_ratio: 1.0
+  split_name: "ood_aug"
   augmentations:
     rotation_limit: 22.5
     scale_limit: [ -0.2, 0.2 ]
@@ -64,4 +65,4 @@ data:
     TEST: ${data.augmentations.VALIDATION}
   dataset:
     _target_: uncertainty_modeling.data.lidc2d_dataset.LIDC2DDataset
-    splits_path: "${data.data_input_dir}/splits/texture/firstCycle/splits.pkl"
+    splits_path: "${data.data_input_dir}/splits/${data.split_name}/firstCycle/splits.pkl"

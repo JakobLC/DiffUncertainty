@@ -16,7 +16,7 @@ save_dir: "/home/jloch/Desktop/diff/luzern/values/saves"
 seed: 123
 
 # training hyperparams
-learning_rate: 0.0001
+learning_rate: 0.01
 weight_decay: 0.0
 
 optimizer:

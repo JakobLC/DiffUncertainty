@@ -329,11 +329,12 @@ class BaseDataModule(LightningDataModule):
                     self.DS_train_eval = Subset(DS_train_full_for_eval, [])
         if stage in (None, "test"):
             transforms_test = get_augmentations_from_config(self.augmentations.TEST)[0]
-            test_split = (
-                self.test_split
-                if self.test_split == "unlabeled" or self.test_split == "val"
-                else f"{self.test_split}_test"
-            )
+
+            if self.test_split in {"id", "ood"}:
+                test_split = f"{self.test_split}_test"
+            else:
+                test_split = self.test_split
+            
             test_kwargs = dict(
                 base_dir=self.data_input_dir,
                 split=test_split,
