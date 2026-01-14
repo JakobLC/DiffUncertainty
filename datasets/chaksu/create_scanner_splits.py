@@ -173,7 +173,7 @@ def main() -> None:
             f"Processed dataset directory not found: {processed_root}. Did you run process_chaksu.py?",
         )
     metadata_path = processed_root / "metadata.csv"
-    output_path = dataset_root / "splits" / "scanner" / "FirstCycle" / "splits.pkl"
+    output_path = dataset_root / "splits" / "scanner" / "firstCycle" / "splits.pkl"
     output_path = ensure_output_path(output_path)
 
     rows = load_metadata(metadata_path)

@@ -51,6 +51,12 @@ def test_cli(
         help="Optional override for experiment name used when writing outputs.",
     )
     parser.add_argument(
+        "--version_name",
+        type=str,
+        default=None,
+        help="Optional override for the version directory used when writing outputs.",
+    )
+    parser.add_argument(
         "--test_data_dir",
         type=str,
         default=None,
@@ -139,6 +145,12 @@ def test_cli(
         action="store_true",
         default=False,
         help="Treat the provided checkpoints as ensembles rather than independent runs.",
+    )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=-1,
+        help="Override the random seed used for SWAG sampling and dataloaders (set >=0 to enable).",
     )
     parser.add_argument(
         "--skip_ged",
@@ -402,9 +414,10 @@ def prepare_evaluation_jobs(args: Namespace) -> List[Namespace]:
                 job_args.test_split = split
                 job_args.use_ema = use_ema
                 job_args.current_ema_label = ema_label
-                job_args.version_override = _build_group_version_name(
+                auto_version = _build_group_version_name(
                     raw_list, wildcard_replacements, job_args.checkpoint_paths
                 )
+                job_args.version_override = getattr(args, "version_name", None) or auto_version
                 jobs.append(job_args)
     return jobs
 

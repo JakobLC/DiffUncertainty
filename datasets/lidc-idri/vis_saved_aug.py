@@ -138,6 +138,7 @@ def render_grid(base_dir: Path, num_images: int) -> None:
                     labelpad=40,
                 )
         axes[0][col].set_title(image_name)
+    plt.tight_layout()
     plt.show()
 
 

@@ -50,7 +50,7 @@ trainer:
 
 ckpt_save_freq:
   use_linear_saving: false
-  use_exponential_saving: true
+  use_exponential_saving: false
   only_small_ckpts: true
   track_ema_weights: true
   only_save_ema: true

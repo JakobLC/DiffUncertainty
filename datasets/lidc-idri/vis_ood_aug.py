@@ -200,8 +200,8 @@ def build_augmentation_specs(args: argparse.Namespace) -> Dict[str, Augmentation
             always_apply=True,
         )
 
-    noise_desc = f"Gaussian noise (std in [{noise_min:.3f}, {noise_max:.3f}], no clipping)"
-    blur_desc = f"Gaussian blur (sigma in\n[{blur_min:.3f}, {blur_max:.3f}])"
+    noise_desc = f"Gauss noise (std in [{noise_min:.2f}, {noise_max:.2f}])"
+    blur_desc = f"Gauss blur (sigma in\n[{blur_min:.2f}, {blur_max:.2f}])"
     jpeg_desc = f"JPEG quality in [{jpeg_min}, {jpeg_max}]"
 
     return {

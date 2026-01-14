@@ -36,8 +36,10 @@ from tqdm.auto import tqdm
 #DATA_TEST_PATH = Path("/data/chaksu/Test")
 # The circle widths are used to derive crop sizes per machine.
 CIRCLE_WIDTHS: Dict[str, int] = {"Bosch": 1440, "Forus": 1900, "Remidio": 2200}
+# These values were originally labeled as radii but are actually mean disc diameters.
+MEAN_DISC_DIAM: Dict[str, float] = {'Bosch': 225.29, 'Forus': 325.02, 'Remidio': 448.05}
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".tif", ".tiff"}
- 
+
 
 @dataclass(frozen=True)
 class SplitSpec:
@@ -95,6 +97,15 @@ def parse_args() -> argparse.Namespace:
 		help="Side length multiplier applied to circle_widths[machine]",
 	)
 	parser.add_argument(
+		"--disc-crop-dia",
+		type=float,
+		default=0.0,
+		help=(
+			"If >0, override --rel-sidelength and crop using disc_crop_dia * MEAN_DISC_DIAM[machine]. "
+			"For example, disc_crop_dia=2 uses a side length equal to twice the mean disc diameter (four times the mean radius)."
+		),
+	)
+	parser.add_argument(
 		"--overwrite",
 		action="store_true",
 		help="Allow writing into a non-empty save directory",
@@ -108,6 +119,11 @@ def parse_args() -> argparse.Namespace:
 		"--verbose",
 		action="store_true",
 		help="Increase logging verbosity",
+	)
+	parser.only_metadata = parser.add_argument(
+		"--only-metadata",
+		action="store_true",
+		help="Only write metadata.csv without saving images",
 	)
 	return parser.parse_args()
 
@@ -234,6 +250,13 @@ def ensure_output_dirs(root: Path) -> Tuple[Path, Path]:
 	labels_dir.mkdir(parents=True, exist_ok=True)
 	return images_dir, labels_dir
 
+def get_bbox(mask: np.ndarray) -> Tuple[int, int, int, int]:
+	coords = np.argwhere(mask)
+	if coords.size == 0:
+		return (0, 0, 0, 0)
+	y_min, x_min = coords.min(axis=0)
+	y_max, x_max = coords.max(axis=0)
+	return (int(x_min), int(x_max), int(y_min), int(y_max))
 
 def process_sample(
 	image_path: Path,
@@ -247,7 +270,8 @@ def process_sample(
 	label_files: Sequence[str],
 	image_size: int,
 	rel_sidelength: float,
-	min_crop_size: int,
+	disc_crop_dia: float,
+	only_metadata: bool,
 ) -> Optional[dict]:
 	try:
 		image = load_image(image_path)
@@ -281,39 +305,54 @@ def process_sample(
 		label_arrays.append(build_label(disc_mask, cup_mask))
 
 	union_disc = np.any(np.stack(disc_masks, axis=0), axis=0)
+	orig_bbox_disc = get_bbox(union_disc)
+	union_cup = np.any(np.stack([la == 2 for la in label_arrays], axis=0), axis=0)
 	if not union_disc.any():
 		logging.warning("Union disc mask empty for %s", image_path)
 		return None
 
-	try:
-		center = get_center_from_mask(union_disc)
-	except ValueError as exc:
-		logging.warning("%s", exc)
-		return None
+	center = get_center_from_mask(union_disc)
 
-	circle_width = CIRCLE_WIDTHS[machine]
-	crop_size = int(round(rel_sidelength * circle_width))
-	crop_size = max(crop_size, min_crop_size)
-	crop_size = max(2, crop_size)
+	if disc_crop_dia > 0.0:
+		mean_diameter = MEAN_DISC_DIAM.get(machine)
+		if mean_diameter is None:
+			raise KeyError(f"Machine '{machine}' missing from MEAN_DISC_DIAM table.")
+		crop_size = int(round(mean_diameter * disc_crop_dia))
+	else:
+		circle_width = CIRCLE_WIDTHS[machine]
+		crop_size = int(round(rel_sidelength * circle_width))
 
 	cropped_image = crop_square(image, center, crop_size)
 	resized_image = resize_array(cropped_image, image_size, order="bilinear")
+	
+	union_cup = 0
+	union_disc = 0
 
-	np.save(out_image_dir / image_file, resized_image.astype(np.uint8))
+	if not only_metadata:
+		np.save(out_image_dir / image_file, resized_image.astype(np.uint8))
 
-	for idx, label_array in enumerate(label_arrays):
-		cropped_label = crop_square(label_array.astype(np.uint8), center, crop_size)
-		resized_label = resize_array(cropped_label, image_size, order="nearest")
-		label_file = label_files[idx]
-		np.save(out_label_dir / label_file, resized_label.astype(np.uint8))
+		for idx, label_array in enumerate(label_arrays):
+			cropped_label = crop_square(label_array.astype(np.uint8), center, crop_size)
+			resized_label = resize_array(cropped_label, image_size, order="nearest")
+			union_disc += (resized_label > 0).astype(int)
+			union_cup += (resized_label == 2).astype(int)
+			label_file = label_files[idx]
+			np.save(out_label_dir / label_file, resized_label.astype(np.uint8))
+
+	
+	bbox_disc = get_bbox(union_disc)
+	bbox_cup = get_bbox(union_cup)
 
 	return {
 		"sample_id": sample_id,
 		"machine": machine,
 		"source_image": str(image_path),
 		"image_file": image_file,
-		"label_files": json.dumps(label_files),
+		"label_files": ",".join(label_files),
 		"crop_size": crop_size,
+		"bbox_cup": bbox_cup,
+		"bbox_disc": bbox_disc,
+		"orig_bbox_disc": orig_bbox_disc,
 	}
 
 
@@ -323,10 +362,11 @@ def process_split(
 	start_index: int,
 	image_size: int,
 	rel_sidelength: float,
-	min_crop_size: int,
+	disc_crop_dia: float,
 	images_dir: Path,
 	labels_dir: Path,
 	skip_existing: bool,
+	only_metadata: bool,
 ) -> Tuple[int, List[dict]]:
 	if not split.image_dir.exists():
 		raise FileNotFoundError(
@@ -397,7 +437,8 @@ def process_split(
 				label_files=label_files,
 				image_size=image_size,
 				rel_sidelength=rel_sidelength,
-				min_crop_size=min_crop_size,
+				disc_crop_dia=disc_crop_dia,
+				only_metadata=only_metadata
 			)
 
 			if sample_row is None:
@@ -460,10 +501,11 @@ def main() -> None:
 			start_index=sample_index,
 			image_size=args.image_size,
 			rel_sidelength=args.rel_sidelength,
-			min_crop_size=args.image_size // 2,
+			disc_crop_dia=args.disc_crop_dia,
 			images_dir=images_dir,
 			labels_dir=labels_dir,
 			skip_existing=args.skip_existing,
+			only_metadata=args.only_metadata,
 		)
 		metadata_rows.extend(rows)
 

@@ -134,55 +134,33 @@ class SWAG(torch.nn.Module):
 
     def sample_fullrank(self, model, scale, use_low_rank):
         scale_sqrt = scale ** 0.5
+        shared_cov_noise = None
+        shared_rank = None
 
-        mean_list = []
-        sq_mean_list = []
-
-        if use_low_rank:
-            cov_mat_sqrt_list = []
-
-        for info in self.param_info:
+        for param, info in zip(model.parameters(), self.param_info):
             mean = self._get_buffer(info, "mean")
             sq_mean = self._get_buffer(info, "sq_mean")
 
+            var = torch.clamp(sq_mean - mean ** 2, self.var_clamp)
+            rand_sample = var.sqrt() * torch.randn_like(var, requires_grad=False)
+
             if use_low_rank:
                 cov_mat_sqrt = self._get_buffer(info, "cov")
-                cov_mat_sqrt_list.append(cov_mat_sqrt.cpu())
+                if cov_mat_sqrt is not None and cov_mat_sqrt.size(0) > 0:
+                    rank = cov_mat_sqrt.size(0)
+                    if shared_cov_noise is None or shared_rank != rank:
+                        # Reuse a single Gaussian vector so cross-parameter correlations are preserved.
+                        shared_cov_noise = cov_mat_sqrt.new_empty(
+                            (rank,), requires_grad=False
+                        ).normal_()
+                        shared_rank = rank
+                    cov_sample = cov_mat_sqrt.t().matmul(shared_cov_noise)
+                    normalizer = max(self.max_num_models - 1, 1) ** 0.5
+                    cov_sample = cov_sample.view_as(mean) / normalizer
+                    rand_sample = rand_sample + cov_sample
 
-            mean_list.append(mean.cpu())
-            sq_mean_list.append(sq_mean.cpu())
-
-        mean = flatten(mean_list)
-        sq_mean = flatten(sq_mean_list)
-
-        # draw diagonal variance sample
-        var = torch.clamp(sq_mean - mean ** 2, self.var_clamp)
-        var_sample = var.sqrt() * torch.randn_like(var, requires_grad=False)
-
-        # if covariance draw low rank sample
-        if use_low_rank:
-            cov_mat_sqrt = torch.cat(cov_mat_sqrt_list, dim=1)
-
-            cov_sample = cov_mat_sqrt.t().matmul(
-                cov_mat_sqrt.new_empty(
-                    (cov_mat_sqrt.size(0),), requires_grad=False
-                ).normal_()
-            )
-            cov_sample /= (self.max_num_models - 1) ** 0.5
-
-            rand_sample = var_sample + cov_sample
-        else:
-            rand_sample = var_sample
-
-        # update sample with mean and scale
-        sample = mean + scale_sqrt * rand_sample
-        sample = sample.unsqueeze(0)
-
-        # unflatten new sample like the mean sample
-        samples_list = unflatten_like(sample, mean_list)
-
-        for param, sample_tensor in zip(model.parameters(), samples_list):
-            param.data.copy_(sample_tensor.to(param.device))
+            sample = mean + scale_sqrt * rand_sample
+            param.data.copy_(sample.to(param.device))
 
     def collect_model(self, base_model):
         self._ensure_param_buffers(base_model)

@@ -43,6 +43,9 @@ class Tester:
             raise ValueError("Tester requires at least one checkpoint path.")
         self.all_checkpoints = self.get_checkpoints(self.checkpoint_paths)
         hparams = self.all_checkpoints[0]["hyper_parameters"]
+        requested_seed = int(getattr(args, "seed", -1) or -1)
+        if requested_seed >= 0:
+            hparams["seed"] = requested_seed
         set_seed(hparams["seed"])
         self.ignore_index = hparams["data"]["ignore_index"]
         self.skip_ged = args.skip_ged
@@ -64,12 +67,18 @@ class Tester:
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         self.swag_blockwise = bool(getattr(args, "swag_blockwise", False))
         self.swag_low_rank_cov = bool(getattr(args, "swag_low_rank_cov", True))
+        self.ensemble_mode = bool(getattr(args, "ensemble_mode", False))
         base_models = load_models_from_checkpoint(
             self.all_checkpoints,
             device=self.device,
             use_ema=bool(getattr(args, "use_ema", False)),
         )
-        self.n_models = max(int(getattr(args, "n_models", 0) or 0), 0)
+        requested_n_models = max(int(getattr(args, "n_models", 0) or 0), 0)
+        if self.ensemble_mode and requested_n_models > 0:
+            print(
+                f"[ensemble_mode] Ignoring --n_models={requested_n_models} because ensemble size is determined by provided checkpoints."
+            )
+        self.n_models = 0 if self.ensemble_mode else requested_n_models
         self.models = self.expand_eu_models(
             base_models,
             self.all_checkpoints,
@@ -236,6 +245,9 @@ class Tester:
         for idx in range(total):
             model = base_models[idx]
             checkpoint = checkpoints[idx]
+            if self.ensemble_mode:
+                expanded_models.append(model)
+                continue
             if self.n_models > 0:
                 if model.EU_type in ["swag", "swag_diag"]:
                     if "swag_config" in checkpoint:
