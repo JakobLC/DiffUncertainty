@@ -47,3 +47,22 @@ class StochasticLabelSwitches(A.BasicTransform):
     @property
     def targets(self):
         return {"mask": self.apply_to_mask}
+
+
+class SampleNormalize(A.ImageOnlyTransform):
+    """Normalize each sample to zero mean and unit std across all channels."""
+
+    def __init__(self, eps: float = 1e-6, always_apply: bool = False, p: float = 1.0):
+        super().__init__(always_apply=always_apply, p=p)
+        self.eps = float(eps)
+
+    def apply(self, img, **params):
+        img = img.astype(np.float32, copy=False)
+        mean = float(np.mean(img))
+        std = float(np.std(img))
+        if std < self.eps:
+            std = 1.0
+        return (img - mean) / std
+
+    def get_transform_init_args_names(self):
+        return ("eps",)

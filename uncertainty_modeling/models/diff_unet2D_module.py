@@ -1,6 +1,7 @@
 import math
 import warnings
 from abc import abstractmethod
+from copy import deepcopy
 from typing import Any, Mapping
 
 import numpy as np
@@ -9,6 +10,7 @@ import torch.distributions as td
 import torch.nn as nn
 import torch.nn.functional as F
 from omegaconf import DictConfig, OmegaConf
+from torch.distributions.kl import kl_divergence
 
 from .diffusion import ContinuousGaussianDiffusion
 
@@ -111,6 +113,7 @@ class DiffUnet(nn.Module):
         diffusion_num_steps: int = 50,
         diffusion_sampler_type: str = "ddpm",
         swag_enabled: bool = False,
+        encoder_only: bool = False,
     ):
         super().__init__()
         if isinstance(act, str):
@@ -126,6 +129,7 @@ class DiffUnet(nn.Module):
         self.ssn_rank = ssn_rank
         self.ssn_eps = ssn_eps
         self.swag_enabled = bool(swag_enabled)
+        self.encoder_only = bool(encoder_only)
         self.new_upsample_method = new_upsample_method
         self.one_skip_per_reso = one_skip_per_reso
         if num_heads_upsample == -1:
@@ -280,91 +284,135 @@ class DiffUnet(nn.Module):
 
         self.middle_block = TimestepEmbedSequential(*middle_layers)
 
-        attn_kwargs["num_heads"] = num_heads_upsample
-        self.output_blocks = nn.ModuleList([])
-        for level, mult, n_res_blocks in zip(
-            reversed(list(range(len(channel_mult)))),
-            channel_mult[::-1],
-            num_res_blocks[::-1],
-        ):
-            for i in range(n_res_blocks + 1):
-                if self.new_upsample_method:
-                    ch = model_channels * mult
-                    ch_in = ch
-                else:
-                    ch_in = ch + input_block_chans.pop()
-                    ch = model_channels * mult
-                if resolution in self.attention_resolutions:
-                    if self.mlp_attn:
-                        layers = [
-                            MLPBlock(ch, **res_block_kwargs),
-                            AttentionBlock(ch, **attn_kwargs),
-                        ]
+        if not self.encoder_only:
+            attn_kwargs["num_heads"] = num_heads_upsample
+            self.output_blocks = nn.ModuleList([])
+            for level, mult, n_res_blocks in zip(
+                reversed(list(range(len(channel_mult)))),
+                channel_mult[::-1],
+                num_res_blocks[::-1],
+            ):
+                for i in range(n_res_blocks + 1):
+                    if self.new_upsample_method:
+                        ch = model_channels * mult
+                        ch_in = ch
                     else:
-                        layers = [
-                            ResBlock(ch_in, out_channels=ch, **res_block_kwargs),
-                            AttentionBlock(ch, **attn_kwargs),
-                        ]
-                else:
-                    layers = [ResBlock(ch_in, out_channels=ch, **res_block_kwargs)]
-                if level and i == n_res_blocks:
-                    resolution -= 1
-                    ch_out = (
-                        channel_mult[resolution] * model_channels
-                        if self.new_upsample_method
-                        else None
-                    )
-                    layers.append(
-                        Upsample(
-                            ch,
-                            conv_resample,
-                            channels_out=ch_out,
-                            mode="bilinear" if self.new_upsample_method else "nearest",
+                        ch_in = ch + input_block_chans.pop()
+                        ch = model_channels * mult
+                    if resolution in self.attention_resolutions:
+                        if self.mlp_attn:
+                            layers = [
+                                MLPBlock(ch, **res_block_kwargs),
+                                AttentionBlock(ch, **attn_kwargs),
+                            ]
+                        else:
+                            layers = [
+                                ResBlock(ch_in, out_channels=ch, **res_block_kwargs),
+                                AttentionBlock(ch, **attn_kwargs),
+                            ]
+                    else:
+                        layers = [ResBlock(ch_in, out_channels=ch, **res_block_kwargs)]
+                    if level and i == n_res_blocks:
+                        resolution -= 1
+                        ch_out = (
+                            channel_mult[resolution] * model_channels
+                            if self.new_upsample_method
+                            else None
                         )
+                        layers.append(
+                            Upsample(
+                                ch,
+                                conv_resample,
+                                channels_out=ch_out,
+                                mode="bilinear" if self.new_upsample_method else "nearest",
+                            )
+                        )
+
+                    self.output_blocks.append(TimestepEmbedSequential(*layers))
+
+            if self.one_skip_per_reso:
+                assert self.new_upsample_method, "one_skip_per_reso only works with new_upsample_method"
+            else:
+                self.input_skip = [True for _ in self.input_skip]
+            assert final_act.lower() in [
+                "none",
+                "softmax",
+                "tanh",
+                "sigmoid",
+            ], f"Unsupported final activation: {final_act}"
+            final_act_dict = {
+                "none": nn.Identity(),
+                "softmax": nn.Softmax(dim=1),
+                "tanh": nn.Tanh(),
+                "sigmoid": nn.Sigmoid(),
+            }
+            self.out = nn.Sequential(
+                nn.Identity(),  # unnecessary, but kept for key consistency
+                GroupNorm32(ch),
+                self.act(),
+                zero_module(nn.Conv2d(ch, out_channels, 3, padding=1)),
+                final_act_dict[final_act.lower()]
+            )
+            if self.ssn:
+                if self.ssn_rank <= 0:
+                    raise ValueError("ssn_rank must be positive when ssn=True")
+
+                def _make_ssn_head(out_ch: int) -> nn.Sequential:
+                    return nn.Sequential(
+                        nn.Identity(),
+                        GroupNorm32(ch),
+                        self.act(),
+                        zero_module(nn.Conv2d(ch, out_ch, 3, padding=1)),
                     )
-                    
-                self.output_blocks.append(TimestepEmbedSequential(*layers))
 
-        if self.one_skip_per_reso:
-            assert self.new_upsample_method, "one_skip_per_reso only works with new_upsample_method"
+                self.ssn_cov_head = _make_ssn_head(out_channels)
+                self.ssn_factor_head = _make_ssn_head(out_channels * self.ssn_rank)
         else:
-            self.input_skip = [True for _ in self.input_skip]
-        assert final_act.lower() in [
-            "none",
-            "softmax",
-            "tanh",
-            "sigmoid",
-        ], f"Unsupported final activation: {final_act}"
-        final_act_dict = {
-            "none": nn.Identity(),
-            "softmax": nn.Softmax(dim=1),
-            "tanh": nn.Tanh(),
-            "sigmoid": nn.Sigmoid(),
-        }
-        self.out = nn.Sequential(
-            nn.Identity(),  # unnecessary, but kept for key consistency
-            GroupNorm32(ch),
-            self.act(),
-            zero_module(nn.Conv2d(ch, out_channels, 3, padding=1)),
-            final_act_dict[final_act.lower()]
-        )
-        if self.ssn:
-            if self.ssn_rank <= 0:
-                raise ValueError("ssn_rank must be positive when ssn=True")
-
-            def _make_ssn_head(out_ch: int) -> nn.Sequential:
-                return nn.Sequential(
-                    nn.Identity(),
-                    GroupNorm32(ch),
-                    self.act(),
-                    zero_module(nn.Conv2d(ch, out_ch, 3, padding=1)),
-                )
-
-            self.ssn_cov_head = _make_ssn_head(out_channels)
-            self.ssn_factor_head = _make_ssn_head(out_channels * self.ssn_rank)
+            if self.one_skip_per_reso:
+                raise ValueError("encoder_only=True is incompatible with one_skip_per_reso")
+            self.output_blocks = nn.ModuleList()
+            self.out = None
+            if self.ssn:
+                raise ValueError("SSN head is not supported when encoder_only=True")
         self.out_channels = out_channels
         # expose common attributes expected elsewhere in the repo
         self.num_classes = out_channels
+
+    def _prepare_time_embedding(
+        self, x: torch.Tensor, timesteps: torch.Tensor | None
+    ) -> torch.Tensor | None:
+        if self.diffusion:
+            if timesteps is None:
+                raise ValueError("timesteps must be provided when diffusion=True")
+            if timesteps.numel() == 1:
+                timesteps = timesteps.expand(x.shape[0])
+            return self.time_embed(timestep_embedding(timesteps, self.model_channels))
+        if timesteps is not None:
+            raise ValueError("timesteps must be None when diffusion=False")
+        return None
+
+    def _forward_backbone(
+        self, x: torch.Tensor, timesteps: torch.Tensor | None
+    ) -> tuple[torch.Tensor, torch.Tensor | None]:
+        emb = self._prepare_time_embedding(x, timesteps)
+        h = x
+        hs = []
+        for module, skip in zip(self.input_blocks, self.input_skip):
+            h = module(h, emb)
+            if skip:
+                hs.append(h)
+            else:
+                hs.append(0)
+        h = self.middle_block(h, emb)
+        if self.encoder_only:
+            return h, emb
+        for module in self.output_blocks:
+            if self.new_upsample_method:
+                cat_in = h + hs.pop()
+            else:
+                cat_in = torch.cat([h, hs.pop()], dim=1)
+            h = module(cat_in, emb)
+        return h, emb
 
     def forward(
         self,
@@ -372,47 +420,11 @@ class DiffUnet(nn.Module):
         timesteps: torch.Tensor | None = None,
         mean_only: bool = False,
     ) -> torch.Tensor | tuple[td.LowRankMultivariateNormal, bool]:
-        """
-        Apply the model to an input batch.
-
-        :param x: an [N x C x ...] input image tensor.
-        :param timesteps: a 1-D batch of timesteps or a 0-D single timestep to repeat.
-        :return: an [N x C x ...] Tensor of predicted masks.
-        """
-        h = x
-        emb: torch.Tensor | None
-        if self.diffusion:
-            if timesteps is None:
-                raise ValueError("timesteps must be provided when diffusion=True")
-            if timesteps.numel() == 1:
-                timesteps = timesteps.expand(h.shape[0])
-            emb = self.time_embed(
-                timestep_embedding(timesteps, self.model_channels)
-            )
-        else:
-            assert timesteps is None, "timesteps must be None when diffusion=False"
-            # Non-diffusion mode: ignore timestep conditioning.
-            emb = None
-
-        hs = []
-        depth = 0
-        for module, skip in zip(self.input_blocks, self.input_skip):
-            h = module(h, emb)
-            if skip:
-                hs.append(h)
-            else:
-                hs.append(0)
-            depth += 1
-        h = self.middle_block(h, emb)
-        depth += 1
-        for module in self.output_blocks:
-            if self.new_upsample_method:
-                cat_in = h + hs.pop()
-            else:
-                cat_in = torch.cat([h, hs.pop()], dim=1)
-            h = module(cat_in, emb)
-            depth += 1
+        """Apply the model to an input batch."""
+        h, _ = self._forward_backbone(x, timesteps)
         h = h.type(x.dtype)
+        if self.encoder_only:
+            return h
         if not self.ssn:
             return self.out(h)
 
@@ -421,6 +433,13 @@ class DiffUnet(nn.Module):
             features=h, mean_logits=mean_logits, mean_only=mean_only
         )
         return distribution, cov_failed_flag
+
+    def forward_features(
+        self, x: torch.Tensor, timesteps: torch.Tensor | None = None
+    ) -> torch.Tensor:
+        """Run the network and return the decoder features before the final head."""
+        h, _ = self._forward_backbone(x, timesteps)
+        return h.type(x.dtype)
 
     def _build_ssn_distribution(
         self,
@@ -888,6 +907,188 @@ class ResBlock(TimestepBlock):
         return self.skip_connection(x) + h
 
 
+class ProbUnetFcomb(nn.Module):
+    """1x1 convolutional combiner that fuses UNet features with latent samples."""
+
+    def __init__(
+        self,
+        feature_channels: int,
+        latent_dim: int,
+        num_classes: int,
+        hidden_channels: int | None = None,
+        num_layers: int = 4,
+    ) -> None:
+        super().__init__()
+        if num_layers <= 0:
+            raise ValueError("num_layers must be positive for ProbUnetFcomb")
+        hidden_channels = hidden_channels or feature_channels
+        in_channels = feature_channels + latent_dim
+        body_layers: list[nn.Module] = []
+        for _ in range(max(0, num_layers - 1)):
+            body_layers.append(nn.Conv2d(in_channels, hidden_channels, kernel_size=1))
+            body_layers.append(nn.ReLU(inplace=True))
+            in_channels = hidden_channels
+        self.body = nn.Sequential(*body_layers) if body_layers else None
+        self.head = nn.Conv2d(in_channels, num_classes, kernel_size=1)
+
+    def forward(self, feature_map: torch.Tensor, z: torch.Tensor) -> torch.Tensor:
+        latent = z.unsqueeze(-1).unsqueeze(-1)
+        latent = latent.expand(-1, -1, feature_map.shape[2], feature_map.shape[3])
+        fused = torch.cat([feature_map, latent], dim=1)
+        if self.body is not None:
+            fused = self.body(fused)
+        return self.head(fused)
+
+
+class ProbUnetLatentEncoder(nn.Module):
+    """Wraps an encoder-only DiffUnet to parameterize an axis-aligned Gaussian."""
+
+    def __init__(self, encoder: DiffUnet, latent_dim: int) -> None:
+        super().__init__()
+        if not getattr(encoder, "encoder_only", False):
+            raise ValueError("ProbUnetLatentEncoder requires encoder_only DiffUnet instance")
+        self.encoder = encoder
+        self.latent_dim = int(latent_dim)
+        encoder_channels = int(encoder.channel_mult[-1] * encoder.model_channels)
+        self.param_head = nn.Conv2d(encoder_channels, 2 * self.latent_dim, kernel_size=1)
+        nn.init.kaiming_normal_(self.param_head.weight, mode="fan_in", nonlinearity="relu")
+        nn.init.normal_(self.param_head.bias, mean=0.0, std=1e-2)
+
+    def forward(self, x: torch.Tensor) -> td.Independent:
+        encoding = self.encoder.forward_features(x)
+        pooled = encoding.mean(dim=(2, 3), keepdim=True)
+        params = self.param_head(pooled).squeeze(-1).squeeze(-1)
+        mu, log_sigma = torch.split(params, self.latent_dim, dim=1)
+        scale = torch.exp(log_sigma)
+        return td.Independent(td.Normal(loc=mu, scale=scale), 1)
+
+
+class ProbabilisticUnetModel(nn.Module):
+    """Probabilistic UNet wrapper built on top of DiffUnet backbones."""
+
+    def __init__(
+        self,
+        base_unet: DiffUnet,
+        prior_encoder: ProbUnetLatentEncoder,
+        posterior_encoder: ProbUnetLatentEncoder,
+        fcomb: ProbUnetFcomb,
+        latent_dim: int,
+        beta: float,
+        regularizer_coeff: float,
+    ) -> None:
+        super().__init__()
+        self.unet = base_unet
+        self.prior_encoder = prior_encoder
+        self.posterior_encoder = posterior_encoder
+        self.fcomb = fcomb
+        self.latent_dim = int(latent_dim)
+        self.beta = float(beta)
+        self.regularizer_scale = float(regularizer_coeff)
+        self.prior_latent_space: td.Distribution | None = None
+        self.posterior_latent_space: td.Distribution | None = None
+        self._feature_map: torch.Tensor | None = None
+        self.prob_unet = True
+        self.diffusion = False
+        self.ssn = False
+        self.swag_enabled = getattr(base_unet, "swag_enabled", False)
+        self.num_classes = base_unet.num_classes
+        self.out_channels = base_unet.out_channels
+        self.diffusion_num_steps = getattr(base_unet, "diffusion_num_steps", 0)
+        self.diffusion_sampler_type = getattr(base_unet, "diffusion_sampler_type", "ddpm") or "ddpm"
+
+    def forward(
+        self,
+        patch: torch.Tensor,
+        segm: torch.Tensor | None = None,
+        training: bool = False,
+    ) -> torch.Tensor:
+        if training and segm is None:
+            raise ValueError("Posterior segmentation mask is required during training")
+        self._feature_map = self.unet.forward_features(patch)
+        self.prior_latent_space = self.prior_encoder(patch)
+        if training:
+            assert segm is not None
+            if segm.shape[0] != patch.shape[0]:
+                raise ValueError("Segmentation mask batch size must match inputs")
+            if segm.shape[2:] != patch.shape[2:]:
+                raise ValueError("Segmentation mask spatial shape must match inputs")
+            posterior_input = torch.cat([patch, segm], dim=1)
+            self.posterior_latent_space = self.posterior_encoder(posterior_input)
+        else:
+            self.posterior_latent_space = None
+        return self._feature_map
+
+    def sample(self, from_prior: bool = True, testing: bool = False) -> torch.Tensor:
+        if self._feature_map is None:
+            raise RuntimeError("Call forward before sampling from the Probabilistic UNet")
+        latent_dist = self.prior_latent_space if from_prior else self.posterior_latent_space
+        if latent_dist is None:
+            raise RuntimeError("Latent distribution is not available for sampling")
+        z = latent_dist.sample() if testing else latent_dist.rsample()
+        return self.fcomb(self._feature_map, z)
+
+    def sample_multiple(
+        self,
+        num_samples: int,
+        from_prior: bool = True,
+        testing: bool = True,
+    ) -> torch.Tensor:
+        if num_samples <= 0:
+            raise ValueError("num_samples must be positive")
+        samples = [self.sample(from_prior=from_prior, testing=testing) for _ in range(num_samples)]
+        return torch.stack(samples, dim=0)
+
+    def elbo(
+        self,
+        target: torch.Tensor,
+        ignore_index: int | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        if self._feature_map is None or self.posterior_latent_space is None:
+            raise RuntimeError("Call forward with training=True before computing the ELBO")
+        if self.prior_latent_space is None:
+            raise RuntimeError("Prior distribution is not initialized")
+        z_post = self.posterior_latent_space.rsample()
+        reconstruction_logits = self.fcomb(self._feature_map, z_post)
+        ce_kwargs = {}
+        if isinstance(ignore_index, int) and ignore_index >= 0:
+            ce_kwargs["ignore_index"] = ignore_index
+        reconstruction = F.cross_entropy(
+            reconstruction_logits,
+            target,
+            reduction="none",
+            **ce_kwargs,
+        )
+        recon_loss = reconstruction.sum()
+        self.reconstruction_loss = recon_loss
+        self.mean_reconstruction_loss = reconstruction.mean()
+        kl = kl_divergence(self.posterior_latent_space, self.prior_latent_space)
+        kl = torch.mean(kl)
+        self.kl = kl
+        elbo = -(recon_loss + self.beta * kl)
+        return elbo, recon_loss, kl
+
+    def regularization_loss(self) -> torch.Tensor:
+        device = next(self.parameters()).device
+        total = torch.zeros((), device=device)
+        for module in (self.posterior_encoder, self.prior_encoder, self.fcomb):
+            module_sum = torch.zeros((), device=device)
+            for param in module.parameters():
+                module_sum = module_sum + torch.sum(param ** 2)
+            total = total + module_sum
+        return total
+
+    def get_pred(
+        self,
+        patch: torch.Tensor,
+        num_samples: int = 1,
+        apply_softmax: bool = True,
+    ) -> torch.Tensor:
+        self.forward(patch, segm=None, training=False)
+        logits = self.sample_multiple(num_samples=num_samples, from_prior=True, testing=True)
+        if apply_softmax:
+            return torch.softmax(logits, dim=2)
+        return logits
+
 def _normalize_sampling_config(config: Any) -> dict[str, Any]:
     """Return a lower-cased plain dict for diffusion sampling overrides."""
     if config is None:
@@ -904,6 +1105,86 @@ def _normalize_sampling_config(config: Any) -> dict[str, Any]:
     return normalized
 
 
+def _scale_channel_multipliers(channel_mult: list[int], scale: float | None) -> list[int]:
+    if scale is None or abs(scale - 1.0) < 1e-6:
+        return list(channel_mult)
+    factor = float(scale)
+    if factor <= 0.0:
+        raise ValueError("Channel multiplier scaling factors must be > 0.0")
+    scaled: list[int] = []
+    for idx, value in enumerate(channel_mult):
+        scaled_value = max(1, int(round(value * factor)))
+        if idx == 0:
+            scaled_value = 1
+        scaled.append(scaled_value)
+    return scaled
+
+
+def _build_prob_unet_model(
+    cfg_dict: dict[str, Any],
+    prob_cfg_raw: Mapping[str, Any],
+    diffusion_kwargs: dict[str, Any] | None,
+    sanitized_kwargs: dict[str, Any],
+) -> ProbabilisticUnetModel:
+    if cfg_dict.get("diffusion", False):
+        raise ValueError("Probabilistic UNet does not support diffusion training")
+    base_cfg = deepcopy(cfg_dict)
+    base_channel_mult = list(base_cfg.get("channel_mult", []))
+    if not base_channel_mult:
+        raise ValueError("CHANNEL_MULT must be specified to instantiate the Probabilistic UNet")
+    prob_cfg = {str(k).lower(): v for k, v in prob_cfg_raw.items()}
+    latent_dim = int(prob_cfg.get("latent_dim", 6))
+    beta = float(prob_cfg.get("beta", 10.0))
+    reg_coeff = float(prob_cfg.get("regularizer_coeff", 1e-5))
+    num_fcomb = int(prob_cfg.get("num_fcomb_convs", 4))
+    unet_scale = float(prob_cfg.get("unet_channel_mult", 0.75))
+    prior_scale = float(prob_cfg.get("prior_channel_mult", 0.5))
+    posterior_scale = float(prob_cfg.get("posterior_channel_mult", 0.5))
+
+    def _prepare_cfg(scale: float, in_channels: int | None = None, encoder_only: bool = False) -> dict[str, Any]:
+        cfg = deepcopy(base_cfg)
+        cfg["channel_mult"] = _scale_channel_multipliers(base_channel_mult, scale)
+        cfg["diffusion"] = False
+        cfg["ssn"] = False
+        cfg["encoder_only"] = encoder_only
+        if in_channels is not None:
+            cfg["in_channels"] = in_channels
+        return cfg
+
+    in_channels = int(base_cfg["in_channels"])
+    out_channels = int(base_cfg["out_channels"])
+    unet_cfg = _prepare_cfg(unet_scale, encoder_only=False)
+    prior_cfg = _prepare_cfg(prior_scale, encoder_only=True)
+    posterior_cfg = _prepare_cfg(
+        posterior_scale,
+        in_channels=in_channels + out_channels,
+        encoder_only=True,
+    )
+
+    base_unet = DiffUnet(**unet_cfg, diffusion_kwargs=diffusion_kwargs, **sanitized_kwargs)
+    prior_unet = DiffUnet(**prior_cfg, diffusion_kwargs=diffusion_kwargs, **sanitized_kwargs)
+    posterior_unet = DiffUnet(**posterior_cfg, diffusion_kwargs=diffusion_kwargs, **sanitized_kwargs)
+
+    prior_encoder = ProbUnetLatentEncoder(prior_unet, latent_dim)
+    posterior_encoder = ProbUnetLatentEncoder(posterior_unet, latent_dim)
+    fcomb = ProbUnetFcomb(
+        feature_channels=base_unet.model_channels,
+        latent_dim=latent_dim,
+        num_classes=base_unet.num_classes,
+        hidden_channels=base_unet.model_channels,
+        num_layers=max(1, num_fcomb),
+    )
+    return ProbabilisticUnetModel(
+        base_unet=base_unet,
+        prior_encoder=prior_encoder,
+        posterior_encoder=posterior_encoder,
+        fcomb=fcomb,
+        latent_dim=latent_dim,
+        beta=beta,
+        regularizer_coeff=reg_coeff,
+    )
+
+
 def get_seg_model(cfg, **kwargs):
     """Factory that forwards config as kwargs, assuming keys match DiffUnet.__init__."""
     cfg_dict = OmegaConf.to_container(cfg.MODEL, resolve=True)
@@ -913,11 +1194,9 @@ def get_seg_model(cfg, **kwargs):
     dropout_rate_override = cfg_dict.pop("dropout_rate", None)
     diffusion_kwargs_cfg = cfg_dict.pop("diffusion_kwargs", None)
     diffusion_sampling_cfg = cfg_dict.pop("diffusion_sampling", None)
+    prob_unet_cfg = cfg_dict.pop("prob_unet", None)
     if dropout_rate_override is not None:
-        try:
-            prob = float(dropout_rate_override)
-        except (TypeError, ValueError):
-            prob = None
+        prob = float(dropout_rate_override)
         if prob is not None:
             cfg_dict["dropout"] = prob
     # Remove keys that DiffUnet.__init__ does not accept but might be present in shared configs.
@@ -945,5 +1224,13 @@ def get_seg_model(cfg, **kwargs):
     # Hydra can pass extra metadata (e.g., nickname) that DiffUnet does not accept.
     meta_keys = {"nickname"}
     sanitized_kwargs = {k: v for k, v in kwargs.items() if k not in meta_keys}
+    if prob_unet_cfg is not None:
+        if isinstance(prob_unet_cfg, Mapping):
+            prob_mapping = prob_unet_cfg
+        elif isinstance(prob_unet_cfg, bool):
+            prob_mapping = {}
+        else:
+            raise TypeError("PROB_UNET configuration must be a mapping or boolean flag")
+        return _build_prob_unet_model(cfg_dict, prob_mapping, diffusion_kwargs, sanitized_kwargs)
     model = DiffUnet(**cfg_dict, diffusion_kwargs=diffusion_kwargs, **sanitized_kwargs)
     return model

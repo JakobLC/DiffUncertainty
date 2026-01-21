@@ -12,7 +12,7 @@ data:
   data_fold_id: 0
   evaluate_training_data: true
   evaluate_all_raters: true
-  validation_ratio: 1.0
+  validation_ratio: 0.1
   split_name: "ood_aug"
   augmentations:
     rotation_limit: 22.5
@@ -26,6 +26,9 @@ data:
     gauss_noise_var_limit: [0.2, 0.44]
     augment_mult: 0.0
     apply_mult_keys: ["HorizontalFlip.p", "Rotate.limit", "RandomScale.scale_limit", "GaussNoise.var_limit"]
+    dataset:
+      _target_: uncertainty_modeling.data.lidc2d_dataset.MultiRater2DDataset
+      splits_path: "${data.data_input_dir}/splits/${data.split_name}/firstCycle/splits.pkl"
     TRAIN:
       - Compose:
           transforms:
@@ -63,6 +66,3 @@ data:
                 max_pixel_value: 1.0
             - ToTensorV2:
     TEST: ${data.augmentations.VALIDATION}
-  dataset:
-    _target_: uncertainty_modeling.data.lidc2d_dataset.LIDC2DDataset
-    splits_path: "${data.data_input_dir}/splits/${data.split_name}/firstCycle/splits.pkl"

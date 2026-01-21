@@ -126,7 +126,7 @@ class LightningExperiment(pl.LightningModule):
         else:
             self.model = hydra.utils.instantiate(hparams.model)
         self.AU_type = getattr(self.model, "AU_type", None)
-        if self.AU_type not in {"softmax", "ssn", "diffusion"}:
+        if self.AU_type not in {"softmax", "ssn", "diffusion", "prob_unet"}:
             raise ValueError(f"Unsupported AU_type '{self.AU_type}'.")
         self.is_generative = bool(getattr(self.model, "is_generative", None))
         self.diffusion_num_steps = int(getattr(self.model, "diffusion_num_steps", 50))
@@ -323,8 +323,8 @@ class LightningExperiment(pl.LightningModule):
         # set placeholders for the metrics according to the stage of the trainer
         if self.trainer.testing is False:
             metric_placeholder = {
-                "validation/val_loss": 0.0,
-                "validation/val_dice": 0.0,
+                "validation/val_loss": float("nan"),
+                "validation/val_dice": float("nan"),
             }
         else:
             metric_placeholder = {"test/test_loss": 0.0, "test/test_dice": 0.0}
@@ -424,6 +424,36 @@ class LightningExperiment(pl.LightningModule):
                 one_hot = one_hot * loss_mask
         return one_hot, loss_mask
 
+    def _prepare_prob_unet_targets(
+        self, target_full: torch.Tensor, random_sample: bool
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        if target_full.ndim == 3:
+            masks = target_full.unsqueeze(1)
+        elif target_full.ndim == 4:
+            masks = target_full
+        else:
+            raise ValueError(
+                f"Expected segmentation tensor with 3 or 4 dims, got shape {tuple(target_full.shape)}"
+            )
+        batch_size, num_masks = masks.shape[0], masks.shape[1]
+        if random_sample and num_masks > 1:
+            indices = torch.randint(0, num_masks, (batch_size,), device=masks.device)
+            selected = torch.stack([masks[b, indices[b]] for b in range(batch_size)], dim=0)
+        else:
+            selected = masks[:, 0]
+        ignore_index = self.ignore_index if isinstance(self.ignore_index, int) and self.ignore_index != 0 else None
+        if ignore_index is not None:
+            ignore_mask = selected == ignore_index
+            safe_selected = selected.masked_fill(ignore_mask, 0)
+        else:
+            ignore_mask = None
+            safe_selected = selected
+        one_hot = F.one_hot(safe_selected.long(), num_classes=self.model.num_classes)
+        one_hot = one_hot.permute(0, 3, 1, 2).float()
+        if ignore_mask is not None:
+            one_hot = one_hot.masked_fill(ignore_mask.unsqueeze(1), 0.0)
+        return selected.long(), one_hot
+
     def _diffusion_sample_predictions(self, inputs: torch.Tensor) -> torch.Tensor:
         if not hasattr(self.model, "diffusion_sample_loop"):
             raise RuntimeError("Model does not implement diffusion_sample_loop")
@@ -478,6 +508,33 @@ class LightningExperiment(pl.LightningModule):
                 eps=None,
                 t=None,
                 self_cond=False,
+            )
+        elif self.AU_type == "prob_unet":
+            prob_target_full = batch["seg"].long().to(inputs.device)
+            target_long, mask_one_hot = self._prepare_prob_unet_targets(prob_target_full, random_sample=True)
+            self.model.forward(inputs, segm=mask_one_hot, training=True)
+            ignore_index = self.ignore_index if isinstance(self.ignore_index, int) and self.ignore_index != 0 else None
+            elbo, recon_loss, kl_loss = self.model.elbo(target_long, ignore_index=ignore_index)
+            reg_loss = self.model.regularization_loss()
+            reg_coeff = float(getattr(self.model, "regularizer_scale", 1e-5))
+            loss = -elbo + reg_coeff * reg_loss
+            self.log(
+                "training/prob_unet_kl",
+                kl_loss,
+                prog_bar=False,
+                on_step=True,
+                on_epoch=True,
+                logger=True,
+                batch_size=target_long.shape[0],
+            )
+            self.log(
+                "training/prob_unet_recon",
+                getattr(self.model, "mean_reconstruction_loss", recon_loss),
+                prog_bar=False,
+                on_step=True,
+                on_epoch=True,
+                logger=True,
+                batch_size=target_long.shape[0],
             )
         elif self.aleatoric_loss:
             device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -608,6 +665,37 @@ class LightningExperiment(pl.LightningModule):
                 )
             eval_dice = torch.stack(per_sample_dice).mean()
             output = softmax_stack.mean(dim=0)
+        elif self.AU_type == "prob_unet":
+            prob_target_full = target_full.to(inputs.device)
+            target_labels, mask_one_hot = self._prepare_prob_unet_targets(
+                prob_target_full, random_sample=False
+            )
+            self.model.forward(inputs, segm=mask_one_hot, training=True)
+            ignore_index = self.ignore_index if isinstance(self.ignore_index, int) and self.ignore_index != 0 else None
+            eval_elbo, _, _ = self.model.elbo(target_labels, ignore_index=ignore_index)
+            reg_loss = self.model.regularization_loss()
+            reg_coeff = float(getattr(self.model, "regularizer_scale", 1e-5))
+            eval_loss = -eval_elbo + reg_coeff * reg_loss
+            logits_stack = self.model.sample_multiple(
+                self.n_aleatoric_samples, from_prior=True, testing=True
+            )
+            softmax_stack = torch.softmax(logits_stack, dim=2)
+            per_sample_dice = []
+            target = target_labels
+            for t in range(softmax_stack.shape[0]):
+                d = dice(
+                    softmax_stack[t],
+                    target,
+                    num_classes=self.model.num_classes,
+                    ignore_index=self.ignore_index if self.ignore_index != 0 else None,
+                    binary_dice=self.model.num_classes == 2,
+                    is_softmax=True,
+                )
+                per_sample_dice.append(
+                    d if isinstance(d, torch.Tensor) else torch.tensor(float(d), device=inputs.device)
+                )
+            eval_dice = torch.stack(per_sample_dice).mean()
+            output = softmax_stack.mean(dim=0)
         elif self.aleatoric_loss:
             mu, s = self.forward(inputs)
             sigma = torch.exp(s / 2)
@@ -703,7 +791,7 @@ class LightningExperiment(pl.LightningModule):
                 eval_dice = torch.tensor(sum(ged_dices) / len(ged_dices), device=inputs.device, dtype=torch.float32)
 
         # Visualization of Segmentations
-        if batch_idx == 1 and target.ndim == 3:
+        if batch_idx == 0 and target.ndim == 3:
             pred_seg_val = torch.argmax(output, dim=1, keepdim=True)
             pred_seg_val = torch.squeeze(pred_seg_val, 1)
             target_seg_val = target

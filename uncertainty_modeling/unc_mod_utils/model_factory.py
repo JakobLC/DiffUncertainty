@@ -44,6 +44,8 @@ def _infer_model_au_type(model: Any) -> str:
         candidates.append("diffusion")
     if getattr(model, "ssn", False):
         candidates.append("ssn")
+    if getattr(model, "prob_unet", False):
+        candidates.append("prob_unet")
     if len(candidates) > 1:
         raise ValueError(f"Conflicting AU indicators: {candidates}")
     return candidates[0] if candidates else "softmax"

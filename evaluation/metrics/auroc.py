@@ -54,41 +54,72 @@ def is_ood(sample, splits, fold=0):
         return is_ood_split(sample, splits, fold)
 
 
-def get_ood_detection_rate(samples_to_query, splits=None, fold=0):
-    samples_to_query = [f"{sample.split('.')[0]}.npy" for sample in samples_to_query]
-    id = 0
-    ood = 0
-    for sample in samples_to_query:
-        if not is_ood(sample=sample, splits=splits, fold=fold):
-            id += 1
-        elif is_ood(sample=sample, splits=splits, fold=fold):
-            ood += 1
+def get_ood_detection_rate(
+    samples_to_query,
+    splits=None,
+    fold=0,
+    sample_labels=None,
+    num_ood_samples_override=None,
+):
+    if sample_labels is None:
+        samples_to_query = [f"{sample.split('.')[0]}.npy" for sample in samples_to_query]
+        id = 0
+        ood = 0
+        for sample in samples_to_query:
+            if not is_ood(sample=sample, splits=splits, fold=fold):
+                id += 1
+            elif is_ood(sample=sample, splits=splits, fold=fold):
+                ood += 1
+            else:
+                print(f"Error for sample {sample}!")
+        if splits is None:
+            # In toy dataset, there are 21 OoD samples.
+            # Caution: This is currently hardcoded
+            num_ood_samples = 21
         else:
-            print(f"Error for sample {sample}!")
-    if splits is None:
-        # In toy dataset, there are 21 OoD samples.
-        # Caution: This is currently hardcoded
-        num_ood_samples = 21
+            num_ood_samples = len(splits[fold]["ood_unlabeled_pool"])
     else:
-        num_ood_samples = len(splits[fold]["ood_unlabeled_pool"])
+        ood = sum(1 for sample in samples_to_query if sample_labels.get(sample) == 1)
+        if num_ood_samples_override is not None:
+            num_ood_samples = num_ood_samples_override
+        else:
+            num_ood_samples = sum(1 for label in sample_labels.values() if label == 1)
+        if num_ood_samples == 0:
+            print("Warning: No OOD samples available for detection rate computation.")
+            return 0.0
     ood_detection_rate = ood / num_ood_samples
     print("OOD Detection rate: ", ood_detection_rate)
     return ood_detection_rate
 
 
-def get_auroc_input(uncertainties, aggregation, splits=None, fold=0):
+def get_auroc_input(
+    uncertainties,
+    aggregation,
+    splits=None,
+    fold=0,
+    sample_labels=None,
+):
     y_labels = []
     unc_scores = []
-    for sample, unc in uncertainties.items():
-        sample = f"{sample.split('.')[0]}.npy"
-        if not is_ood(sample=sample, splits=splits, fold=fold):
-            y_labels.append(0)
+    if sample_labels is None:
+        for sample, unc in uncertainties.items():
+            sample = f"{sample.split('.')[0]}.npy"
+            if not is_ood(sample=sample, splits=splits, fold=fold):
+                y_labels.append(0)
+                unc_scores.append(unc[aggregation]["max_score"])
+            elif is_ood(sample=sample, splits=splits, fold=fold):
+                y_labels.append(1)
+                unc_scores.append(unc[aggregation]["max_score"])
+            else:
+                print("Error for sample {}!".format(sample))
+    else:
+        for sample, unc in uncertainties.items():
+            if sample not in sample_labels:
+                raise KeyError(
+                    f"Missing label for sample '{sample}' while building AUROC inputs."
+                )
+            y_labels.append(sample_labels[sample])
             unc_scores.append(unc[aggregation]["max_score"])
-        elif is_ood(sample=sample, splits=splits, fold=fold):
-            y_labels.append(1)
-            unc_scores.append(unc[aggregation]["max_score"])
-        else:
-            print("Error for sample {}!".format(sample))
     return y_labels, unc_scores
 
 
@@ -101,39 +132,84 @@ def ood_detection(
         shift = exp_dataloader.exp_version.version_params["shift"]
     else:
         shift = None
-    ood_det_dict = {"mean": {}}
-    for (
-        unc,
-        aggregated_unc_path,
-    ) in exp_dataloader.get_aggregated_unc_files_dict().items():
-        ood_det_dict["mean"][unc] = {}
-        for aggregation in exp_dataloader.exp_version.aggregations:
-            if base_splits_path is not None:
-                splits = get_splits_first_cycle(base_splits_path, shift=shift)
-            else:
-                splits = None
+    dataset_key = exp_dataloader.dataset_split or "full_dataset"
+    ood_det_dict = {dataset_key: {"mean": {}}}
+    pair_splits = getattr(exp_dataloader, "dataset_pair", None)
+    if pair_splits:
+        paired_unc_files = exp_dataloader.get_paired_aggregated_unc_files_dict()
+        id_split, ood_split = pair_splits
+        missing_uncs = set(paired_unc_files[id_split].keys()) ^ set(
+            paired_unc_files[ood_split].keys()
+        )
+        if missing_uncs:
+            raise ValueError(
+                f"Aggregated uncertainty files differ between splits {id_split} and {ood_split}: {missing_uncs}"
+            )
+        unc_iterable = (
+            (unc, (paired_unc_files[id_split][unc], paired_unc_files[ood_split][unc]))
+            for unc in paired_unc_files[id_split].keys()
+        )
+    else:
+        unc_iterable = exp_dataloader.get_aggregated_unc_files_dict().items()
+    fold = exp_dataloader.exp_version.version_params["fold"]
+    for unc, path_info in unc_iterable:
+        if pair_splits:
+            id_path, ood_path = path_info
+            id_uncertainties = get_aggregated_uncertainties(id_path)
+            ood_uncertainties = get_aggregated_uncertainties(ood_path)
+            uncertainties = {}
+            sample_labels = {}
+            for split_name, source, label in [
+                (pair_splits[0], id_uncertainties, 0),
+                (pair_splits[1], ood_uncertainties, 1),
+            ]:
+                for sample, values in source.items():
+                    combined_key = f"{split_name}::{sample}"
+                    uncertainties[combined_key] = values
+                    sample_labels[combined_key] = label
+            num_ood_samples_override = len(ood_uncertainties)
+            splits = None
+        else:
+            aggregated_unc_path = path_info
             uncertainties = get_aggregated_uncertainties(aggregated_unc_path)
+            sample_labels = None
+            num_ood_samples_override = None
+        for aggregation in exp_dataloader.exp_version.aggregations:
+            if not pair_splits:
+                if base_splits_path is not None:
+                    splits = get_splits_first_cycle(base_splits_path, shift=shift)
+                else:
+                    splits = None
             sorted_uncertainties = sort_uncertainties(uncertainties, aggregation)
             samples_to_query = get_samples_to_query(sorted_uncertainties, 0.5)
             ood_detection_rate = get_ood_detection_rate(
                 samples_to_query=samples_to_query,
                 splits=splits,
-                fold=exp_dataloader.exp_version.version_params["fold"],
+                fold=fold,
+                sample_labels=sample_labels,
+                num_ood_samples_override=num_ood_samples_override,
             )
             y_true, y_score = get_auroc_input(
                 uncertainties=uncertainties,
                 aggregation=aggregation,
                 splits=splits,
-                fold=exp_dataloader.exp_version.version_params["fold"],
+                fold=fold,
+                sample_labels=sample_labels,
             )
             fpr, tpr, _ = roc_curve(y_true, y_score)
             roc_auc = auc(fpr, tpr)
-            ood_det_dict["mean"][unc][aggregation] = {
+            ood_det_dict[dataset_key]["mean"].setdefault(unc, {})
+            ood_det_dict[dataset_key]["mean"][unc][aggregation] = {
                 "metrics": {"ood_detection_rate": ood_detection_rate, "auroc": roc_auc}
             }
             print("AUROC: ", roc_auc)
-            save_path = exp_dataloader.exp_version.exp_path / "ood_detection.json"
-            opts = jsbeautifier.default_options()
-            opts.indent_size = 4
-            with open(save_path, "w") as f:
-                f.write(jsbeautifier.beautify(json.dumps(ood_det_dict), opts))
+    save_path = exp_dataloader.exp_version.exp_path / "ood_detection.json"
+    existing_payload = {}
+    if save_path.exists():
+        with open(save_path) as f:
+            existing_payload = json.load(f)
+    existing_payload.update(ood_det_dict)
+    opts = jsbeautifier.default_options()
+    opts.indent_size = 4
+    with open(save_path, "w") as f:
+        f.write(jsbeautifier.beautify(json.dumps(existing_payload), opts))

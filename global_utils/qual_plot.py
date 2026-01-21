@@ -13,6 +13,8 @@ import torch.nn.functional as F
 from omegaconf import OmegaConf
 import numpy as np
 
+sys.path.append(str(Path(__file__).resolve().parent.parent))
+sys.path.append(str(Path(__file__).resolve().parent.parent/"uncertainty_modeling"))
 from evaluation.metrics.dice_wrapped import dice
 from evaluation.metrics.ged_fast import ged_binary_fast
 from global_utils.checkpoint_format import format_checkpoint_subdir
@@ -125,7 +127,9 @@ class QualitativeInspector:
         checkpoints: List[Dict[str, Any]] = []
         for checkpoint_path in checkpoint_paths:
             checkpoint = torch.load(checkpoint_path, weights_only=False)
-            checkpoint["hyper_parameters"]["MODEL"]["PRETRAINED"] = False
+
+            print(checkpoint["hyper_parameters"]["model"].keys())
+            checkpoint["hyper_parameters"]["model"]["PRETRAINED"] = False
             if checkpoint["hyper_parameters"].__class__.__name__ == "AttributeDict":
                 checkpoint["hyper_parameters"] = dict(checkpoint["hyper_parameters"])
             conf = OmegaConf.create(checkpoint["hyper_parameters"])
@@ -573,6 +577,13 @@ class QualitativeInspector:
                         self_cond=False,
                     )
                     outputs.append(F.softmax(sample_output, dim=1)[0].detach().cpu())
+            elif au_type == "prob_unet":
+                data_tensor = self._primary_tensor(sample["data"]).to(self.device).float()
+                model.forward(data_tensor, segm=None, training=False)
+                logits_stack = model.sample_multiple(self.n_pred, from_prior=True, testing=True)
+                softmax_stack = torch.softmax(logits_stack, dim=2)
+                for sample_tensor in softmax_stack:
+                    outputs.append(sample_tensor[0].detach().cpu())
             elif self.tta and tta_payload is not None:
                 transforms = sample.get("transforms") or []
                 for index, image in enumerate(tta_payload):

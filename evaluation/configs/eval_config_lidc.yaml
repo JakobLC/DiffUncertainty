@@ -11,8 +11,8 @@ second_cycle_path: "/home/jloch/Desktop/diff/luzern/values/experiments/SecondCyc
 evaluate_training_data: null
 evaluate_all_raters: true
 
-#tasks: ["threshold","aggregation","ood_detection","ambiguity_modeling","calibration"] #,"cleanup"
-tasks: ["aggregation"]
+tasks: ["threshold","aggregation","ood_detection","ambiguity_modeling","calibration"] #,"cleanup"
+#tasks: ["ambiguity_modeling"]
 #tasks: ["cleanup"]
 
 task_params:
@@ -32,17 +32,20 @@ task_params:
       base_splits_path: ${base_splits_path}
       random_types: ["random", "best", "worst"]
   ood_detection:
-    datasets: ["unlabeled"]
+    #datasets: ["unlabeled"]
+    datasets: ["id&ood_noise","id&ood_blur"]
     function:
       _target_: evaluation.metrics.auroc.ood_detection
       base_splits_path: ${base_splits_path}
   failure_detection: ${FAILURE_DETECTION}
   calibration:
-    datasets: [ "id", "ood" ]
+    #datasets: [ "id", "ood" ]
+    datasets: [ "id", "ood_blur", "ood_noise" ]
     function:
       _target_: evaluation.metrics.ace.main
   ambiguity_modeling:
-    datasets: [ "id", "ood" ]
+    #datasets: [ "id", "ood" ]
+    datasets: [ "id", "ood_blur", "ood_noise" ]
     function:
       _target_: evaluation.metrics.ncc.main
   al_improvement:

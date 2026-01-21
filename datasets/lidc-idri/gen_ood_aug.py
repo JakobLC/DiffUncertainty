@@ -41,7 +41,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--num-splits",
         type=int,
-        default=5,
+        default=4,
         help="Number of cross-validation folds stored inside the pickle file.",
     )
     parser.add_argument(
@@ -68,6 +68,17 @@ def parse_args() -> argparse.Namespace:
         parser.error("--num-splits must be at least 2.")
     return args
 
+def _collect_patient_images(
+    patient_to_images: Dict[str, List[str]],
+    patient_ids: Sequence[str],
+) -> List[str]:
+    images: List[str] = []
+    for patient in patient_ids:
+        if patient not in patient_to_images:
+            raise KeyError(f"Patient '{patient}' missing from metadata map.")
+        images.extend(patient_to_images[patient])
+    return sorted(images)
+
 def split_patients(
     patient_to_images: Dict[str, List[str]],
     test_ratio: float,
@@ -87,39 +98,39 @@ def split_patients(
     if not remaining_patients:
         raise ValueError("Test ratio leaves no patients for train/val splits.")
 
-    def _collect(selected: Sequence[str]) -> List[str]:
-        images: List[str] = []
-        for patient in selected:
-            images.extend(patient_to_images[patient])
-        return images
-
-    test_images = sorted(_collect(test_patients))
-    pool_images = sorted(_collect(remaining_patients))
-    if len(pool_images) < 2:
-        raise ValueError("Not enough remaining samples to build validation folds.")
-    return test_images, pool_images
+    test_patient_ids = sorted(test_patients)
+    remaining_sorted = sorted(remaining_patients)
+    if len(remaining_sorted) < 2:
+        raise ValueError("Not enough patients left to build validation folds.")
+    return test_patient_ids, remaining_sorted
 
 
 def build_train_val_pairs(
-    samples: List[str],
+    patient_ids: List[str],
+    patient_to_images: Dict[str, List[str]],
     num_splits: int,
     seed: int,
 ) -> List[Tuple[List[str], List[str]]]:
-    if num_splits > len(samples):
+    if num_splits > len(patient_ids):
         raise ValueError(
-            "Cannot create more splits than available samples after removing the test patients."
+            "Cannot create more splits than available patients after removing the test patients."
         )
     rng = np.random.default_rng(seed)
-    samples_array = np.array(samples)
-    indices = np.arange(len(samples_array))
+    patients_array = np.array(patient_ids)
+    indices = np.arange(len(patients_array))
     rng.shuffle(indices)
     chunks = np.array_split(indices, num_splits)
     train_val_pairs: List[Tuple[List[str], List[str]]] = []
     for fold_idx in range(num_splits):
         val_idx = chunks[fold_idx]
-        train_idx = np.concatenate([chunks[i] for i in range(num_splits) if i != fold_idx])
-        train_ids = samples_array[train_idx].tolist()
-        val_ids = samples_array[val_idx].tolist()
+        other_chunks = [chunks[i] for i in range(num_splits) if i != fold_idx]
+        if not other_chunks:
+            raise ValueError("Training fold would be empty; increase number of patients or reduce splits.")
+        train_idx = np.concatenate(other_chunks)
+        train_patients = patients_array[train_idx].tolist()
+        val_patients = patients_array[val_idx].tolist()
+        train_ids = _collect_patient_images(patient_to_images, train_patients)
+        val_ids = _collect_patient_images(patient_to_images, val_patients)
         train_val_pairs.append((train_ids, val_ids))
     return train_val_pairs
 
@@ -157,6 +168,10 @@ def save_splits(
     cycle_name: str,
     fold_entries: Sequence[Dict[str, np.ndarray]],
 ) -> Path:
+    #print first 5 filenames in each group of the split. only first fold
+    for group in ["train","val","id_test"]:
+        print(f"{group} examples: {fold_entries[0][group][:5]}")
+
     split_path = base_dir / "splits" / split_name / cycle_name / "splits.pkl"
     split_path.parent.mkdir(parents=True, exist_ok=True)
     with split_path.open("wb") as handle:
@@ -196,13 +211,14 @@ def generate_augmentations(
 
 
 def main() -> None:
-    args = parse_args()
+    args = parse_args() 
     random.seed(args.seed)
     np.random.seed(args.seed)
 
     patient_map = read_metadata(args.metadata_csv)
-    test_images, pool_images = split_patients(patient_map, args.test_ratio, args.seed)
-    train_val_pairs = build_train_val_pairs(pool_images, args.num_splits, args.seed)
+    test_patients, pool_patients = split_patients(patient_map, args.test_ratio, args.seed)
+    test_images = _collect_patient_images(patient_map, test_patients)
+    train_val_pairs = build_train_val_pairs(pool_patients, patient_map, args.num_splits, args.seed)
     fold_entries = build_fold_entries(train_val_pairs, test_images, args.seed)
     save_splits(args.base_dir, args.split_name, args.cycle_name, fold_entries)
 

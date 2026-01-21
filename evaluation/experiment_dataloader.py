@@ -13,6 +13,34 @@ class ExperimentDataloader:
         self.exp_version = exp_version
         set_seed(int(self.exp_version.version_params["seed"]))
         self.dataset_split = dataset_split
+        self.dataset_pair = None
+        self.dataset_paths = None
+        if self.dataset_split and "&" in self.dataset_split:
+            pair_parts = [
+                split.strip() for split in self.dataset_split.split("&") if split.strip()
+            ]
+            if len(pair_parts) != 2:
+                raise ValueError(
+                    f"Dataset split '{self.dataset_split}' must contain exactly two parts separated by '&'."
+                )
+            self.dataset_pair = pair_parts
+        if self.dataset_pair:
+            self.dataset_path = None
+            self.dataset_paths = []
+            for split in self.dataset_pair:
+                split_path = exp_version.exp_path / split
+                if not split_path.exists():
+                    raise FileNotFoundError(
+                        f"Missing dataset split directory for '{split}' under {exp_version.exp_path}"
+                    )
+                self.dataset_paths.append(split_path)
+            self.pred_seg_dir = None
+            self.pred_prob_dir = None
+            self.image_ids = []
+            self.unc_path_dict = {}
+            self.dataloader = None
+            self.ref_seg_dir = None
+            return
         self.dataset_path = (
             exp_version.exp_path / self.dataset_split
             if self.dataset_split
@@ -93,6 +121,10 @@ class ExperimentDataloader:
         return pred_segs
 
     def get_aggregated_unc_files_dict(self):
+        if self.is_paired_split():
+            raise ValueError(
+                "Paired dataset splits do not expose a single aggregated uncertainty directory; use get_paired_aggregated_unc_files_dict()."
+            )
         aggregated_unc_file_dict = {}
         for unc in self.unc_path_dict.keys():
             if os.path.isfile(self.dataset_path / f"aggregated_{unc}.json"):
@@ -100,6 +132,27 @@ class ExperimentDataloader:
                     self.dataset_path / f"aggregated_{unc}.json"
                 )
         return aggregated_unc_file_dict
+
+    def is_paired_split(self):
+        return self.dataset_pair is not None
+
+    def get_paired_aggregated_unc_files_dict(self):
+        if not self.is_paired_split():
+            raise ValueError(
+                "Call get_aggregated_unc_files_dict() for single datasets; paired datasets expose multiple paths."
+            )
+        split_dict = {}
+        for split_name, split_path in zip(self.dataset_pair, self.dataset_paths):
+            unc_files = {}
+            for unc in self.exp_version.unc_types:
+                candidate = split_path / f"aggregated_{unc}.json"
+                if not candidate.is_file():
+                    raise FileNotFoundError(
+                        f"Missing aggregated_{unc}.json for split '{split_name}' under {split_path}"
+                    )
+                unc_files[unc] = candidate
+            split_dict[split_name] = unc_files
+        return split_dict
 
     def setup_dataloader(self):
         dm = hydra.utils.instantiate(
@@ -135,7 +188,7 @@ class ExperimentDataloader:
                     idx = dataset.image_ids.index(image_id)
                 except ValueError as exc:
                     raise ValueError(f"Image id {image_id} not found in dataloader dataset") from exc
-                # New LIDC2DDataset exposes per-image rater mask paths as `mask_paths[idx]`.
+                # MultiRater2DDataset exposes per-image rater mask paths as `mask_paths[idx]`.
                 # Fall back to the legacy `masks[idx]` path format if present.
                 reference_segs = []
                 n_reference_segs = self.exp_version.n_reference_segs

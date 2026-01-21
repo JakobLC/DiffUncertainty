@@ -10,28 +10,17 @@ import torch
 
 AUGMENTED_SPLITS = {"ood_noise", "ood_blur", "ood_contrast", "ood_jpeg"}
 
-class LIDC2DDataset(torch.utils.data.Dataset):
-    """LIDC 2D (cropped nodule) dataset for 2D segmentation.
 
-    This mirrors the interface of the existing Cityscapes dataset so it can be
-    plugged into the generic BaseDataModule without additional changes.
+class MultiRater2DDataset(torch.utils.data.Dataset):
+    """Multi-rater 2D segmentation dataset (supports LIDC & Chaksu).
 
-        Assumptions:
-        - "base_dir" points to the root folder of either lidc_2d or lidc_2d_small.
-        - A preprocessed/ folder exists with subfolders images/ and labels/.
-        - A splits pickle (splits.pkl) containing keys: train, val, id_test, ood_test stored
-            at ``splits_path`` (same structure as for Cityscapes & 3D LIDC).
-        - Images are single–channel numpy arrays of shape (H, W); we replicate them to 3
-            channels so that pretrained RGB backbones (HRNet) can be used unchanged. (If later
-            desired, model INPUT_CHANNELS can be set to 1 and replication disabled.)
-        - For each image file ``<id>.npy`` there are rater masks named ``<id>_00_mask.npy``,
-            ``<id>_01_mask.npy`` ... (up to 03).
-
-    TTA behaviour replicates that of the Cityscapes dataset: we create a list of
-    augmented image variants plus the base transformed mask (mask is not
-    TTA-augmented except for the normalization & tensor conversion applied to
-    the original sample). This matches how uncertainty aggregation expects the
-    structure for GTA/Cityscapes.
+    Mirrors how the Cityscapes dataset plugs into ``BaseDataModule`` while
+    reading from ``preprocessed/images`` & ``preprocessed/labels`` plus split
+    definitions stored in ``splits.pkl``. Images can be grayscale (LIDC) or RGB
+    (Chaksu) and every base image has multiple rater masks following a format
+    such as ``{base_id}_{rater:02d}_mask.npy``. ``_meta`` inside ``splits.pkl``
+    can optionally define ``dataset_name``, ``num_raters`` or ``rater_pattern``
+    so configs only need to override the pieces that differ from LIDC defaults.
     """
 
     def __init__(
@@ -41,10 +30,13 @@ class LIDC2DDataset(torch.utils.data.Dataset):
         split: str = "train",
         file_pattern: str = "*.npy",
         transforms=None,
-        data_fold_id: int = 0,  # kept for API compatibility (unused here)
+        data_fold_id: int = 0,
         tta: bool = False,
         replicate_channels: bool = True,
         return_all_raters: bool = True,
+        num_raters: int = None,
+        rater_pattern: str = None,
+        dataset_label: str = None,
     ):
         self.splits_path = splits_path
         self.split = split
@@ -53,7 +45,9 @@ class LIDC2DDataset(torch.utils.data.Dataset):
         self.tta = tta
         self.replicate_channels = replicate_channels
         self.return_all_raters = return_all_raters
-        self.num_raters = 4
+        self.dataset_label = dataset_label
+        self.num_raters = num_raters
+        self.rater_pattern = rater_pattern
 
         with open(self.splits_path, "rb") as f:
             splits = pickle.load(f)
@@ -64,18 +58,27 @@ class LIDC2DDataset(torch.utils.data.Dataset):
             raise ValueError("Each fold entry inside splits.pkl must be a dictionary.")
         self.split_metadata = fold_entry.get("_meta", {})
         self.split_schema = self.split_metadata.get("schema")
+        self.dataset_label = self.dataset_label or self.split_metadata.get("dataset_name", "lidc2d")
+        meta_num_raters = self.split_metadata.get("num_raters")
+        if self.num_raters is None:
+            self.num_raters = int(meta_num_raters) if meta_num_raters is not None else 4
+        if self.num_raters <= 0:
+            raise ValueError("num_raters must be a positive integer.")
+        meta_pattern = self.split_metadata.get("rater_pattern")
+        self.rater_pattern = self.rater_pattern or meta_pattern or "{base_id}_{rater:02d}_mask.npy"
         subject_ids = self._resolve_subject_ids(fold_entry, split)
-        assert "lidc" in base_dir, f"Did not find expected string 'licd' in {base_dir}"
         # Directory that contains the preprocessed images/labels folders
         proc_dir = os.path.join(base_dir, "preprocessed")
         image_dir = self._resolve_image_dir(proc_dir, split)
         label_dir = os.path.join(proc_dir, "labels")
 
-        self.samples = get_lidc2d_samples(
+        self.samples = load_multirater_samples(
             image_dir=image_dir,
             label_dir=label_dir,
             pattern=file_pattern,
             subject_ids=subject_ids,
+            num_raters=self.num_raters,
+            rater_pattern=self.rater_pattern,
         )
 
         self.imgs = [sample["image_path"] for sample in self.samples]
@@ -83,7 +86,7 @@ class LIDC2DDataset(torch.utils.data.Dataset):
         self.image_ids = [sample["image_id"] for sample in self.samples]
 
         print(
-            f"Dataset: LIDC2D {split} - {len(self.imgs)} images",
+            f"Dataset: {self.dataset_label} {split} - {len(self.imgs)} images",
         )
 
     def __len__(self):
@@ -125,18 +128,17 @@ class LIDC2DDataset(torch.utils.data.Dataset):
         return candidate
 
     def _load_image(self, path: str) -> np.ndarray:
-        img = np.load(path)  # shape (H, W)
+        img = np.load(path)
+        img = img.astype(np.float32)
         if img.ndim == 2:
-            img = img.astype(np.float32)
             if self.replicate_channels:
-                # replicate to 3 channels for RGB backbones
                 img = np.repeat(img[..., None], 3, axis=2)
             else:
                 img = img[..., None]
         return img
 
     def _load_mask(self, path: str) -> np.ndarray:
-        return np.load(path)  # (H, W) binary (0 background / 1 nodule)
+        return np.load(path)
 
     def _load_masks(self, paths: List[str]) -> List[np.ndarray]:
         return [self._load_mask(p) for p in paths]
@@ -181,7 +183,7 @@ class LIDC2DDataset(torch.utils.data.Dataset):
                 "data": images,
                 "seg": mask,
                 "image_id": self.image_ids[idx],
-                "dataset": "lidc2d",
+                "dataset": self.dataset_label,
                 "transforms": transforms_applied,
             }
         else:
@@ -196,28 +198,46 @@ class LIDC2DDataset(torch.utils.data.Dataset):
                 "data": img_t,
                 "seg": mask_t,
                 "image_id": self.image_ids[idx],
-                "dataset": "lidc2d",
+                "dataset": self.dataset_label,
             }
 
+LIDC2DDataset = MultiRater2DDataset  # Backward compatibility alias
 
-def get_lidc2d_samples(
+def load_multirater_samples(
     image_dir: str,
     label_dir: str,
     pattern: str = "*.npy",
     subject_ids=None,
+    num_raters: int = 4,
+    rater_pattern: str = "{base_id}_{rater:02d}_mask.npy",
 ):
     samples = []
     (_, _, image_filenames) = next(os.walk(image_dir))
-    (_, _, label_filenames) = next(os.walk(label_dir))
+    subject_filter = None
+    if subject_ids is not None:
+        subject_filter = set()
+        for sid in subject_ids:
+            sid_str = str(sid)
+            if not sid_str:
+                continue
+            subject_filter.add(sid_str)
+            basename = os.path.basename(sid_str)
+            if basename:
+                subject_filter.add(basename)
+                subject_filter.add(os.path.splitext(basename)[0])
     for image_filename in sorted(fnmatch.filter(image_filenames, pattern)):
-        if subject_ids is not None and image_filename not in subject_ids:
+        base_id = os.path.splitext(image_filename)[0]
+        if subject_filter is not None and image_filename not in subject_filter and base_id not in subject_filter:
             continue
         image_path = os.path.join(image_dir, image_filename)
-        base_id = image_filename.split(".")[0]
-        label_paths = [
-            os.path.join(label_dir, f"{base_id}_{rater:02d}_mask.npy")
-            for rater in range(4)
-        ]
+        label_paths = []
+        for rater in range(num_raters):
+            label_name = rater_pattern.format(
+                base_id=base_id,
+                filename=image_filename,
+                rater=rater,
+            )
+            label_paths.append(os.path.join(label_dir, label_name))
         missing = [path for path in label_paths if not os.path.exists(path)]
         if missing:
             missing_rel = ", ".join(os.path.basename(p) for p in missing)

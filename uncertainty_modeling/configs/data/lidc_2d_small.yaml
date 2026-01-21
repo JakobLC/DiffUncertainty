@@ -12,13 +12,16 @@ data:
   data_fold_id: 0
   evaluate_training_data: true
   evaluate_all_raters: true
-  validation_ratio: 1.0
+  validation_ratio: 0.1
   split_name: "ood_aug"
+  dataset:
+    _target_: uncertainty_modeling.data.lidc2d_dataset.MultiRater2DDataset
+    splits_path: "${data.data_input_dir}/splits/${data.split_name}/firstCycle/splits.pkl"
   augmentations:
     rotation_limit: 22.5
     scale_limit: [ -0.2, 0.2 ]
-    mean: [ 0.485, 0.456, 0.406 ]
-    std: [ 0.229, 0.224, 0.225 ]
+    mean: [ 0.485, 0.456, 0.406 ] # TODO: CHANGE THIS
+    std: [ 0.229, 0.224, 0.225 ]  # TODO: CHANGE THIS
     border_mode: 0
     mask_value: 0
     height: 64
@@ -63,6 +66,3 @@ data:
                 max_pixel_value: 1.0
             - ToTensorV2:
     TEST: ${data.augmentations.VALIDATION}
-  dataset:
-    _target_: uncertainty_modeling.data.lidc2d_dataset.LIDC2DDataset
-    splits_path: "${data.data_input_dir}/splits/${data.split_name}/firstCycle/splits.pkl"

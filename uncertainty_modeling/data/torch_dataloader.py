@@ -241,13 +241,13 @@ class BaseDataModule(LightningDataModule):
         self.DS_train_eval = None
         self.validation_ratio = float(validation_ratio)
 
-    def _is_lidc2d_dataset(self) -> bool:
+    def _is_multirater_dataset(self) -> bool:
         target = ""
         if isinstance(self.dataset, DictConfig):
             target = self.dataset.get("_target_", "")
         elif isinstance(self.dataset, dict):
             target = self.dataset.get("_target_", "")
-        return "LIDC2DDataset" in str(target)
+        return "MultiRater2DDataset" in str(target)
 
     def _maybe_subset_dataset(self, dataset, ratio: float, name: str):
         if dataset is None:
@@ -275,7 +275,7 @@ class BaseDataModule(LightningDataModule):
         stage: str
             current stage which is given by Pytorch Lightning
         """
-        is_lidc2d = self._is_lidc2d_dataset()
+        is_multirater = self._is_multirater_dataset()
 
         if stage in (None, "fit"):
             self.augmentations = apply_augment_mult(self.augmentations)
@@ -286,7 +286,7 @@ class BaseDataModule(LightningDataModule):
                 transforms=transforms_train,
             )
             train_kwargs["data_fold_id"] = self.data_fold_id
-            if is_lidc2d:
+            if is_multirater:
                 train_kwargs["return_all_raters"] = False
             self.DS_train = hydra.utils.instantiate(self.dataset, **train_kwargs)
         if stage in (None, "fit", "validate"):
@@ -298,7 +298,7 @@ class BaseDataModule(LightningDataModule):
                 tta=self.tta,
             )
             val_kwargs["data_fold_id"] = self.data_fold_id
-            if is_lidc2d:
+            if is_multirater:
                 val_kwargs["return_all_raters"] = self.evaluate_all_raters
             self.DS_val = hydra.utils.instantiate(self.dataset, **val_kwargs)
             self.DS_val = self._maybe_subset_dataset(
@@ -314,7 +314,7 @@ class BaseDataModule(LightningDataModule):
                     tta=self.tta,
                 )
                 train_eval_kwargs["data_fold_id"] = self.data_fold_id
-                if is_lidc2d:
+                if is_multirater:
                     train_eval_kwargs["return_all_raters"] = self.evaluate_all_raters
                 DS_train_full_for_eval = hydra.utils.instantiate(
                     self.dataset,
@@ -342,7 +342,7 @@ class BaseDataModule(LightningDataModule):
                 tta=self.tta,
             )
             test_kwargs["data_fold_id"] = self.data_fold_id
-            if is_lidc2d:
+            if is_multirater:
                 test_kwargs["return_all_raters"] = True
             self.DS_test = hydra.utils.instantiate(self.dataset, **test_kwargs)
 

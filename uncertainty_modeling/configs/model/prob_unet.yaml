@@ -1,0 +1,16 @@
+# @package _global_
+model:
+  nickname: "au=prob_unet"
+  _target_: uncertainty_modeling.unc_mod_utils.model_factory.instantiate_network
+  target: ${network.target}
+  cfg: ${network.cfg}
+  overrides:
+    MODEL:
+      PROB_UNET:
+        LATENT_DIM: 6
+        BETA: 10.0
+        REGULARIZER_COEFF: 1e-5
+        NUM_FCOMB_CONVS: 4
+        UNET_CHANNEL_MULT: 0.75
+        PRIOR_CHANNEL_MULT: 0.5
+        POSTERIOR_CHANNEL_MULT: 0.5

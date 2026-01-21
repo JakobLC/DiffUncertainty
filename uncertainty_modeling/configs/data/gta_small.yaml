@@ -12,7 +12,7 @@ data:
   data_fold_id: 0
   evaluate_training_data: true
   evaluate_all_raters: true
-  validation_ratio: 1.0
+  validation_ratio: 0.1
   augmentations:
     rotation_limit: 22.5
     scale_limit: [ -0.2, 0.2 ]

@@ -78,14 +78,58 @@ class EvalExperiments:
                 versions.append(exp_version)
         return versions
 
+    def _resolve_dataset_splits(self, task_params, version):
+        dataset_spec = task_params["datasets"] if "datasets" in task_params.keys() else None
+        dataset_splits = self._normalize_dataset_spec(dataset_spec)
+        if len(dataset_splits) == 1 and dataset_splits[0] == "all":
+            dataset_splits = self._discover_available_dataset_splits(version)
+        return dataset_splits
+
+    @staticmethod
+    def _normalize_dataset_spec(dataset_spec):
+        if dataset_spec is None:
+            return [None]
+        if isinstance(dataset_spec, str):
+            return [dataset_spec]
+        return list(dataset_spec)
+
+    def _discover_available_dataset_splits(self, version):
+        exp_path = Path(version.exp_path)
+        if not exp_path.exists():
+            raise FileNotFoundError(
+                f"Experiment path {exp_path} does not exist; cannot discover dataset splits."
+            )
+        dataset_dirs = []
+        missing_metrics = []
+        for child in sorted(exp_path.iterdir()):
+            if not child.is_dir():
+                continue
+            metrics_file = child / "metrics.json"
+            if metrics_file.is_file():
+                dataset_dirs.append(child.name)
+            else:
+                missing_metrics.append(child.name)
+        if dataset_dirs:
+            if missing_metrics:
+                print(
+                    f"Skipping dataset splits without metrics.json under {exp_path}: {missing_metrics}"
+                )
+            print(f"Auto-detected dataset splits for {exp_path}: {dataset_dirs}")
+            return dataset_dirs
+        if (exp_path / "metrics.json").is_file():
+            print(
+                f"Auto-detected single dataset (no split subfolders) for {exp_path}."
+            )
+            return [None]
+        raise FileNotFoundError(
+            f"No dataset splits with metrics.json found under {exp_path}; specify datasets explicitly or run evaluations first."
+        )
+
     def analyse_accumulated(self, task_params):
         # This is only used if the results are accumulated across multiple versions
         results_dict_task = {}
         for version in self.versions:
-            if "datasets" in task_params.keys():
-                dataset_splits = task_params["datasets"]
-            else:
-                dataset_splits = [None]
+            dataset_splits = self._resolve_dataset_splits(task_params, version)
             for dataset_split in dataset_splits:
                 exp_dataloader = ExperimentDataloader(version, dataset_split)
                 results_dict = hydra.utils.instantiate(
@@ -102,10 +146,7 @@ class EvalExperiments:
 
     def analyse_single_version(self, task_params):
         for version in self.versions:
-            if "datasets" in task_params.keys():
-                dataset_splits = task_params["datasets"]
-            else:
-                dataset_splits = [None]
+            dataset_splits = self._resolve_dataset_splits(task_params, version)
             for dataset_split in dataset_splits:
                 exp_dataloader = ExperimentDataloader(version, dataset_split)
                 hydra.utils.instantiate(

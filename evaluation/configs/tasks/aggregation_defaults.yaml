@@ -1,4 +1,4 @@
 #@package _global_
-datasets: ["id", "ood", "unlabeled", "val"]
+datasets: "all"
 function:
   _target_: evaluation.uncertainty_aggregation.aggregate_uncertainties.aggregate_uncertainties

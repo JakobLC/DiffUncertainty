@@ -81,6 +81,26 @@ def test_cli(
         help="Number of models to sample (for EU models (SWAG, MC Dropout, etc.)).",
     )
     parser.add_argument(
+        "--diffusion-num-steps",
+        dest="diffusion_num_steps",
+        type=int,
+        default=None,
+        help="Override the diffusion sampler step count during evaluation (when using diffusion AU models).",
+    )
+    parser.add_argument(
+        "--diffusion-sampler",
+        dest="diffusion_sampler_type",
+        type=str,
+        default=None,
+        help="Override the diffusion sampler type during evaluation (when using diffusion AU models).",
+    )
+    parser.add_argument(
+        "--metrics-only",
+        action="store_true",
+        default=False,
+        help="Only save aggregated metrics.json (skip writing prediction/uncertainty images).",
+    )
+    parser.add_argument(
         "--swag-blockwise",
         action="store_true",
         default=False,

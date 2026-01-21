@@ -414,6 +414,14 @@ class ModelOutputVisualizer:
                 )
                 sample_list.append(F.softmax(sample_output, dim=1))
             return torch.stack(sample_list, dim=0)
+        if au_type == "prob_unet":
+            inputs = batch["data"]
+            if isinstance(inputs, list):
+                inputs = inputs[0]
+            tensor_inputs = inputs.to(self.device).float()
+            model.forward(tensor_inputs, segm=None, training=False)
+            logits_stack = model.sample_multiple(self.n_pred, from_prior=True, testing=True)
+            return torch.softmax(logits_stack, dim=2)
         if self.tta:
             preds: List[torch.Tensor] = []
             transforms = batch.get("transforms")

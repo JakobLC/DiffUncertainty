@@ -68,6 +68,8 @@ class Tester:
         self.swag_blockwise = bool(getattr(args, "swag_blockwise", False))
         self.swag_low_rank_cov = bool(getattr(args, "swag_low_rank_cov", True))
         self.ensemble_mode = bool(getattr(args, "ensemble_mode", False))
+        self.diffusion_steps_override = getattr(args, "diffusion_num_steps", None)
+        self.diffusion_sampler_override = getattr(args, "diffusion_sampler_type", None)
         base_models = load_models_from_checkpoint(
             self.all_checkpoints,
             device=self.device,
@@ -84,6 +86,11 @@ class Tester:
             self.all_checkpoints,
             self.checkpoint_paths,
         )
+        self._maybe_override_diffusion_steps()
+        if not self.models:
+            raise RuntimeError(
+                "No models were instantiated; ensure checkpoints are valid and --n_models is not zero with ensemble_mode disabled."
+            )
         self.n_pred = args.n_pred
         self.results_dict = {}
         self.save_root_dir = (
@@ -100,6 +107,7 @@ class Tester:
         self.checkpoint_subdir = format_checkpoint_subdir(
             self.checkpoint_epoch, self.use_ema
         )
+        self.metrics_only = bool(getattr(args, "metrics_only", False))
         self.create_save_dirs()
         self.skip_existing = bool(getattr(args, "skip_existing", False))
 
@@ -248,6 +256,7 @@ class Tester:
             if self.ensemble_mode:
                 expanded_models.append(model)
                 continue
+            expanded = False
             if self.n_models > 0:
                 if model.EU_type in ["swag", "swag_diag"]:
                     if "swag_config" in checkpoint:
@@ -262,11 +271,37 @@ class Tester:
                         checkpoint_paths[idx],
                     )
                     expanded_models.extend(swag_models)
-                elif model.EU_type=="dropout":
-                    expanded_models.extend([model]*self.n_models)
-            else:
+                    expanded = bool(swag_models)
+                elif model.EU_type == "dropout":
+                    expanded_models.extend([model] * self.n_models)
+                    expanded = self.n_models > 0
+                else:
+                    print(
+                        f"[n_models={self.n_models}] EU sampling is not implemented for EU_type='{model.EU_type}'. Using base model instead."
+                    )
+            if not expanded:
                 expanded_models.append(model)
         return expanded_models
+
+    def _maybe_override_diffusion_steps(self):
+        if self.diffusion_steps_override is None and self.diffusion_sampler_override is None:
+            return
+        steps_override = (
+            None
+            if self.diffusion_steps_override is None
+            else int(self.diffusion_steps_override)
+        )
+        sampler_override = (
+            None
+            if self.diffusion_sampler_override is None
+            else str(self.diffusion_sampler_override)
+        )
+        for model in self.models:
+            if getattr(model, "diffusion", False):
+                if steps_override is not None:
+                    setattr(model, "diffusion_num_steps", steps_override)
+                if sampler_override:
+                    setattr(model, "diffusion_sampler_type", sampler_override)
 
     def _sample_swag_draws(self, template_model, swag_state, swag_config, checkpoint_label):
         if self.n_models <= 0:
@@ -316,8 +351,9 @@ class Tester:
         self.save_pred_dir = os.path.join(self.save_dir, "pred_seg")
         self.save_pred_prob_dir = os.path.join(self.save_dir, "pred_prob")
         os.makedirs(self.save_dir, exist_ok=True)
-        os.makedirs(self.save_pred_dir, exist_ok=True)
-        # os.makedirs(self.save_pred_prob_dir, exist_ok=True)
+        if not self.metrics_only:
+            os.makedirs(self.save_pred_dir, exist_ok=True)
+            # os.makedirs(self.save_pred_prob_dir, exist_ok=True)
         return
 
     def should_skip(self):
@@ -476,6 +512,41 @@ class Tester:
         metrics_dict["dice"] = float(np.mean(np.array(all_test_dice)))
         return metrics_dict
 
+    def _compute_ged_backend(self, preds, ground_truth, ignore_index, additional_metrics=None):
+        addl = additional_metrics if additional_metrics is not None else ["dice"]
+        if "lidc" in self.dataset_name.lower():
+            return ged_binary_fast(
+                preds,
+                ground_truth,
+                ignore_index=ignore_index,
+                additional_metrics=addl,
+            )
+        return calculate_ged(
+            preds,
+            ground_truth,
+            ignore_index=ignore_index,
+            additional_metrics=addl,
+        )
+
+    def _compute_grouped_ged(self, grouped_preds, ground_truth, ignore_index):
+        if not grouped_preds:
+            return None
+        ged_scores = []
+        for preds in grouped_preds:
+            if preds is None or preds.numel() == 0:
+                continue
+            metrics = self._compute_ged_backend(
+                preds,
+                ground_truth,
+                ignore_index,
+                additional_metrics=[],
+            )
+            if "ged" in metrics:
+                ged_scores.append(float(metrics["ged"]))
+        if not ged_scores:
+            return None
+        return float(np.mean(ged_scores))
+
     def process_output(self, all_preds):
         ignore_index_map = all_preds["gt"] == self.ignore_index
         compute_ged = not self.skip_ged and all_preds["gt"].shape[1] > 1
@@ -483,48 +554,55 @@ class Tester:
             self.ignore_index if compute_ged and self.ignore_index >= 0 else None
         )
         n_batch = all_preds["softmax_pred"].shape[1]
+        raw_pred_groups = all_preds.get("softmax_pred_groups", [])
+        is_lidc_dataset = "lidc" in self.dataset_name.lower()
         for image_idx in range(n_batch):
             image_preds = all_preds["softmax_pred"][:, image_idx]  # (P,C,H,W)
             image_id = all_preds["image_id"][image_idx]
             mean_softmax_pred = torch.mean(image_preds, dim=0)
             self.results_dict[image_id] = {"dataset": all_preds["dataset"][image_idx]}
             self.results_dict[image_id]["metrics"] = {}
+            gt_tensor = all_preds["gt"][image_idx]
+            gt_for_backend = gt_tensor if is_lidc_dataset else gt_tensor.to(self.device)
             self.results_dict[image_id]["metrics"].update(
-                self.calculate_test_metrics(
-                    mean_softmax_pred, all_preds["gt"][image_idx]
-                )
+                self.calculate_test_metrics(mean_softmax_pred, gt_tensor)
             )
             if compute_ged:
-                # Fast GED path for binary LIDC: compute with argmax on-device
-                if "lidc" in self.dataset_name.lower():
-                    fast_ged = ged_binary_fast(
-                        image_preds,
-                        all_preds["gt"][image_idx],
-                        ignore_index=ged_ignore_index,
-                        additional_metrics=["dice"],
-                    )
-                    self.results_dict[image_id]["metrics"].update(fast_ged)
-                else:
-                    self.results_dict[image_id]["metrics"].update(
-                        calculate_ged(
-                            image_preds,
-                            all_preds["gt"][image_idx].to(self.device),
-                            ignore_index=ged_ignore_index,
-                            additional_metrics=["dice"],
-                        )
-                    )
+                bma_metrics = self._compute_ged_backend(
+                    image_preds,
+                    gt_for_backend,
+                    ged_ignore_index,
+                    additional_metrics=["dice"],
+                )
+                bma_ged = bma_metrics.pop("ged", None)
+                if bma_ged is not None:
+                    self.results_dict[image_id]["metrics"]["ged_bma"] = float(bma_ged)
+                self.results_dict[image_id]["metrics"].update(bma_metrics)
+                per_image_raw_groups = (
+                    [group[:, image_idx] for group in raw_pred_groups]
+                    if raw_pred_groups
+                    else []
+                )
+                grouped_ged = self._compute_grouped_ged(
+                    per_image_raw_groups,
+                    gt_for_backend,
+                    ged_ignore_index,
+                )
+                if grouped_ged is not None:
+                    self.results_dict[image_id]["metrics"]["ged"] = grouped_ged
             if image_preds.shape[0] > 1:
                 uncertainty_dict = calculate_uncertainty(image_preds)
             else:
                 uncertainty_dict = calculate_one_minus_msr(image_preds.squeeze(0))
-            ignore_index_map_image = ignore_index_map[image_idx][0]
-            self.save_prediction(
-                image_id,
-                image_preds,
-                mean_softmax_pred,
-                ignore_index_map_image.detach().long().cpu().numpy().astype(np.uint8),
-            )
-            self.save_uncertainty(image_id, uncertainty_dict)
+            if not self.metrics_only:
+                ignore_index_map_image = ignore_index_map[image_idx][0]
+                self.save_prediction(
+                    image_id,
+                    image_preds,
+                    mean_softmax_pred,
+                    ignore_index_map_image.detach().long().cpu().numpy().astype(np.uint8),
+                )
+                self.save_uncertainty(image_id, uncertainty_dict)
 
     
 
@@ -545,14 +623,12 @@ class Tester:
 
     def predict_cases(self):
         for batch in tqdm(self.test_dataloader):
-            # dataloader_iterator = iter(self.test_dataloader)
-            # for i in tqdm(range(2)):
-            #     batch = next(dataloader_iterator)
             gt = batch["seg"]
             if gt.ndim == 3:
                 gt = gt.unsqueeze(1)
             all_preds = {
                 "softmax_pred": [],
+                "softmax_pred_groups": [],
                 "image_id": batch["image_id"],
                 "gt": gt,
                 "dataset": batch["dataset"],
@@ -577,19 +653,21 @@ class Tester:
                     if multiple_generative:
                         # Vectorized softmax over class dim (2), mean over inner samples
                         softmax_samples = F.softmax(output_samples, dim=2)
+                        all_preds["softmax_pred_groups"].append(softmax_samples)
                         output_softmax_mean = softmax_samples.mean(dim=0)
                         all_preds["softmax_pred"].append(output_softmax_mean)
                     else:
                         for output_sample in output_samples:
                             output_softmax = F.softmax(output_sample, dim=1)
                             all_preds["softmax_pred"].append(output_softmax)
+                            all_preds["softmax_pred_groups"].append(output_softmax.unsqueeze(0))
                 elif au_type == "diffusion":
                     inputs = batch["data"]
                     if isinstance(inputs, list):
                         inputs = inputs[0]
                     inputs = inputs.to(self.device).float()
                     sample_list = []
-                    num_steps = int(getattr(model, "diffusion_num_steps", self.n_pred))
+                    num_steps = int(getattr(model, "diffusion_num_steps", 10))
                     sampler_type = getattr(model, "diffusion_sampler_type", "ddpm") or "ddpm"
                     for _ in range(self.n_pred):
                         x_init = torch.randn(
@@ -610,10 +688,27 @@ class Tester:
                         sample_list.append(F.softmax(sample_output, dim=1))
                     sample_stack = torch.stack(sample_list)
                     if multiple_generative:
+                        all_preds["softmax_pred_groups"].append(sample_stack)
                         all_preds["softmax_pred"].append(sample_stack.mean(dim=0))
                     else:
                         for sample in sample_stack:
                             all_preds["softmax_pred"].append(sample)
+                            all_preds["softmax_pred_groups"].append(sample.unsqueeze(0))
+                elif au_type == "prob_unet" or getattr(model, "prob_unet_enabled", False):
+                    inputs = batch["data"]
+                    if isinstance(inputs, list):
+                        inputs = inputs[0]
+                    tensor_inputs = inputs.to(self.device).float()
+                    model.forward(tensor_inputs, segm=None, training=False)
+                    logits_stack = model.sample_multiple(self.n_pred, from_prior=True, testing=True)
+                    softmax_stack = torch.softmax(logits_stack, dim=2)
+                    if multiple_generative:
+                        all_preds["softmax_pred_groups"].append(softmax_stack)
+                        all_preds["softmax_pred"].append(softmax_stack.mean(dim=0))
+                    else:
+                        for sample in softmax_stack:
+                            all_preds["softmax_pred"].append(sample)
+                            all_preds["softmax_pred_groups"].append(sample.unsqueeze(0))
                 elif self.tta:
                     for index, image in enumerate(batch["data"]):
                         output = model.forward(image.to(self.device))
@@ -621,16 +716,16 @@ class Tester:
                         if any(
                             "HorizontalFlip" in sl for sl in batch["transforms"][index]
                         ):
-                            # all_preds["softmax_pred"].append(output_softmax)
-                            all_preds["softmax_pred"].append(
-                                torch.flip(output_softmax, [-1])
-                            )
+                            pred_tensor = torch.flip(output_softmax, [-1])
                         else:
-                            all_preds["softmax_pred"].append(output_softmax)
+                            pred_tensor = output_softmax
+                        all_preds["softmax_pred"].append(pred_tensor)
+                        all_preds["softmax_pred_groups"].append(pred_tensor.unsqueeze(0))
                 else:
                     output = model.forward(batch["data"].to(self.device))
                     output_softmax = F.softmax(output, dim=1)  # .to("cpu")
                     all_preds["softmax_pred"].append(output_softmax)
+                    all_preds["softmax_pred_groups"].append(output_softmax.unsqueeze(0))
             all_preds["softmax_pred"] = torch.stack(all_preds["softmax_pred"])
             self.process_output(all_preds)
         self.save_results_dict()
