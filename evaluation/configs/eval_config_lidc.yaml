@@ -33,19 +33,19 @@ task_params:
       random_types: ["random", "best", "worst"]
   ood_detection:
     #datasets: ["unlabeled"]
-    datasets: ["id&ood_noise","id&ood_blur"]
+    datasets: ["id&ood_noise","id&ood_blur","id&ood_jpeg","id&ood_contrast"]
     function:
       _target_: evaluation.metrics.auroc.ood_detection
       base_splits_path: ${base_splits_path}
   failure_detection: ${FAILURE_DETECTION}
   calibration:
     #datasets: [ "id", "ood" ]
-    datasets: [ "id", "ood_blur", "ood_noise" ]
+    datasets: [ "id", "ood_blur", "ood_noise", "ood_jpeg", "ood_contrast" ]
     function:
       _target_: evaluation.metrics.ace.main
   ambiguity_modeling:
     #datasets: [ "id", "ood" ]
-    datasets: [ "id", "ood_blur", "ood_noise" ]
+    datasets: [ "id", "ood_blur", "ood_noise", "ood_jpeg", "ood_contrast" ]
     function:
       _target_: evaluation.metrics.ncc.main
   al_improvement:

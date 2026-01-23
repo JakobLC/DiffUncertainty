@@ -359,7 +359,7 @@ class ContinuousGaussianDiffusion():
             logsnr_t=self.logsnr(t),
             logsnr_s=self.logsnr(s))
         if i==0:
-            return x_s_dist['pred_bit']
+            return pred_x
         else:
             return x_s_dist['mean'] + x_s_dist['std'] * torch.randn_like(x_t)
         
@@ -401,13 +401,12 @@ class ContinuousGaussianDiffusion():
                                                     clip_x=clip_x,
                                                     guidance_weight=guidance_weight,
                                                     model_output_guidance=model_output_guidance)
-
+            #print 20% and 80% quantiles of pred_x
+            #print("Step",i,"pred_x 20%:",torch.quantile(pred_x,0.2).item(),"80%:",torch.quantile(pred_x,0.8).item())
             #if any(self_cond): model_kwargs['self_cond'] = [(pred_x[i] if self_cond[i] else None) for i in range(len(x_t))]
             
             x_t = body_fun(i, pred_x, pred_eps, x_t)
-
         #assert x_t.shape == x_init.shape and x_t.dtype == x_init.dtype fails with mixed precision
-        
         return x_t
     
     def p_distribution(self, x_t, pred_x, logsnr_t, logsnr_s):

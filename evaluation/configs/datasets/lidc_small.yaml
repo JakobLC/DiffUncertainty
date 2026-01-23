@@ -9,28 +9,7 @@ data:
   data_input_dir: ${data_input_dir}
 base_splits_path: "/home/jloch/Desktop/diff/luzern/values_datasets/lidc_2d_small/splits"
 experiments:
-  - ${OOD_AUG_MEDIUM}
-
-OOD_AUG_MEDIUM:
-  iter_params:
-    shift: [ "ood_aug" ]
-    pred_model: [ "diffusion", "softmax", "ssn" ]
-    seed: [ "120" ]
-    network: [ "unet-s"]
-    eu: [ "dropout", "swag", "swag_diag", "ens12[1,2,3,4,5]" ]
-    cfg: [ "standard" ]
-    data: [ "lidc_2d_small" ]
-    aug: [ "" ]
-  naming_scheme_pred_model: "ood_aug"
-  naming_scheme_version: "{eu}_{pred_model}_{network}_lidc_2d_small{aug}/e320_ema"
-  aggregations: [ "patch_level", "threshold" ]
-  fold: 0
-  rank: 5
-  image_ending: ".png"
-  unc_ending: ".tif"
-  n_reference_segs: 4
-  only_pu: false
-  evaluate_training_data: ${evaluate_training_data}
+  - ${OOD_AUG}
 
 OOD_AUG:
   iter_params:
@@ -38,33 +17,11 @@ OOD_AUG:
     pred_model: [ "diffusion", "softmax", "ssn" ]
     seed: [ "120" ]
     network: [ "unet-s"]
-    eu: [ "dropout", "swag", "swag_diag" ]
+    eu: [ "dropout", "swag", "swag_diag", "ens12[1,2,3,4,5]"]
     cfg: [ "standard" ]
     data: [ "lidc_2d_small" ]
-    aug: [ "", "_aug" ]
   naming_scheme_pred_model: "ood_aug"
-  naming_scheme_version: "{eu}_{pred_model}_{network}_lidc_2d_small{aug}/e320_ema"
-  aggregations: [ "patch_level", "threshold" ]
-  fold: 0
-  rank: 5
-  image_ending: ".png"
-  unc_ending: ".tif"
-  n_reference_segs: 4
-  only_pu: false
-  evaluate_training_data: ${evaluate_training_data}
-
-OOD_AUG_ENSEMBLE:
-  iter_params:
-    shift: [ "ood_aug" ]
-    pred_model: [ "diffusion", "softmax", "ssn" ]
-    seed: [ "120" ]
-    network: [ "unet-s"]
-    eu: [ "ens12[1,2,3,4,5]" ]
-    cfg: [ "standard" ]
-    data: [ "lidc_2d_small" ] 
-    aug: [ "" ]
-  naming_scheme_pred_model: "ood_aug"
-  naming_scheme_version: "{eu}_{pred_model}_{network}_lidc_2d_small{aug}/e320_ema"
+  naming_scheme_version: "{eu}_{pred_model}_{network}_lidc_2d_small/e320_ema"
   aggregations: [ "patch_level", "threshold" ]
   fold: 0
   rank: 5

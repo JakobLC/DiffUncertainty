@@ -1,8 +1,8 @@
 # @package _global_
 data:
   _target_: uncertainty_modeling.data.torch_dataloader.BaseDataModule
-  name: "lidc_2d_small"
-  nickname: "lidc_s"
+  name: "chaksu64"
+  nickname: "chaksu64"
   data_input_dir: "/home/jloch/Desktop/diff/luzern/values_datasets/chaksu64"
   num_classes: 3
   ignore_index: -1

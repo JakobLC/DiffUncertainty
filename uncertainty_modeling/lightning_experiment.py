@@ -409,14 +409,14 @@ class LightningExperiment(pl.LightningModule):
         target = target.to(device)
         if target.ndim == 4 and target.shape[1] == 1:
             target = target.squeeze(1)
-        ignore_mask: torch.Tensor | None = None
+        ignore_mask = None
         if isinstance(self.ignore_index, int) and self.ignore_index >= 0:
             ignore_mask = target == self.ignore_index
             if ignore_mask.any():
                 target = target.masked_fill(ignore_mask, 0)
         one_hot = F.one_hot(target, num_classes=self.model.num_classes)
         one_hot = one_hot.permute(0, 3, 1, 2).float()
-        loss_mask: torch.Tensor | None = None
+        loss_mask = None
         if ignore_mask is not None:
             valid = (~ignore_mask).float()
             loss_mask = valid.unsqueeze(1).expand(-1, self.model.num_classes, -1, -1)
