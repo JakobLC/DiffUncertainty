@@ -1,0 +1,64 @@
+# @package _global_
+data:
+  _target_: uncertainty_modeling.data.torch_dataloader.BaseDataModule
+  name: "chaksu128"
+  nickname: "chaksu128"
+  data_input_dir: "/home/jloch/Desktop/diff/luzern/values_datasets/chaksu128"
+  num_classes: 3
+  ignore_index: -1
+  num_workers: 8
+  batch_size: 32
+  val_batch_size: 32
+  data_fold_id: 0
+  evaluate_training_data: true
+  evaluate_all_raters: true
+  validation_ratio: 0.1
+  split_name: "scanner"
+  dataset:
+    _target_: uncertainty_modeling.data.lidc2d_dataset.MultiRater2DDataset
+    splits_path: "${data.data_input_dir}/splits/${data.split_name}/firstCycle/splits.pkl"
+    dataset_label: "chaksu128"
+    num_raters: 5
+  augmentations:
+    rotation_limit: 22.5
+    scale_limit: [ -0.2, 0.2 ]
+    border_mode: 0
+    mask_value: 0
+    height: 128
+    width: 128
+    gauss_noise_var_limit: [0.2, 0.44]
+    augment_mult: 0.0
+    apply_mult_keys: ["HorizontalFlip.p", "Rotate.limit", "RandomScale.scale_limit", "GaussNoise.var_limit"]
+    TRAIN:
+      - Compose:
+          transforms:
+            - HorizontalFlip:
+                p: 0.5
+            - Rotate:
+                limit: ${data.augmentations.rotation_limit}
+                border_mode: ${data.augmentations.border_mode}
+                mask_value: ${data.augmentations.mask_value}
+            - RandomScale:
+                scale_limit: ${data.augmentations.scale_limit}
+                p: 1.0
+            - PadIfNeeded:
+                min_height: ${data.augmentations.height}
+                min_width: ${data.augmentations.width}
+                border_mode: ${data.augmentations.border_mode}
+                mask_value: ${data.augmentations.mask_value}
+            - CenterCrop:
+                height: ${data.augmentations.height}
+                width: ${data.augmentations.width}
+            - GaussNoise:
+                var_limit: ${data.augmentations.gauss_noise_var_limit}
+                p: 0.5
+            - SampleNormalize:
+                eps: 1e-6
+            - ToTensorV2:
+    VALIDATION:
+      - Compose:
+          transforms:
+            - SampleNormalize:
+                eps: 1e-6
+            - ToTensorV2:
+    TEST: ${data.augmentations.VALIDATION}

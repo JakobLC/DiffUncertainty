@@ -3,6 +3,7 @@ import json
 import os
 import pickle
 from argparse import Namespace
+from contextlib import contextmanager
 from pathlib import Path
 
 import cv2
@@ -72,7 +73,7 @@ class Tester:
         self.diffusion_sampler_override = getattr(args, "diffusion_sampler_type", None)
         base_models = load_models_from_checkpoint(
             self.all_checkpoints,
-            device=self.device,
+            device="cpu",
             use_ema=bool(getattr(args, "use_ema", False)),
         )
         requested_n_models = max(int(getattr(args, "n_models", 0) or 0), 0)
@@ -330,11 +331,29 @@ class Tester:
                 blockwise=self.swag_blockwise,
             )
             sampled_model.eval()
-            sampled_models.append(sampled_model.to(self.device))
+            sampled_models.append(sampled_model.to("cpu"))
         print(
             f"[SWAG] Sampled {len(sampled_models)} model(s) from '{checkpoint_label}' (n_snapshots={config['max_snapshots']})"
         )
         return sampled_models
+
+    def _activate_model_for_inference(self, model):
+        if self.device == "cpu":
+            return
+        model.to(self.device)
+
+    def _deactivate_model_after_inference(self, model):
+        if self.device == "cpu":
+            return
+        model.to("cpu")
+
+    @contextmanager
+    def _model_device_scope(self, model):
+        self._activate_model_for_inference(model)
+        try:
+            yield
+        finally:
+            self._deactivate_model_after_inference(model)
 
     def create_save_dirs(self):
         path_parts = [
@@ -441,6 +460,7 @@ class Tester:
                     os.path.join(self.save_pred_dir, f"{img_name}.png"), output_np_color
                 )
         return
+
 
     def save_uncertainty(self, image_id, uncertainty_dict):
         for unc_type, unc_map in uncertainty_dict.items():
@@ -603,40 +623,20 @@ class Tester:
                     ignore_index_map_image.detach().long().cpu().numpy().astype(np.uint8),
                 )
                 self.save_uncertainty(image_id, uncertainty_dict)
-
-    
-
-    def save_results_dict(self):
-        filename = os.path.join(self.save_dir, "metrics.json")
-        mean_metrics_dict = {}
-        for image_id, value in self.results_dict.items():
-            for metric, score in value["metrics"].items():
-                if metric not in mean_metrics_dict:
-                    mean_metrics_dict[metric] = []
-                mean_metrics_dict[metric].append(score)
-        self.results_dict["mean"] = {}
-        self.results_dict["mean"]["metrics"] = {}
-        for metric, scores in mean_metrics_dict.items():
-            self.results_dict["mean"]["metrics"][metric] = np.asarray(scores).mean()
-        with open(filename, "w") as f:
-            json.dump(self.results_dict, f, indent=2)
-
-    def predict_cases(self):
-        for batch in tqdm(self.test_dataloader):
-            gt = batch["seg"]
-            if gt.ndim == 3:
-                gt = gt.unsqueeze(1)
-            all_preds = {
-                "softmax_pred": [],
-                "softmax_pred_groups": [],
-                "image_id": batch["image_id"],
-                "gt": gt,
-                "dataset": batch["dataset"],
-            }
-            # If we ensemble multiple generative models (e.g., SSNs, diffusion),
-            # average the inner samples per model and only aggregate across models.
-            multiple_generative = sum(1 for m in self.models if getattr(m, "is_generative", False)) > 1
-            for model in self.models:
+    def _build_batch_predictions(self, batch):
+        gt = batch["seg"]
+        if isinstance(gt, torch.Tensor) and gt.ndim == 3:
+            gt = gt.unsqueeze(1)
+        all_preds = {
+            "softmax_pred": [],
+            "softmax_pred_groups": [],
+            "image_id": batch["image_id"],
+            "gt": gt,
+            "dataset": batch["dataset"],
+        }
+        multiple_generative = sum(1 for m in self.models if getattr(m, "is_generative", False)) > 1
+        for model in self.models:
+            with self._model_device_scope(model):
                 au_type = getattr(model, "AU_type", "softmax")
                 if au_type == "ssn":
                     distribution, cov_failed_flag = model.forward(batch["data"].to(self.device))
@@ -651,11 +651,9 @@ class Tester:
                         ]
                     )
                     if multiple_generative:
-                        # Vectorized softmax over class dim (2), mean over inner samples
                         softmax_samples = F.softmax(output_samples, dim=2)
                         all_preds["softmax_pred_groups"].append(softmax_samples)
-                        output_softmax_mean = softmax_samples.mean(dim=0)
-                        all_preds["softmax_pred"].append(output_softmax_mean)
+                        all_preds["softmax_pred"].append(softmax_samples.mean(dim=0))
                     else:
                         for output_sample in output_samples:
                             output_softmax = F.softmax(output_sample, dim=1)
@@ -685,7 +683,7 @@ class Tester:
                             progress_bar=False,
                             self_cond=False,
                         )
-                        sample_list.append(F.softmax(sample_output, dim=1))
+                        sample_list.append(sample_output)
                     sample_stack = torch.stack(sample_list)
                     if multiple_generative:
                         all_preds["softmax_pred_groups"].append(sample_stack)
@@ -712,7 +710,7 @@ class Tester:
                 elif self.tta:
                     for index, image in enumerate(batch["data"]):
                         output = model.forward(image.to(self.device))
-                        output_softmax = F.softmax(output, dim=1)  # .to("cpu")
+                        output_softmax = F.softmax(output, dim=1)
                         if any(
                             "HorizontalFlip" in sl for sl in batch["transforms"][index]
                         ):
@@ -723,10 +721,77 @@ class Tester:
                         all_preds["softmax_pred_groups"].append(pred_tensor.unsqueeze(0))
                 else:
                     output = model.forward(batch["data"].to(self.device))
-                    output_softmax = F.softmax(output, dim=1)  # .to("cpu")
+                    output_softmax = F.softmax(output, dim=1)
                     all_preds["softmax_pred"].append(output_softmax)
                     all_preds["softmax_pred_groups"].append(output_softmax.unsqueeze(0))
-            all_preds["softmax_pred"] = torch.stack(all_preds["softmax_pred"])
+        all_preds["softmax_pred"] = torch.stack(all_preds["softmax_pred"])
+        return all_preds
+
+    def _prepare_raw_batch(self, batch_preds, detach=True, move_to_cpu=True):
+        def _process_tensor(tensor):
+            if not isinstance(tensor, torch.Tensor):
+                return tensor
+            result = tensor.detach() if detach else tensor
+            return result.cpu() if move_to_cpu else result
+
+        return {
+            "image_id": list(batch_preds["image_id"]),
+            "dataset": list(batch_preds["dataset"]),
+            "gt": _process_tensor(batch_preds["gt"]),
+            "softmax_pred": _process_tensor(batch_preds["softmax_pred"]),
+            "softmax_pred_groups": [
+                _process_tensor(tensor) for tensor in batch_preds["softmax_pred_groups"]
+            ],
+        }
+
+    def collect_raw_predictions(
+        self,
+        max_batches=None,
+        detach=True,
+        move_to_cpu=True,
+        show_progress=False,
+    ):
+        """Return unreduced prediction tensors for downstream analysis."""
+        iterator = self.test_dataloader
+        if show_progress:
+            iterator = tqdm(iterator)
+        results = []
+        prev_grad_state = torch.is_grad_enabled()
+        torch.set_grad_enabled(False)
+        try:
+            for batch_idx, batch in enumerate(iterator):
+                batch_preds = self._build_batch_predictions(batch)
+                results.append(
+                    self._prepare_raw_batch(
+                        batch_preds,
+                        detach=detach,
+                        move_to_cpu=move_to_cpu,
+                    )
+                )
+                if max_batches is not None and batch_idx + 1 >= max_batches:
+                    break
+        finally:
+            torch.set_grad_enabled(prev_grad_state)
+        return results
+
+    def save_results_dict(self):
+        filename = os.path.join(self.save_dir, "metrics.json")
+        mean_metrics_dict = {}
+        for image_id, value in self.results_dict.items():
+            for metric, score in value["metrics"].items():
+                if metric not in mean_metrics_dict:
+                    mean_metrics_dict[metric] = []
+                mean_metrics_dict[metric].append(score)
+        self.results_dict["mean"] = {}
+        self.results_dict["mean"]["metrics"] = {}
+        for metric, scores in mean_metrics_dict.items():
+            self.results_dict["mean"]["metrics"][metric] = np.asarray(scores).mean()
+        with open(filename, "w") as f:
+            json.dump(self.results_dict, f, indent=2)
+
+    def predict_cases(self):
+        for batch in tqdm(self.test_dataloader):
+            all_preds = self._build_batch_predictions(batch)
             self.process_output(all_preds)
         self.save_results_dict()
 
@@ -744,6 +809,24 @@ def run_test(args: Namespace) -> None:
         print(f"[skip_existing] All expected outputs already exist for split='{tester.test_split}' (version={tester.version}, ckpt_tag={tester.checkpoint_subdir}). Skipping evaluation.")
         return
     tester.predict_cases()
+
+
+def collect_raw_predictions_from_args(
+    args: Namespace,
+    max_batches=None,
+    detach=True,
+    move_to_cpu=True,
+    show_progress=False,
+):
+    """Instantiate a Tester and return raw probability tensors without running the full eval loop."""
+    torch.set_grad_enabled(False)
+    tester = Tester(args)
+    return tester.collect_raw_predictions(
+        max_batches=max_batches,
+        detach=detach,
+        move_to_cpu=move_to_cpu,
+        show_progress=show_progress,
+    )
 
 
 if __name__ == "__main__":

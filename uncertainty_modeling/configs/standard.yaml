@@ -1,8 +1,8 @@
 # @package _global_
 defaults:
   - _self_
-  - data: lidc_2d_small
-  - network: unet-s
+  - data: lidc64
+  - network: unet16
   - model: softmax
   - eu_method: none
   

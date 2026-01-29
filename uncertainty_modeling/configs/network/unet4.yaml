@@ -1,0 +1,23 @@
+# @package _global_
+network:
+  _target_: uncertainty_modeling.models.diff_unet2D_module.get_seg_model
+  target: ${network._target_}
+  num_classes: ${oc.select:data.num_classes,${oc.select:datamodule.num_classes,???}}
+  nickname: "unet_s"
+  cfg:
+    MODEL:
+      NAME: unet
+      IN_CHANNELS: 3
+      OUT_CHANNELS: ${network.num_classes}
+      MODEL_CHANNELS: 16
+      NUM_RES_BLOCKS: [2, 2, 2, 2]
+      NUM_MIDDLE_RES_BLOCKS: 2
+      CHANNEL_MULT: [1, 2, 4, 8]
+      ATTENTION_RESOLUTIONS: [-2, -1]
+      DROPOUT: 0.0
+      FINAL_ACT: none
+      DIFFUSION: false
+      SSN: false
+      SSN_RANK: 10
+      SSN_EPS: 1e-5
+      SWAG: false

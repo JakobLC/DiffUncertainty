@@ -6,6 +6,7 @@ model:
   cfg: ${network.cfg}
   overrides:
     MODEL:
+      FINAL_ACT: "softmax"
       DIFFUSION: true
       SSN: false
       DIFFUSION_SAMPLING:

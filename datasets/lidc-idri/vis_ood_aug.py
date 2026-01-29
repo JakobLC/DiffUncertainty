@@ -14,7 +14,7 @@ import albumentations as A
 import matplotlib.pyplot as plt
 import numpy as np
 
-DEFAULT_ROOT = Path("/home/jloch/Desktop/diff/luzern/values_datasets/lidc_2d_small")
+DEFAULT_ROOT = Path("/home/jloch/Desktop/diff/luzern/values_datasets/lidc128")
 
 ROW_ORDER = [
     ("label", "Label sum"),

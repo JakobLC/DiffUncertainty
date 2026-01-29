@@ -476,7 +476,7 @@ class LightningExperiment(pl.LightningModule):
                 progress_bar=False,
                 self_cond=False,
             )
-            samples.append(torch.softmax(sample_output, dim=1))
+            samples.append(sample_output)
         return torch.stack(samples)
 
     def training_step(self, batch: dict, batch_idx: int) -> torch.Tensor:
@@ -577,6 +577,18 @@ class LightningExperiment(pl.LightningModule):
             batch_size=log_batch_size,
         )
         return loss
+
+    def on_train_epoch_start(self) -> None:
+        super().on_train_epoch_start()
+        self._maybe_update_prob_unet_beta()
+
+    def _maybe_update_prob_unet_beta(self) -> None:
+        if self.AU_type != "prob_unet":
+            return
+        updater = getattr(self.model, "apply_beta_warmup", None)
+        if updater is None:
+            return
+        updater(self.current_epoch)
 
     def on_train_epoch_end(self) -> None:
         super().on_train_epoch_end()
@@ -813,13 +825,13 @@ class LightningExperiment(pl.LightningModule):
             # If values are in 0-255 range, scale to 0-1
             if grid.max() > 1.0:
                 grid = grid / 255.0
-            self.logger.experiment.add_image(f"validation/{split}_pred_seg", grid, self.current_epoch)
+            self.logger.experiment.add_image(f"images/{split}_pred_seg", grid, self.current_epoch)
             grid = torchvision.utils.make_grid(target_seg_val_color)
             if grid.dtype != torch.float32:
                 grid = grid.float()
             if grid.max() > 1.0:
                 grid = grid / 255.0
-            self.logger.experiment.add_image(f"validation/{split}_target_seg", grid, self.current_epoch)
+            self.logger.experiment.add_image(f"images/{split}_target_seg", grid, self.current_epoch)
 
         loss_value = (
             eval_loss.detach().float().mean().item()

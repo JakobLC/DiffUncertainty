@@ -1,13 +1,13 @@
 #@package _global_
 defaults:
-  - /../../uncertainty_modeling/configs/data/lidc_2d_small
+  - /../../uncertainty_modeling/configs/data/lidc64
   - _self_
 
-data_input_dir: "/home/jloch/Desktop/diff/luzern/values_datasets/lidc_2d_small"
+data_input_dir: "/home/jloch/Desktop/diff/luzern/values_datasets/lidc64"
 datamodule_config: ${data}
 data:
   data_input_dir: ${data_input_dir}
-base_splits_path: "/home/jloch/Desktop/diff/luzern/values_datasets/lidc_2d_small/splits"
+base_splits_path: "/home/jloch/Desktop/diff/luzern/values_datasets/lidc64/splits"
 experiments:
   - ${OOD_AUG}
 
@@ -19,7 +19,7 @@ OOD_AUG:
     network: [ "unet-s"]
     eu: [ "dropout", "swag", "swag_diag", "ens12[1,2,3,4,5]"]
     cfg: [ "standard" ]
-    data: [ "lidc_2d_small" ]
+    data: [ "lidc64" ]
   naming_scheme_pred_model: "ood_aug"
   naming_scheme_version: "{eu}_{pred_model}_{network}_lidc_2d_small/e320_ema"
   aggregations: [ "patch_level", "threshold" ]

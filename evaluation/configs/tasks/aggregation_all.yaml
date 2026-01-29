@@ -1,0 +1,19 @@
+#@package _global_
+defaults:
+  - aggregation_defaults@AGG_ALL
+AGG_ALL:
+  function:
+    aggregations:
+      patch_level:
+        _target_: evaluation.uncertainty_aggregation.aggregate_uncertainties.patch_level_aggregation
+        patch_size: 10
+      image_level:
+        _target_: evaluation.uncertainty_aggregation.aggregate_uncertainties.image_level_aggregation
+      threshold:
+        _target_: evaluation.uncertainty_aggregation.aggregate_uncertainties.threshold_aggregation
+      area_normalized:
+        _target_: evaluation.uncertainty_aggregation.aggregate_uncertainties.area_normalized_aggregation
+        stats_filename: "area.json"
+      border_normalized:
+        _target_: evaluation.uncertainty_aggregation.aggregate_uncertainties.border_normalized_aggregation
+        stats_filename: "area.json"

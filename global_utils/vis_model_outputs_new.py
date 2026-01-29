@@ -478,7 +478,7 @@ class ModelOutputVisualizer:
             )
             softmax_samples = F.softmax(samples, dim=2)
             return softmax_samples[0, 0].detach()
-        if au_type == "diffusion":
+        elif au_type == "diffusion":
             tensor_inputs = tensor_inputs.float()
             num_steps = int(getattr(model, "diffusion_num_steps", 50))
             sampler_type = getattr(model, "diffusion_sampler_type", "ddpm") or "ddpm"
@@ -498,14 +498,15 @@ class ModelOutputVisualizer:
                 self_cond=False,
             )
             return sample_output.squeeze(0)
-        if au_type == "prob_unet":
+        elif au_type == "prob_unet":
             tensor_inputs = tensor_inputs.float()
             model.forward(tensor_inputs, segm=None, training=False)
             logits_stack = model.sample_multiple(1, from_prior=True, testing=True)
             softmax_stack = torch.softmax(logits_stack, dim=2)
             return softmax_stack[0, 0].detach()
-        output = model.forward(tensor_inputs)
-        return F.softmax(output, dim=1)[0].detach()
+        else:
+            output = model.forward(tensor_inputs)
+            return F.softmax(output, dim=1)[0].detach()
 
     def _extract_foreground_probability(self, prob_tensor: torch.Tensor) -> torch.Tensor:
         if prob_tensor.shape[0] == 1:

@@ -388,7 +388,7 @@ class ModelOutputVisualizer:
             )
             softmax_samples = F.softmax(samples, dim=2)
             return softmax_samples
-        if au_type == "diffusion":
+        elif au_type == "diffusion":
             inputs = batch["data"]
             if isinstance(inputs, list):
                 inputs = inputs[0]
@@ -412,9 +412,9 @@ class ModelOutputVisualizer:
                     progress_bar=False,
                     self_cond=False,
                 )
-                sample_list.append(F.softmax(sample_output, dim=1))
+                sample_list.append(sample_output)
             return torch.stack(sample_list, dim=0)
-        if au_type == "prob_unet":
+        elif au_type == "prob_unet":
             inputs = batch["data"]
             if isinstance(inputs, list):
                 inputs = inputs[0]
@@ -422,7 +422,7 @@ class ModelOutputVisualizer:
             model.forward(tensor_inputs, segm=None, training=False)
             logits_stack = model.sample_multiple(self.n_pred, from_prior=True, testing=True)
             return torch.softmax(logits_stack, dim=2)
-        if self.tta:
+        elif self.tta:
             preds: List[torch.Tensor] = []
             transforms = batch.get("transforms")
             data_iterable = batch["data"] if isinstance(batch["data"], list) else batch["data"]
@@ -438,12 +438,13 @@ class ModelOutputVisualizer:
                     preds.append(output_softmax)
             stacked = torch.stack(preds, dim=0)
             return stacked.unsqueeze(0)
-        inputs = batch["data"]
-        if isinstance(inputs, list):
-            inputs = inputs[0]
-        output = model.forward(inputs.to(self.device))
-        output_softmax = F.softmax(output, dim=1)
-        return output_softmax.unsqueeze(0)
+        else:
+            inputs = batch["data"]
+            if isinstance(inputs, list):
+                inputs = inputs[0]
+            output = model.forward(inputs.to(self.device))
+            output_softmax = F.softmax(output, dim=1)
+            return output_softmax.unsqueeze(0)
 
     def _render_case(self, case: Dict, case_index: int):
         if self.aggregate == 0:

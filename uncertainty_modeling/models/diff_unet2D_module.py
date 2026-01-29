@@ -64,7 +64,10 @@ class GroupNorm32(nn.GroupNorm):
     """
 
     def __init__(self, num_channels: int):
-        num_groups = min(32, num_channels)
+        if num_channels % 32 == 0:
+            num_groups = 32
+        else:
+            num_groups = num_channels
         super().__init__(num_groups=num_groups, num_channels=num_channels)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:  # type: ignore[override]
@@ -975,6 +978,7 @@ class ProbabilisticUnetModel(nn.Module):
         latent_dim: int,
         beta: float,
         regularizer_coeff: float,
+        beta_warmup_epochs: int = 0,
     ) -> None:
         super().__init__()
         self.unet = base_unet
@@ -982,7 +986,9 @@ class ProbabilisticUnetModel(nn.Module):
         self.posterior_encoder = posterior_encoder
         self.fcomb = fcomb
         self.latent_dim = int(latent_dim)
+        self._target_beta = float(beta)
         self.beta = float(beta)
+        self.beta_warmup_epochs = max(0, int(beta_warmup_epochs))
         self.regularizer_scale = float(regularizer_coeff)
         self.prior_latent_space: td.Distribution | None = None
         self.posterior_latent_space: td.Distribution | None = None
@@ -1038,6 +1044,16 @@ class ProbabilisticUnetModel(nn.Module):
         samples = [self.sample(from_prior=from_prior, testing=testing) for _ in range(num_samples)]
         return torch.stack(samples, dim=0)
 
+    def apply_beta_warmup(self, epoch: int) -> float:
+        """Update beta based on a linear warmup schedule."""
+        if self.beta_warmup_epochs <= 0:
+            self.beta = self._target_beta
+            return self.beta
+        progress = float(epoch + 1) / float(self.beta_warmup_epochs)
+        progress = min(1.0, max(0.0, progress))
+        self.beta = self._target_beta * progress
+        return self.beta
+
     def elbo(
         self,
         target: torch.Tensor,
@@ -1052,15 +1068,13 @@ class ProbabilisticUnetModel(nn.Module):
         ce_kwargs = {}
         if isinstance(ignore_index, int) and ignore_index >= 0:
             ce_kwargs["ignore_index"] = ignore_index
-        reconstruction = F.cross_entropy(
+        recon_loss = F.cross_entropy(
             reconstruction_logits,
             target,
-            reduction="none",
+            reduction="mean",
             **ce_kwargs,
         )
-        recon_loss = reconstruction.sum()
-        self.reconstruction_loss = recon_loss
-        self.mean_reconstruction_loss = reconstruction.mean()
+        self.mean_reconstruction_loss = recon_loss
         kl = kl_divergence(self.posterior_latent_space, self.prior_latent_space)
         kl = torch.mean(kl)
         self.kl = kl
@@ -1135,6 +1149,7 @@ def _build_prob_unet_model(
     prob_cfg = {str(k).lower(): v for k, v in prob_cfg_raw.items()}
     latent_dim = int(prob_cfg.get("latent_dim", 6))
     beta = float(prob_cfg.get("beta", 10.0))
+    beta_warmup_epochs = int(prob_cfg.get("beta_warmup_epochs", 0))
     reg_coeff = float(prob_cfg.get("regularizer_coeff", 1e-5))
     num_fcomb = int(prob_cfg.get("num_fcomb_convs", 4))
     unet_scale = float(prob_cfg.get("unet_channel_mult", 0.75))
@@ -1182,6 +1197,7 @@ def _build_prob_unet_model(
         latent_dim=latent_dim,
         beta=beta,
         regularizer_coeff=reg_coeff,
+        beta_warmup_epochs=beta_warmup_epochs,
     )
 
 

@@ -1,0 +1,9 @@
+#@package _global_
+AREA_STATS:
+  datasets: "all"
+  accumulated: False
+  function:
+    _target_: evaluation.uncertainty_aggregation.prediction_shape_stats.compute_prediction_shape_stats
+    mean_pred: True
+    stats_filename: "area.json"
+    majority_threshold: 0.5

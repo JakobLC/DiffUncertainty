@@ -8,9 +8,10 @@ model:
     MODEL:
       PROB_UNET:
         LATENT_DIM: 6
-        BETA: 10.0
-        REGULARIZER_COEFF: 1e-5
+        BETA: 2.5e-3 #/4000 
+        REGULARIZER_COEFF: 0 #2.5e-9 #/4000
         NUM_FCOMB_CONVS: 4
         UNET_CHANNEL_MULT: 0.75
         PRIOR_CHANNEL_MULT: 0.75
         POSTERIOR_CHANNEL_MULT: 0.75
+        BETA_WARMUP_EPOCHS: 32 #40
