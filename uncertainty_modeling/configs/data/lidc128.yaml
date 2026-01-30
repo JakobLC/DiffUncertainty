@@ -1,9 +1,9 @@
 # @package _global_
 data:
   _target_: uncertainty_modeling.data.torch_dataloader.BaseDataModule
-  name: "lidc_2d"
-  nickname: "lidc"
-  data_input_dir: "/home/jloch/Desktop/diff/luzern/values_datasets/lidc_2d"
+  name: "lidc128"
+  nickname: "lidc128"
+  data_input_dir: "/home/jloch/Desktop/diff/luzern/values_datasets/lidc128"
   num_classes: 2
   ignore_index: -1
   num_workers: 8
@@ -14,6 +14,9 @@ data:
   evaluate_all_raters: true
   validation_ratio: 0.1
   split_name: "ood_aug"
+  dataset:
+    _target_: uncertainty_modeling.data.lidc2d_dataset.MultiRater2DDataset
+    splits_path: "${data.data_input_dir}/splits/${data.split_name}/firstCycle/splits.pkl"
   augmentations:
     rotation_limit: 22.5
     scale_limit: [ -0.2, 0.2 ]
@@ -26,9 +29,6 @@ data:
     gauss_noise_var_limit: [0.2, 0.44]
     augment_mult: 0.0
     apply_mult_keys: ["HorizontalFlip.p", "Rotate.limit", "RandomScale.scale_limit", "GaussNoise.var_limit"]
-    dataset:
-      _target_: uncertainty_modeling.data.lidc2d_dataset.MultiRater2DDataset
-      splits_path: "${data.data_input_dir}/splits/${data.split_name}/firstCycle/splits.pkl"
     TRAIN:
       - Compose:
           transforms:
