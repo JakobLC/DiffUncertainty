@@ -328,8 +328,10 @@ class LightningExperiment(pl.LightningModule):
             }
         else:
             metric_placeholder = {"test/test_loss": 0.0, "test/test_dice": 0.0}
-
         self.hparams.version = self.logger.version
+        # Print the exp/version name
+        print(f"Experiment name: {self.hparams.exp_name}, version: {self.hparams.version}")
+        print(f"Save path:\n{str(self.logger.experiment.log_dir)}")
         # Save nested_hparam_dict if available
         if self.nested_hparam_dict is not None:
             with open(

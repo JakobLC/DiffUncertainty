@@ -147,7 +147,7 @@ def test_cli(
     parser.add_argument(
         "--ema_mode",
         type=str,
-        default="normal",
+        default="ema",
         choices=["normal", "ema", "both"],
         help="Select which checkpoint weights to load (normal, ema, or both).",
     )

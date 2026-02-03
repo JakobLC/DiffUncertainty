@@ -1,0 +1,32 @@
+#@package _global_
+defaults:
+  - /../../uncertainty_modeling/configs/data/chaksu64
+  - _self_
+
+data_input_dir: "/home/jloch/Desktop/diff/luzern/values_datasets/chaksu64"
+datamodule_config: ${data}
+data:
+  data_input_dir: ${data_input_dir}
+base_splits_path: "/home/jloch/Desktop/diff/luzern/values_datasets/chaksu64/splits"
+experiments:
+  - ${FIRST_SWEEP}
+
+FIRST_SWEEP:
+  iter_params:
+    shift: [ "scanner" ]
+    pred_model: [ "diffusion", "softmax", "ssn" ]
+    seed: [ "120" ]
+    au: [ "diffusion", "softmax", "ssn", "prob_unet" ]
+    eu: [ "dropout", "swag"]
+    cfg: [ "standard" ]
+    data: [ "chaksu64" ]
+  naming_scheme_pred_model: "chaksu64"
+  naming_scheme_version: "{au}_{eu}"
+  aggregations: [ "all" ]
+  fold: 0
+  rank: 5
+  image_ending: ".png"
+  unc_ending: ".tif"
+  n_reference_segs: 4
+  only_pu: false
+  evaluate_training_data: ${evaluate_training_data}
