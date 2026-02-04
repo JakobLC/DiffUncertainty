@@ -28,11 +28,19 @@ optimizer:
   momentum: 0.9
   nesterov: true
 
+# logger:
+#   _target_: pytorch_lightning.loggers.TensorBoardLogger
+#   save_dir: ${save_dir}
+#   name: ${exp_name}
+#   default_hp_metric: false
+
 logger:
-  _target_: pytorch_lightning.loggers.TensorBoardLogger
+  _target_: pytorch_lightning.loggers.WandbLogger
+  project: DiffUnc
+  group: ${exp_name}
+  name: ${exp_name}/${version}
   save_dir: ${save_dir}
-  name: ${exp_name}
-  default_hp_metric: false
+  log_model: false
 
 progress_bar:
   _target_: pytorch_lightning.callbacks.TQDMProgressBar

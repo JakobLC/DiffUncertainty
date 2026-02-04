@@ -612,6 +612,7 @@ def calculate_uncertainty(softmax_preds: torch.Tensor) -> Dict[str, torch.Tensor
         expected_entropy[pred] = entropy
     expected_entropy = torch.mean(expected_entropy, dim=0)
     mutual_information = pred_entropy - expected_entropy
+    uncertainty_dict["TU"] = pred_entropy
     uncertainty_dict["AU"] = expected_entropy
     uncertainty_dict["EU"] = mutual_information
     return uncertainty_dict

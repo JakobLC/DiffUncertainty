@@ -37,7 +37,7 @@ def main(exp_dataloader: ExperimentDataloader):
         dice_second_cycle_random = metrics_second_cycle_random["mean"]["dice"]
 
     for unc_type in exp_dataloader.exp_version.unc_types:
-        if unc_type == "aleatoric_uncertainty":
+        if unc_type == "AU":
             continue
         al_improv_dict["mean"][unc_type] = {}
         for aggregation in exp_dataloader.exp_version.aggregations:

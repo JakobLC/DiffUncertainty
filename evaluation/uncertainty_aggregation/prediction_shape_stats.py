@@ -2,32 +2,37 @@ import json
 from pathlib import Path
 
 import numpy as np
-from scipy import ndimage
 from tqdm import tqdm
 
 from evaluation.experiment_dataloader import ExperimentDataloader
 
 
-def _as_binary(mask: np.ndarray) -> np.ndarray:
-    return np.asarray(mask > 0, dtype=bool)
-
-
 def _compute_area(mask: np.ndarray) -> float:
-    return float(mask.sum())
+    mask_arr = np.asarray(mask)
+    return float(np.count_nonzero(mask_arr > 0))
 
 
 def _compute_border(mask: np.ndarray) -> float:
-    if not mask.any():
+    mask_arr = np.asarray(mask)
+    if mask_arr.size == 0:
         return 0.0
-    structure = ndimage.generate_binary_structure(mask.ndim, 1)
-    eroded = ndimage.binary_erosion(mask, structure=structure, border_value=0)
-    border = mask & (~eroded)
-    return float(border.sum())
+    total_border = 0
+    for axis, axis_len in enumerate(mask_arr.shape):
+        if axis_len < 2:
+            continue
+        slicer_a = [slice(None)] * mask_arr.ndim
+        slicer_b = [slice(None)] * mask_arr.ndim
+        slicer_a[axis] = slice(0, -1)
+        slicer_b[axis] = slice(1, None)
+        neighbors_a = mask_arr[tuple(slicer_a)]
+        neighbors_b = mask_arr[tuple(slicer_b)]
+        total_border += int(np.count_nonzero(neighbors_a != neighbors_b))
+    return float(total_border)
 
 
 def _compute_stats_from_mask(mask: np.ndarray) -> tuple[float, float]:
-    mask_bool = _as_binary(mask)
-    return _compute_area(mask_bool), _compute_border(mask_bool)
+    mask_arr = np.asarray(mask)
+    return _compute_area(mask_arr), _compute_border(mask_arr)
 
 
 def _stack_predictions(predictions: list[np.ndarray]) -> np.ndarray:

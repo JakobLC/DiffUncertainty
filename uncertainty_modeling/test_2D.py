@@ -13,6 +13,7 @@ import torch
 from omegaconf import OmegaConf
 #from torchmetrics.functional import dice
 import torch.nn.functional as F
+from PIL import Image
 from tqdm import tqdm
 import sys
 sys.path.append(Path(__file__).parent.parent.as_posix())
@@ -104,6 +105,7 @@ class Tester:
         self.save_split_name = self._format_split_for_output(self.test_split)
         self.use_ema = bool(getattr(args, "use_ema", False))
         self.dataset_name = hparams["data"]["name"]
+        self.cityscapes_palette = self._build_cityscapes_palette()
         self.checkpoint_epoch = self.all_checkpoints[0]["epoch"] + 1
         self.checkpoint_subdir = format_checkpoint_subdir(
             self.checkpoint_epoch, self.use_ema
@@ -375,6 +377,20 @@ class Tester:
             # os.makedirs(self.save_pred_prob_dir, exist_ok=True)
         return
 
+    def _build_cityscapes_palette(self):
+        palette = [0] * (256 * 3)
+        for train_id, color in cs_labels.trainId2color.items():
+            if train_id < 0 or train_id > 255:
+                continue
+            base = int(train_id) * 3
+            palette[base : base + 3] = [int(channel) for channel in color]
+        return palette
+
+    def _save_palettized_prediction(self, mask, img_name):
+        palette_img = Image.fromarray(np.asarray(mask, dtype=np.uint8), mode="P")
+        palette_img.putpalette(self.cityscapes_palette)
+        palette_img.save(os.path.join(self.save_pred_dir, f"{img_name}.png"))
+
     def should_skip(self):
         if not self.skip_existing:
             return False
@@ -449,16 +465,13 @@ class Tester:
                 mask = np.asarray(mask, dtype=np.uint8)
                 cv2.imwrite(os.path.join(self.save_pred_dir, f"{img_name}.png"), mask)
             else:
-                output_np_color = np.zeros((*output_np.shape[:-1], 3), dtype=np.uint8)
-                output_np[ignore_index_map.astype(bool)] = cs_labels.name2trainId[
-                    "unlabeled"
-                ]
-                for k, v in cs_labels.trainId2color.items():
-                    output_np_color[(output_np == k).squeeze(-1), :] = v
-                output_np_color = cv2.cvtColor(output_np_color, cv2.COLOR_BGR2RGB)
-                cv2.imwrite(
-                    os.path.join(self.save_pred_dir, f"{img_name}.png"), output_np_color
-                )
+                mask = output_np.squeeze(-1)
+                ignore_mask = np.asarray(ignore_index_map, dtype=bool)
+                if ignore_mask.shape != mask.shape:
+                    ignore_mask = np.squeeze(ignore_mask)
+                mask = mask.copy()
+                mask[ignore_mask] = cs_labels.name2trainId["unlabeled"]
+                self._save_palettized_prediction(mask, img_name)
         return
 
 

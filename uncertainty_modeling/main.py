@@ -120,7 +120,7 @@ def main(cfg_hydra: DictConfig):
     # state via `save_weights_only`. When `full_last_ckpt` is True, we want the full checkpoint
     # (weights + optimizer); otherwise save only weights to save space.
     checkpoint_cb = ModelCheckpoint(
-        monitor="validation/val_loss",
+        monitor="generation/val_loss",
         mode="min",
         filename="epoch{epoch}_step{step}",
         auto_insert_metric_name=False,

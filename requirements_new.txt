@@ -107,6 +107,7 @@ traceback2==1.4.0
 typing_extensions==4.8.0
 unittest2==1.1.0
 urllib3==1.26.15
+wandb==0.24.1
 Werkzeug==2.2.3
 wheel==0.38.4
 yarl==1.8.2

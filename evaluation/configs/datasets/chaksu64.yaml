@@ -16,12 +16,11 @@ FIRST_SWEEP:
     shift: [ "scanner" ]
     pred_model: [ "diffusion", "softmax", "ssn" ]
     seed: [ "120" ]
-    au: [ "diffusion", "softmax", "ssn", "prob_unet" ]
     eu: [ "dropout", "swag"]
     cfg: [ "standard" ]
     data: [ "chaksu64" ]
   naming_scheme_pred_model: "chaksu64"
-  naming_scheme_version: "{au}_{eu}"
+  naming_scheme_version: "{pred_model}_{eu}/e640_ema"
   aggregations: [ "all" ]
   fold: 0
   rank: 5

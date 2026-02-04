@@ -35,9 +35,8 @@ def patch_level_aggregation(image, patch_size, mean=False, **kwargs):
 
 
 def image_level_aggregation(image, mean=True, **kwargs):
-    if mean:
-        return float(np.sum(image) / image.size)
-    return {"max_score": float(np.sum(image))}
+    score = float(np.sum(image) / image.size) if mean else float(np.sum(image))
+    return {"max_score": score}
 
 
 def _load_prediction_stats(dataset_path, stats_filename):
@@ -107,6 +106,7 @@ def threshold_aggregation(
     pred_model=None,
     unc_type=None,
     mean=True,
+    **kwargs,
 ):
     if threshold is None:
         if threshold_path is None:

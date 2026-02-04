@@ -17,6 +17,7 @@ import pytorch_lightning as pl
 from torch.optim.swa_utils import AveragedModel
 
 import torchvision
+from torchvision.transforms.functional import to_pil_image
 from omegaconf import DictConfig, OmegaConf, open_dict
 #from evaluation.metrics.dice_old_torchmetrics import dice
 from evaluation.metrics.dice_wrapped import dice
@@ -196,6 +197,82 @@ class LightningExperiment(pl.LightningModule):
                     RuntimeWarning,
                 )
 
+    def _get_logger_run_dir(self) -> str | None:
+        logger = getattr(self, "logger", None)
+        if logger is None:
+            return None
+
+        log_dir = getattr(logger, "log_dir", None)
+        if log_dir:
+            return log_dir
+
+        experiment = getattr(logger, "experiment", None)
+        if experiment is not None:
+            exp_log_dir = getattr(experiment, "log_dir", None)
+            if exp_log_dir:
+                return exp_log_dir
+            exp_dir = getattr(experiment, "dir", None)
+            if exp_dir:
+                return exp_dir
+
+        save_dir = getattr(logger, "save_dir", None)
+        name = getattr(logger, "name", None)
+        version = getattr(logger, "version", None)
+        if save_dir and name and version is not None:
+            fallback_dir = os.path.join(save_dir, name, str(version))
+            os.makedirs(fallback_dir, exist_ok=True)
+            return fallback_dir
+        return None
+
+    def _log_visualization_image(self, key: str, image: torch.Tensor) -> None:
+        logger = getattr(self, "logger", None)
+        if logger is None:
+            return
+
+        step = getattr(self, "current_epoch", 0)
+        tensor_image = image.detach().cpu()
+        experiment = getattr(logger, "experiment", None)
+
+        if experiment is not None and hasattr(experiment, "add_image"):
+            try:
+                experiment.add_image(key, tensor_image, step)
+                return
+            except Exception as exc:
+                warnings.warn(f"TensorBoard-style image logging failed: {exc}")
+
+        try:
+            pil_image = to_pil_image(tensor_image)
+        except Exception as exc:
+            warnings.warn(f"Failed to convert tensor to image for logging: {exc}")
+            return
+
+        if hasattr(logger, "log_image"):
+            try:
+                logger.log_image(key=key, images=[pil_image], step=step)
+                return
+            except Exception as exc:
+                warnings.warn(f"WandB logger image logging failed: {exc}")
+
+        if experiment is not None and hasattr(experiment, "log"):
+            try:
+                import wandb  # type: ignore[import]
+
+                experiment.log({key: wandb.Image(pil_image)}, step=step)
+                return
+            except Exception as exc:
+                warnings.warn(f"Experiment backend image logging failed: {exc}")
+
+    def _log_hyperparams_with_metrics(self, params: Namespace | dict, metric_placeholder: dict) -> None:
+        logger = getattr(self, "logger", None)
+        if logger is None or not hasattr(logger, "log_hyperparams"):
+            return
+        try:
+            logger.log_hyperparams(params, metrics=metric_placeholder)
+        except TypeError:
+            logger.log_hyperparams(params)
+        except Exception as exc:
+            warnings.warn(f"Hyperparameter logging failed: {exc}")
+
     def configure_optimizers(self) -> Tuple[List[optim.Adam], List[dict]]:
         """Define the optimizers and learning rate schedulers. Adam is used as optimizer.
 
@@ -220,7 +297,7 @@ class LightningExperiment(pl.LightningModule):
                 "scheduler": hydra.utils.instantiate(
                     self.lr_scheduler_conf, optimizer=optimizer, total_iters=max_steps
                 ),
-                "monitor": "validation/val_loss",
+                "monitor": "generation/val_loss",
                 "interval": "step",
                 "frequency": 1,
             }
@@ -323,32 +400,32 @@ class LightningExperiment(pl.LightningModule):
         # set placeholders for the metrics according to the stage of the trainer
         if self.trainer.testing is False:
             metric_placeholder = {
-                "validation/val_loss": float("nan"),
-                "validation/val_dice": float("nan"),
+                "generation/val_loss": float("nan"),
+                "generation/val_dice": float("nan"),
             }
         else:
             metric_placeholder = {"test/test_loss": 0.0, "test/test_dice": 0.0}
         self.hparams.version = self.logger.version
         # Print the exp/version name
         print(f"Experiment name: {self.hparams.exp_name}, version: {self.hparams.version}")
-        print(f"Save path:\n{str(self.logger.experiment.log_dir)}")
+        run_dir = self._get_logger_run_dir()
+        print(f"Save path:\n{run_dir}")
         # Save nested_hparam_dict if available
         if self.nested_hparam_dict is not None:
-            with open(
-                os.path.join(self.logger.experiment.log_dir, "hparams_sub_nested.yml"),
-                "w",
-            ) as file:
-                yaml.dump(self.nested_hparam_dict, file, default_flow_style=False)
+            if run_dir is None:
+                warnings.warn("Logger run directory unavailable; skipping nested hparam export.")
+            else:
+                os.makedirs(run_dir, exist_ok=True)
+                with open(os.path.join(run_dir, "hparams_sub_nested.yml"), "w") as file:
+                    yaml.dump(self.nested_hparam_dict, file, default_flow_style=False)
 
             sub_hparams = dict()
             for subdict in self.nested_hparam_dict.values():
                 sub_hparams.update(subdict)
             sub_hparams = Namespace(**sub_hparams)
-            self.logger.log_hyperparams(sub_hparams, metrics=metric_placeholder)
+            self._log_hyperparams_with_metrics(sub_hparams, metric_placeholder)
         else:
-            self.logger.log_hyperparams(
-                Namespace(**self.hparams), metrics=metric_placeholder
-            )
+            self._log_hyperparams_with_metrics(Namespace(**self.hparams), metric_placeholder)
 
     def forward(
         self, x: torch.Tensor, **kwargs
@@ -521,7 +598,7 @@ class LightningExperiment(pl.LightningModule):
             reg_coeff = float(getattr(self.model, "regularizer_scale", 1e-5))
             loss = -elbo + reg_coeff * reg_loss
             self.log(
-                "training/prob_unet_kl",
+                "trainer/prob_unet_kl",
                 kl_loss,
                 prog_bar=False,
                 on_step=True,
@@ -530,7 +607,7 @@ class LightningExperiment(pl.LightningModule):
                 batch_size=target_long.shape[0],
             )
             self.log(
-                "training/prob_unet_recon",
+                "trainer/prob_unet_recon",
                 getattr(self.model, "mean_reconstruction_loss", recon_loss),
                 prog_bar=False,
                 on_step=True,
@@ -570,7 +647,7 @@ class LightningExperiment(pl.LightningModule):
             self._train_batch_size if self._train_batch_size is not None else target.shape[0]
         )
         self.log(
-            "training/train_loss",
+            "trainer/train_loss",
             loss,
             prog_bar=True,
             on_step=True,
@@ -827,13 +904,13 @@ class LightningExperiment(pl.LightningModule):
             # If values are in 0-255 range, scale to 0-1
             if grid.max() > 1.0:
                 grid = grid / 255.0
-            self.logger.experiment.add_image(f"images/{split}_pred_seg", grid, self.current_epoch)
+            self._log_visualization_image(f"images/{split}_pred_seg", grid)
             grid = torchvision.utils.make_grid(target_seg_val_color)
             if grid.dtype != torch.float32:
                 grid = grid.float()
             if grid.max() > 1.0:
                 grid = grid / 255.0
-            self.logger.experiment.add_image(f"images/{split}_target_seg", grid, self.current_epoch)
+            self._log_visualization_image(f"images/{split}_target_seg", grid)
 
         loss_value = (
             eval_loss.detach().float().mean().item()
@@ -883,7 +960,7 @@ class LightningExperiment(pl.LightningModule):
             if self.trainer is not None and len(self.trainer.optimizers) > 0:
                 current_lr = float(self.trainer.optimizers[0].param_groups[0]["lr"])
                 self.log(
-                    "optimization/lr",
+                    "trainer/lr",
                     torch.tensor(current_lr, device=device),
                     prog_bar=False,
                     logger=True,
@@ -905,7 +982,7 @@ class LightningExperiment(pl.LightningModule):
             avg_dice_tensor = torch.tensor(avg_dice, device=device)
 
             self.log(
-                f"validation/{split}_loss",
+                f"generation/{split}_loss",
                 avg_loss_tensor,
                 prog_bar=False,
                 logger=True,
@@ -914,7 +991,7 @@ class LightningExperiment(pl.LightningModule):
                 sync_dist=True,
             )
             self.log(
-                f"validation/{split}_dice",
+                f"generation/{split}_dice",
                 avg_dice_tensor,
                 prog_bar=False,
                 logger=True,
@@ -929,7 +1006,7 @@ class LightningExperiment(pl.LightningModule):
                 for metric_name, total in ged_sums.items():
                     avg_metric = total / ged_count
                     # Only prefix with 'ged' for the actual GED. Other metrics are logged plainly.
-                    log_key = f"validation/{split}_{metric_name}"
+                    log_key = f"generation/{split}_{metric_name}"
                     metric_tensor = torch.tensor(avg_metric, device=device)
                     self.log(
                         log_key,

@@ -2,6 +2,8 @@ import os
 
 import hydra
 import numpy as np
+from PIL import Image
+from pathlib import Path
 
 from evaluation.utils.set_seed import set_seed
 from experiment_version import ExperimentVersion
@@ -77,14 +79,14 @@ class ExperimentDataloader:
         return 1 - max_softmax
 
     def _setup_pred_entropy_softmax(self):
-        if not os.path.exists(self.dataset_path / "pred_entropy"):
-            os.makedirs(self.dataset_path / "pred_entropy")
+        if not os.path.exists(self.dataset_path / "TU"):
+            os.makedirs(self.dataset_path / "TU")
             for image_id in self.image_ids:
                 max_softmax = self.get_max_softmax_pred(image_id)
                 save(
                     max_softmax,
                     self.dataset_path
-                    / "pred_entropy"
+                    / "TU"
                     / f"{image_id}{self.exp_version.unc_ending}",
                 )
 
@@ -92,7 +94,7 @@ class ExperimentDataloader:
         unc_path_dict = {}
         for unc_type in self.exp_version.unc_types:
             if unc_type == "predictive_uncertainty":
-                unc_path_dict[unc_type] = self.dataset_path / "pred_entropy"
+                unc_path_dict[unc_type] = self.dataset_path / "TU"
             else:
                 unc_path_dict[unc_type] = self.dataset_path / unc_type
         return unc_path_dict
@@ -103,6 +105,15 @@ class ExperimentDataloader:
             for image_name in os.listdir(self.pred_seg_dir)
             if image_name.endswith(self.exp_version.image_ending)
         )
+
+    @staticmethod
+    def _load_pred_seg_array(image_path: Path):
+        suffix = image_path.suffix.lower()
+        if suffix in {".png", ".jpg", ".jpeg"}:
+            with Image.open(image_path) as img:
+                return np.array(img)
+        image, _ = load(image_path)
+        return image
 
     def get_pred_seg_paths(self, image_id):
         return [
@@ -116,8 +127,7 @@ class ExperimentDataloader:
         image_paths = self.get_pred_seg_paths(image_id)
         pred_segs = []
         for image_path in image_paths:
-            image, _ = load(image_path)
-            pred_segs.append(image)
+            pred_segs.append(self._load_pred_seg_array(image_path))
         return pred_segs
 
     def get_aggregated_unc_files_dict(self):
@@ -261,7 +271,7 @@ class ExperimentDataloader:
             / f"{image_id}_{'mean' if self.exp_version.pred_model != 'Softmax' else '01'}{self.exp_version.image_ending}"
         )
         if self.exp_version.pred_seg_loading is None:
-            pred_seg, _ = load(pred_seg_path)
+            pred_seg = self._load_pred_seg_array(pred_seg_path)
         else:
             pred_seg = hydra.utils.instantiate(
                 self.exp_version.pred_seg_loading, pred_seg_path=pred_seg_path

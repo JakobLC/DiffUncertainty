@@ -666,6 +666,8 @@ class ModelOutputVisualizer:
         for key, label in label_map:
             tensor = uq_tensors.get(key)
             if tensor is None:
+                tensor = uq_tensors.get(label)
+            if tensor is not None:
                 continue
             outputs[label] = self._heatmap_to_rgb(tensor)
         return outputs

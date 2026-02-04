@@ -66,12 +66,12 @@ class EvalExperiments:
                     raise ValueError("only_pu must be False when pred_model is not 'Softmax'.")
                 # Set unc_types based on only_pu
                 version_params["unc_types"] = (
-                    ["predictive_uncertainty"]
+                    ["TU"]
                     if only_pu
                     else [
-                        "predictive_uncertainty",
-                        "aleatoric_uncertainty",
-                        "epistemic_uncertainty",
+                        "TU",
+                        "AU",
+                        "EU",
                     ]
                 )
                 exp_version = ExperimentVersion(**version_params)
@@ -195,17 +195,17 @@ class EvalExperiments:
         """Remove large image folders under each version/dataset test folder.
 
         Deletes the following subdirectories if present under each dataset folder:
-        - `aleatoric_uncertainty`
-        - `epistemic_uncertainty`
-        - `pred_entropy`
+        - `AU`
+        - `EU`
+        - `TU`
         - `pred_seg`
 
         JSON files and other files are left untouched.
         """
         folders_to_remove = [
-            "aleatoric_uncertainty",
-            "epistemic_uncertainty",
-            "pred_entropy",
+            "AU",
+            "EU",
+            "TU",
             "pred_seg",
         ]
         for version in self.versions:
