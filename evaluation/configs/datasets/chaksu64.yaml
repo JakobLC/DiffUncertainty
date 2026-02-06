@@ -14,9 +14,9 @@ experiments:
 FIRST_SWEEP:
   iter_params:
     shift: [ "scanner" ]
-    pred_model: [ "diffusion", "softmax", "ssn" ]
+    pred_model: ["prob_unet","diffusion", "softmax", "ssn" ]
     seed: [ "120" ]
-    eu: [ "dropout", "swag"]
+    eu: ["swag_diag"]
     cfg: [ "standard" ]
     data: [ "chaksu64" ]
   naming_scheme_pred_model: "chaksu64"
@@ -26,6 +26,6 @@ FIRST_SWEEP:
   rank: 5
   image_ending: ".png"
   unc_ending: ".tif"
-  n_reference_segs: 4
+  n_reference_segs: 5
   only_pu: false
   evaluate_training_data: ${evaluate_training_data}

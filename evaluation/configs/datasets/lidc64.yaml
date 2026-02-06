@@ -9,7 +9,27 @@ data:
   data_input_dir: ${data_input_dir}
 base_splits_path: "/home/jloch/Desktop/diff/luzern/values_datasets/lidc64/splits"
 experiments:
-  - ${OOD_AUG}
+  - ${FIRST_SWEEP}
+
+FIRST_SWEEP:
+  iter_params:
+    shift: [ "ood_aug" ]
+    pred_model: ["prob_unet","diffusion", "softmax", "ssn" ]
+    seed: [ "120" ]
+    eu: ["swag_diag"]
+    cfg: [ "standard" ]
+    data: [ "lidc64" ]
+  naming_scheme_pred_model: "lidc64"
+  naming_scheme_version: "{pred_model}_{eu}/e1000_ema"
+  aggregations: [ "all" ]
+  fold: 0
+  rank: 5
+  image_ending: ".png"
+  unc_ending: ".tif"
+  n_reference_segs: 4
+  only_pu: false
+  evaluate_training_data: ${evaluate_training_data}
+
 
 OOD_AUG:
   iter_params:

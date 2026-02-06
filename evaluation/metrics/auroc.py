@@ -72,12 +72,7 @@ def get_ood_detection_rate(
                 ood += 1
             else:
                 print(f"Error for sample {sample}!")
-        if splits is None:
-            # In toy dataset, there are 21 OoD samples.
-            # Caution: This is currently hardcoded
-            num_ood_samples = 21
-        else:
-            num_ood_samples = len(splits[fold]["ood_unlabeled_pool"])
+        num_ood_samples = len(splits[fold]["ood_unlabeled_pool"])
     else:
         ood = sum(1 for sample in samples_to_query if sample_labels.get(sample) == 1)
         if num_ood_samples_override is not None:
@@ -174,7 +169,9 @@ def ood_detection(
             uncertainties = get_aggregated_uncertainties(aggregated_unc_path)
             sample_labels = None
             num_ood_samples_override = None
-        for aggregation in exp_dataloader.exp_version.aggregations:
+        print(f"len(uncertainties): {len(uncertainties)}")
+        aggregation_types = uncertainties[list(uncertainties.keys())[0]].keys()
+        for aggregation in aggregation_types:
             if not pair_splits:
                 if base_splits_path is not None:
                     splits = get_splits_first_cycle(base_splits_path, shift=shift)

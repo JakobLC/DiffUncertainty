@@ -27,6 +27,24 @@ def sort_uncertainties_threshold_level(uncertainties: dict):
     return threshold_level_dict
 
 
+def sort_uncertainties_area_normalized(uncertainties: dict):
+    area_level_dict = {
+        key: value["area_normalized"]["max_score"]
+        for key, value in uncertainties.items()
+    }
+    area_level_dict = sorted(area_level_dict, key=area_level_dict.get, reverse=True)
+    return area_level_dict
+
+
+def sort_uncertainties_border_normalized(uncertainties: dict):
+    border_level_dict = {
+        key: value["border_normalized"]["max_score"]
+        for key, value in uncertainties.items()
+    }
+    border_level_dict = sorted(border_level_dict, key=border_level_dict.get, reverse=True)
+    return border_level_dict
+
+
 def sort_uncertainties(uncertainties: dict, level: str):
     if level == "image_level":
         return sort_uncertainties_image_level(uncertainties)
@@ -34,5 +52,9 @@ def sort_uncertainties(uncertainties: dict, level: str):
         return sort_uncertainties_patch_level(uncertainties)
     elif level == "threshold":
         return sort_uncertainties_threshold_level(uncertainties)
+    elif level == "area_normalized":
+        return sort_uncertainties_area_normalized(uncertainties)
+    elif level == "border_normalized":
+        return sort_uncertainties_border_normalized(uncertainties)
     else:
-        raise Exception("Uncertainty level not known!")
+        raise Exception(f"Uncertainty level not known: {level}")
