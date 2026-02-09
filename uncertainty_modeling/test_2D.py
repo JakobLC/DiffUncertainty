@@ -649,6 +649,7 @@ class Tester:
         }
         multiple_generative = sum(1 for m in self.models if getattr(m, "is_generative", False)) > 1
         for model in self.models:
+            #print("allpreds groups shape:", all_preds["softmax_pred_groups"][-1].shape if all_preds["softmax_pred_groups"] else "N/A")
             with self._model_device_scope(model):
                 au_type = getattr(model, "AU_type", "softmax")
                 if au_type == "ssn":

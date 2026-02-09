@@ -202,24 +202,19 @@ def apply_colormap_tensor(
     return colored_tensor.clamp(0, 1)
 
 
-def _get_set1_colors(num_classes: int, device, dtype) -> torch.Tensor:
-    cmap = plt.get_cmap("Set1")
-    if hasattr(cmap, "colors"):
-        base_colors = np.asarray(cmap.colors)
-    else:
-        base_colors = cmap(np.linspace(0, 1, max(num_classes - 1, 1)))[:, :3]
-    needed = max(num_classes - 1, 0)
-    if needed > 0 and needed > len(base_colors):
-        repeats = math.ceil(needed / len(base_colors))
-        base_colors = np.tile(base_colors, (repeats, 1))
-    colors = torch.zeros((num_classes, 3), dtype=dtype, device=device)
-    if needed:
-        colors[1:] = torch.as_tensor(base_colors[:needed], dtype=dtype, device=device)
-    return colors
+def _get_colors(num_classes: int, device, dtype) -> torch.Tensor:
+    # repeats the same bright saturated colors
+    base_cmap = ["#000000", "#ff00a2", "#34ff30","#f24b4d", "#81c2f7", "#7300ff", "#ff7f00", "#ffff33", "#a65628", "#f781bf"]
+    colors = []
+    for i in range(num_classes):
+        color_hex = base_cmap[i % len(base_cmap)]
+        color_rgb = tuple(int(color_hex[j : j + 2], 16) for j in (1, 3, 5))
+        colors.append(color_rgb)
+    return torch.tensor(colors, dtype=dtype, device=device)/255.0
 
 
 def onehot_to_rgb(onehot: torch.Tensor) -> torch.Tensor:
-    """Render a (C, H, W)/(H, W, C) one-hot/probability map with Set1 colors."""
+    """Render a (C, H, W)/(H, W, C) one-hot/probability map with tab10 colors."""
     if onehot.dim() != 3:
         raise ValueError("Expected a 3D tensor for one-hot visualization.")
     if 1 <= onehot.shape[0] <= 64:
@@ -231,7 +226,7 @@ def onehot_to_rgb(onehot: torch.Tensor) -> torch.Tensor:
     tensor = tensor.clamp_min(0).float()
     num_classes = tensor.shape[0]
     probs = tensor / tensor.sum(dim=0, keepdim=True).clamp_min(1e-8)
-    colors = _get_set1_colors(num_classes, probs.device, probs.dtype)
+    colors = _get_colors(num_classes, probs.device, probs.dtype)
     rgb = torch.matmul(colors.T, probs.view(num_classes, -1)).view(3, probs.shape[1], probs.shape[2])
     return rgb.clamp(0, 1)
 

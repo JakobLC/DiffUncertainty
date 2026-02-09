@@ -1001,6 +1001,7 @@ class ProbabilisticUnetModel(nn.Module):
         self.out_channels = base_unet.out_channels
         self.diffusion_num_steps = getattr(base_unet, "diffusion_num_steps", 0)
         self.diffusion_sampler_type = getattr(base_unet, "diffusion_sampler_type", "ddpm") or "ddpm"
+        self.dropout = getattr(base_unet, "dropout", 0.0) # used for eu_type detection
 
     def forward(
         self,

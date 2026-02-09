@@ -85,7 +85,7 @@ def _infer_model_eu_type(model: Any, cfg: Any | None) -> str:
             if swag_cfg and swag_cfg.get("diag_only"):
                 swag_type = "swag_diag"
         candidates.add(swag_type)
-    for attr in ("_global_dropout_rate", "_dropout_rate", "dropout"):
+    for attr in ("_global_dropout_rate", "_dropout_rate", "dropout","prob_unet_dropout"):
         rate = getattr(model, attr, None)
         if rate is not None and float(rate) > 0.0:
             candidates.add("dropout")

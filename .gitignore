@@ -142,3 +142,5 @@ uncertainty_modeling/saves
 lightning_logs/
 saves/
 values_datasets/
+wandb/
+DiffUnc/
