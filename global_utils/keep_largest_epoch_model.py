@@ -66,7 +66,9 @@ def _describe_epoch(epoch: int | None) -> str:
     return str(epoch) if epoch is not None else "n/a"
 
 
-def _plan_version(version_dir: Path, dry: bool) -> tuple[List[Path], Dict[Path, int], Path, Path]:
+def _plan_version(
+    version_dir: Path, dry: bool
+) -> tuple[List[Path], Dict[Path, int], Path, Path, bool]:
     ckpt_dir = version_dir / "checkpoints"
     candidates = _collect_candidates(ckpt_dir)
     if not candidates:
@@ -82,8 +84,11 @@ def _plan_version(version_dir: Path, dry: bool) -> tuple[List[Path], Dict[Path, 
     else:
         best_path = min(candidates, key=lambda path: (-epoch_map[path], path.name))
     final_path = ckpt_dir / "last.ckpt"
-    losers = [path for path in candidates if path != best_path]
-    return losers, epoch_map, best_path, final_path
+    replacing_existing_final = final_path.exists() and final_path != best_path
+    losers = [
+        path for path in candidates if path != best_path and path != final_path
+    ]
+    return losers, epoch_map, best_path, final_path, replacing_existing_final
 
 
 def _log_version_actions(
@@ -93,6 +98,7 @@ def _log_version_actions(
     final_path: Path,
     losers: Sequence[Path],
     epoch_map: Dict[Path, int],
+    replacing_existing_final: bool,
     dry: bool,
 ) -> None:
     prefix = "[DRY] " if dry else ""
@@ -102,6 +108,8 @@ def _log_version_actions(
     best_epoch = epoch_map.get(best_path)
     action = f"rename to {final_rel}" if best_path != final_path else f"stays at {final_rel}"
     print(f"{prefix}{version_rel}: keep {best_rel} (epoch {_describe_epoch(best_epoch)}) -> {action}")
+    if replacing_existing_final:
+        print(f"{prefix}  remove previous {final_rel} before rename")
     if losers:
         for path in losers:
             epoch_text = _describe_epoch(epoch_map.get(path))
@@ -127,12 +135,21 @@ def keep_largest_epoch_models(target: str, saves_dir: Path, dry: bool) -> None:
     exp_dir, version_dirs = _determine_scope(target_path)
     for version_dir in version_dirs:
         try:
-            losers, epoch_map, best_path, final_path = _plan_version(version_dir, dry)
+            losers, epoch_map, best_path, final_path, replacing_existing_final = _plan_version(version_dir, dry)
         except FileNotFoundError as exc:
             rel_version = _format_rel(version_dir, exp_dir)
             print(f"Skipping {rel_version}: {exc}")
             continue
-        _log_version_actions(version_dir, exp_dir, best_path, final_path, losers, epoch_map, dry)
+        _log_version_actions(
+            version_dir,
+            exp_dir,
+            best_path,
+            final_path,
+            losers,
+            epoch_map,
+            replacing_existing_final,
+            dry,
+        )
         _apply_actions(best_path, final_path, losers, dry)
 
 

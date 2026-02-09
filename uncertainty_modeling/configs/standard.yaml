@@ -26,19 +26,20 @@ optimizer:
   lr: ${learning_rate}
   weight_decay: ${weight_decay}
 
-logger:
-  _target_: pytorch_lightning.loggers.TensorBoardLogger
-  save_dir: ${save_dir}
-  name: ${exp_name}
-  default_hp_metric: false
-
 #logger:
-#  _target_: pytorch_lightning.loggers.WandbLogger
-#  project: DiffUnc
-#  group: ${exp_name}
-#  name: ${exp_name}/${version}
-#  dir: ${save_dir}/${exp_name}
-#  log_model: false
+#  _target_: pytorch_lightning.loggers.TensorBoardLogger
+#  save_dir: ${save_dir}
+#  name: ${exp_name}
+#  default_hp_metric: false
+
+logger:
+  _target_: pytorch_lightning.loggers.WandbLogger
+  project: DiffUnc
+  group: ${exp_name}
+  name: ${exp_name}/${version}
+  save_dir: ${save_dir}
+  dir: ${save_dir}
+  log_model: false
 
 progress_bar:
   _target_: pytorch_lightning.callbacks.TQDMProgressBar

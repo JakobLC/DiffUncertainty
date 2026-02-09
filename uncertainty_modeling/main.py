@@ -57,6 +57,15 @@ def _extract_component_name(section, fallback_label):
             return token
     return fallback_label
 
+
+def _export_hparams_to_yaml(config: DictConfig, destination: Path) -> None:
+    """Persist the current Hydra config to disk for reproducibility."""
+    try:
+        yaml_text = OmegaConf.to_yaml(config, resolve=False)
+        destination.write_text(yaml_text)
+    except Exception as exc:
+        warnings.warn(f"Failed to export hyperparameters to {destination}: {exc}")
+
 @hydra.main(version_base=None, config_path="configs", config_name="standard")
 def main(cfg_hydra: DictConfig):
     """Uses the pl.Trainer to fit & test the model
@@ -99,6 +108,19 @@ def main(cfg_hydra: DictConfig):
     if config.seed is not None:
         set_seed(config.seed)
 
+    version_value = getattr(config, "version", None)
+    if version_value is None or (isinstance(version_value, str) and version_value.strip() == ""):
+        version_value = "version_0"
+        with open_dict(config):
+            config.version = version_value
+
+    base_save_root = Path(getattr(config, "save_dir", Path.cwd())).expanduser()
+    run_dir = (base_save_root / str(exp_name) / str(version_value)).resolve()
+    run_dir.mkdir(parents=True, exist_ok=True)
+    with open_dict(config):
+        config.save_dir = run_dir.as_posix()
+    _export_hparams_to_yaml(config, run_dir / "hparams.yaml")
+
     logger = hydra.utils.instantiate(config.logger, version=config.version)
     progress_bar = hydra.utils.instantiate(config.progress_bar)
     scheduled_ckpt_cb = None
@@ -119,6 +141,8 @@ def main(cfg_hydra: DictConfig):
     # Configure ModelCheckpoint to control whether the final `last.ckpt` includes optimizer
     # state via `save_weights_only`. When `full_last_ckpt` is True, we want the full checkpoint
     # (weights + optimizer); otherwise save only weights to save space.
+    checkpoint_dir = os.path.join(config.save_dir, "checkpoints")
+    os.makedirs(checkpoint_dir, exist_ok=True)
     checkpoint_cb = ModelCheckpoint(
         monitor="generation/val_loss",
         mode="min",
@@ -127,6 +151,7 @@ def main(cfg_hydra: DictConfig):
         save_last=True,
         save_top_k=0,
         save_weights_only=not full_last_ckpt,
+        dirpath=checkpoint_dir,
     )
     callbacks = [progress_bar, checkpoint_cb]
 
@@ -134,8 +159,13 @@ def main(cfg_hydra: DictConfig):
         callbacks.append(scheduled_ckpt_cb)
     if graceful_shutdown_cb is not None:
         callbacks.append(graceful_shutdown_cb)
+    trainer_kwargs = OmegaConf.to_container(config.trainer, resolve=True)
+    if not isinstance(trainer_kwargs, dict):
+        raise TypeError("trainer configuration must resolve to a dict")
+    trainer_kwargs.setdefault("default_root_dir", config.save_dir)
+
     trainer = pl.Trainer(
-        **config.trainer,
+        **trainer_kwargs,
         logger=logger,
         callbacks=callbacks,
     )
@@ -198,8 +228,7 @@ def main(cfg_hydra: DictConfig):
                 version_dir = logger.log_dir
             else:
                 # Fallback: construct from save_dir and version
-                save_dir = getattr(config, "save_dir", os.getcwd())
-                version_dir = os.path.join(save_dir, str(config.version))
+                version_dir = getattr(config, "save_dir", os.getcwd())
 
             candidate = os.path.join(version_dir, rel)
             if not os.path.exists(candidate):
