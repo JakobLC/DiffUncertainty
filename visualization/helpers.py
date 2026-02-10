@@ -112,6 +112,9 @@ def load_result_table(epoch=320,
             add_dict["AU_ace_ood"] = loaded["mean"][AU]["metrics"]["ace"]
             add_dict["TU_ace_ood"] = loaded["mean"][TU]["metrics"]["ace"]
         table = pd.concat([table, pd.DataFrame([add_dict])], ignore_index=True)
+    #raise error incase table is empty
+    if table.empty:
+        raise ValueError(f"Result table is empty. Check if the specified epoch and save_path are correct. Current save_path: {save_path}")
     valid_ood_keys = []
     for k in table.columns:
         if k.startswith("EU_auc_ood"):

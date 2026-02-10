@@ -8,13 +8,13 @@ import random
 from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Dict, List, Tuple
+from typing import Callable, Dict, List, Sequence, Tuple
 
 import albumentations as A
 import matplotlib.pyplot as plt
 import numpy as np
 
-DEFAULT_ROOT = Path("/home/jloch/Desktop/diff/luzern/values_datasets/lidc128")
+DEFAULT_ROOT = Path("/home/jloch/Desktop/diff/luzern/values_datasets/origlidc64")
 
 ROW_ORDER = [
     ("label", "Label sum"),
@@ -57,18 +57,22 @@ class GaussianNoiseNoClip(A.ImageOnlyTransform):
         mean: float = 0.0,
         std_limit: Tuple[float, float] = (0.0, 0.05),
         always_apply: bool = False,
+        scale_by_image: bool = True,
         p: float = 1.0,
     ) -> None:
         super().__init__(always_apply=always_apply, p=p)
         low, high = _ordered_pair(std_limit[0], std_limit[1])
         self.mean = mean
         self.std_limit = (low, high)
+        self.scale_by_image = scale_by_image
 
     def apply(self, image: np.ndarray, std: float = 0.0, **params) -> np.ndarray:
         img = image.astype(np.float32, copy=False)
         if std <= 0.0:
             return img
         noise = np.random.normal(loc=self.mean, scale=std, size=img.shape).astype(np.float32)
+        if self.scale_by_image:
+            noise *= (img.std() + 1e-8)
         return img + noise
 
     def get_params(self) -> Dict[str, float]:
@@ -110,13 +114,13 @@ def build_shared_parser(
     parser.add_argument(
         "--noise-std-min",
         type=float,
-        default=0.2,
+        default=0.1,
         help="Lower bound for Gaussian noise standard deviation (relative to image scale).",
     )
     parser.add_argument(
         "--noise-std-max",
         type=float,
-        default=1.0,
+        default=0.5,
         help="Upper bound for Gaussian noise standard deviation (relative to image scale).",
     )
     parser.add_argument(
@@ -158,14 +162,45 @@ def finalize_shared_args(args: argparse.Namespace) -> argparse.Namespace:
     return args
 
 
+def _normalize_header(name: str) -> str:
+    return name.strip().lower().replace(" ", "_")
+
+
+def _resolve_column(fieldnames: Sequence[str], candidates: Sequence[str]) -> str | None:
+    normalized = {_normalize_header(name): name for name in fieldnames}
+    for candidate in candidates:
+        if candidate in normalized:
+            return normalized[candidate]
+    return None
+
+
 def read_metadata(metadata_csv: Path) -> Dict[str, List[str]]:
     with metadata_csv.open("r", newline="") as handle:
         reader = csv.DictReader(handle)
+        if not reader.fieldnames:
+            raise RuntimeError(f"Metadata file {metadata_csv} has no header row.")
+        patient_field = _resolve_column(reader.fieldnames, ("patient_id", "subject_id"))
+        image_field = _resolve_column(
+            reader.fieldnames,
+            ("image_name", "image_save_path", "image_path"),
+        )
+        if patient_field is None or image_field is None:
+            raise RuntimeError(
+                "Metadata must contain a patient identifier and image filename/path columns."
+            )
         patient_to_images: Dict[str, List[str]] = defaultdict(list)
         for row in reader:
-            patient_id = row["Patient ID"].strip()
-            image_path = Path(row["Image Save Path"]).name
-            patient_to_images[patient_id].append(image_path)
+            patient_raw = row.get(patient_field, "")
+            image_raw = row.get(image_field, "")
+            if not patient_raw or not image_raw:
+                continue
+            patient_id = str(patient_raw).strip()
+            if not patient_id:
+                continue
+            image_name = Path(str(image_raw).strip()).name
+            if not image_name:
+                continue
+            patient_to_images[patient_id].append(image_name)
     if not patient_to_images:
         raise RuntimeError(f"No entries found in metadata file {metadata_csv}.")
     return patient_to_images
@@ -343,7 +378,7 @@ def render_grid(
         for row_idx, (key, _) in enumerate(ROW_ORDER):
             ax = axes[row_idx][col]
             if key == "label":
-                ax.imshow(label_sum, cmap="inferno")
+                ax.imshow(label_sum, cmap="inferno", vmin=0, vmax=4)
             elif key == "id":
                 ax.imshow(id_vis, cmap="gray", vmin=-2, vmax=2)
             else:

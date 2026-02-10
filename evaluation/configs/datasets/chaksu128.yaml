@@ -1,0 +1,31 @@
+#@package _global_
+defaults:
+  - /../../uncertainty_modeling/configs/data/chaksu128
+  - _self_
+
+data_input_dir: "/home/jloch/Desktop/diff/luzern/values_datasets/chaksu128"
+datamodule_config: ${data}
+data:
+  data_input_dir: ${data_input_dir}
+base_splits_path: "/home/jloch/Desktop/diff/luzern/values_datasets/chaksu128/splits"
+experiments:
+  - ${SWEEP_1}
+
+SWEEP_1:
+  iter_params:
+    shift: [ "scanner" ]
+    pred_model: ["prob_unet","diffusion", "softmax", "ssn" ]
+    seed: [ "120" ]
+    eu: ["swag_diag", "swag", "dropout"]
+    cfg: [ "standard" ]
+    data: [ "chaksu128" ]
+  naming_scheme_pred_model: "chaksu128"
+  naming_scheme_version: "{pred_model}_{eu}_1/e500_ema"
+  aggregations: [ "all" ]
+  fold: 0
+  rank: 5
+  image_ending: ".png"
+  unc_ending: ".tif"
+  n_reference_segs: 5
+  only_pu: false
+  evaluate_training_data: ${evaluate_training_data}

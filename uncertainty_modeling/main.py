@@ -66,6 +66,21 @@ def _export_hparams_to_yaml(config: DictConfig, destination: Path) -> None:
     except Exception as exc:
         warnings.warn(f"Failed to export hyperparameters to {destination}: {exc}")
 
+
+def _is_wandb_logger(logger_cfg: DictConfig | dict | None) -> bool:
+    if logger_cfg is None:
+        return False
+    target = None
+    if isinstance(logger_cfg, DictConfig):
+        target = logger_cfg.get("_target_", None)
+    elif isinstance(logger_cfg, dict):
+        target = logger_cfg.get("_target_", None)
+    else:
+        target = getattr(logger_cfg, "_target_", None)
+    if not target:
+        return False
+    return "wandb" in str(target).lower()
+
 @hydra.main(version_base=None, config_path="configs", config_name="standard")
 def main(cfg_hydra: DictConfig):
     """Uses the pl.Trainer to fit & test the model
@@ -114,12 +129,16 @@ def main(cfg_hydra: DictConfig):
         with open_dict(config):
             config.version = version_value
 
-    base_save_root = Path(getattr(config, "save_dir", Path.cwd())).expanduser()
-    run_dir = (base_save_root / str(exp_name) / str(version_value)).resolve()
-    run_dir.mkdir(parents=True, exist_ok=True)
-    with open_dict(config):
-        config.save_dir = run_dir.as_posix()
-    _export_hparams_to_yaml(config, run_dir / "hparams.yaml")
+    logger_cfg = config.get("logger", None)
+    wandb_logger_requested = _is_wandb_logger(logger_cfg)
+
+    if wandb_logger_requested:
+        base_save_root = Path(getattr(config, "save_dir", Path.cwd())).expanduser()
+        run_dir = (base_save_root / str(exp_name) / str(version_value)).resolve()
+        run_dir.mkdir(parents=True, exist_ok=True)
+        with open_dict(config):
+            config.save_dir = run_dir.as_posix()
+        _export_hparams_to_yaml(config, run_dir / "hparams.yaml")
 
     logger = hydra.utils.instantiate(config.logger, version=config.version)
     progress_bar = hydra.utils.instantiate(config.progress_bar)
@@ -141,8 +160,10 @@ def main(cfg_hydra: DictConfig):
     # Configure ModelCheckpoint to control whether the final `last.ckpt` includes optimizer
     # state via `save_weights_only`. When `full_last_ckpt` is True, we want the full checkpoint
     # (weights + optimizer); otherwise save only weights to save space.
-    checkpoint_dir = os.path.join(config.save_dir, "checkpoints")
-    os.makedirs(checkpoint_dir, exist_ok=True)
+    checkpoint_dir = None
+    if wandb_logger_requested:
+        checkpoint_dir = os.path.join(config.save_dir, "checkpoints")
+        os.makedirs(checkpoint_dir, exist_ok=True)
     checkpoint_cb = ModelCheckpoint(
         monitor="generation/val_loss",
         mode="min",
@@ -162,7 +183,8 @@ def main(cfg_hydra: DictConfig):
     trainer_kwargs = OmegaConf.to_container(config.trainer, resolve=True)
     if not isinstance(trainer_kwargs, dict):
         raise TypeError("trainer configuration must resolve to a dict")
-    trainer_kwargs.setdefault("default_root_dir", config.save_dir)
+    if wandb_logger_requested:
+        trainer_kwargs.setdefault("default_root_dir", config.save_dir)
 
     trainer = pl.Trainer(
         **trainer_kwargs,
@@ -228,7 +250,12 @@ def main(cfg_hydra: DictConfig):
                 version_dir = logger.log_dir
             else:
                 # Fallback: construct from save_dir and version
-                version_dir = getattr(config, "save_dir", os.getcwd())
+                if wandb_logger_requested:
+                    version_dir = getattr(config, "save_dir", os.getcwd())
+                else:
+                    base_save_dir = getattr(config, "save_dir", os.getcwd())
+                    version_str = str(config.version)
+                    version_dir = os.path.join(base_save_dir, version_str)
 
             candidate = os.path.join(version_dir, rel)
             if not os.path.exists(candidate):

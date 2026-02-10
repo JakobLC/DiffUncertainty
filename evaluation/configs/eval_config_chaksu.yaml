@@ -1,7 +1,7 @@
 #@package _global_
 defaults:
   - _self_
-  - datasets: chaksu64
+  - datasets: chaksu128
   - tasks/threshold
   - tasks/area
   - tasks/aggregation_all

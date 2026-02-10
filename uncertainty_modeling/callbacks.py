@@ -6,6 +6,7 @@ from typing import List, Optional, Sequence, Set
 
 import pytorch_lightning as pl
 from omegaconf import DictConfig
+from pytorch_lightning.callbacks.progress import TQDMProgressBar
 from pytorch_lightning.utilities.rank_zero import rank_zero_info, rank_zero_warn
 import torch
 import time
@@ -229,3 +230,23 @@ class GracefulShutdownCallback(pl.Callback):
     def on_train_end(self, trainer: pl.Trainer, pl_module: pl.LightningModule) -> None:
         # No op: ModelCheckpoint (configured in main) will handle saving the final `last.ckpt`.
         return
+
+
+class ElapsedTimeTQDMProgressBar(TQDMProgressBar):
+    """Custom TQDM bar that hides redundant metrics and adds elapsed time."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._train_start_time: float | None = None
+
+    def on_train_start(self, trainer: pl.Trainer, pl_module: pl.LightningModule) -> None:
+        super().on_train_start(trainer, pl_module)
+        self._train_start_time = time.perf_counter()
+
+    def get_metrics(self, trainer: pl.Trainer, pl_module: pl.LightningModule):
+        metrics = super().get_metrics(trainer, pl_module)
+        metrics.pop("trainer/train_loss_epoch", None)
+        metrics.pop("train_loss_epoch", None)
+        elapsed = 0.0 if self._train_start_time is None else max(0.0, time.perf_counter() - self._train_start_time)
+        metrics["trainer/time"] = elapsed
+        return metrics
