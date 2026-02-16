@@ -65,11 +65,14 @@ class Tester:
         args.test_split = normalized_split
         self.test_batch_size = args.test_batch_size
         self.tta = args.tta
+        self.direct_au = bool(getattr(args, "direct_au", False))
         self.test_dataloader = self.get_test_dataloader(args, hparams)
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         self.swag_blockwise = bool(getattr(args, "swag_blockwise", False))
         self.swag_low_rank_cov = bool(getattr(args, "swag_low_rank_cov", True))
         self.ensemble_mode = bool(getattr(args, "ensemble_mode", False))
+        if self.direct_au and self.ensemble_mode:
+            raise ValueError("direct_au cannot be combined with --ensemble_mode.")
         self.diffusion_steps_override = getattr(args, "diffusion_num_steps", None)
         self.diffusion_sampler_override = getattr(args, "diffusion_sampler_type", None)
         base_models = load_models_from_checkpoint(
@@ -81,6 +84,10 @@ class Tester:
         if self.ensemble_mode and requested_n_models > 0:
             print(
                 f"[ensemble_mode] Ignoring --n_models={requested_n_models} because ensemble size is determined by provided checkpoints."
+            )
+        if self.direct_au:
+            requested_n_models = self._apply_direct_au_overrides(
+                base_models, requested_n_models
             )
         self.n_models = 0 if self.ensemble_mode else requested_n_models
         self.models = self.expand_eu_models(
@@ -179,6 +186,34 @@ class Tester:
             if _set_flag(candidate):
                 return
 
+    def _apply_direct_au_overrides(self, models, requested_n_models):
+        if len(models) != 1:
+            raise ValueError(
+                f"[direct_au] Expected exactly one checkpoint/model, received {len(models)}."
+            )
+        if requested_n_models != 1:
+            print(
+                f"[direct_au] Ignoring --n_models={requested_n_models}; using 1 ensemble member."
+            )
+        allowed_eu = {"none", "swag", "swag_diag"}
+        for idx, model in enumerate(models):
+            eu_type = getattr(model, "EU_type", "none") or "none"
+            au_type = getattr(model, "AU_type", "softmax") or "softmax"
+            if eu_type not in allowed_eu:
+                raise ValueError(
+                    f"[direct_au] Model #{idx} has unsupported EU_type='{eu_type}'. Only 'none' or 'swag' are allowed."
+                )
+            if au_type == "softmax":
+                raise ValueError(
+                    "[direct_au] Provided model has AU_type='softmax'. Supply a generative AU model (diffusion, ssn, prob_unet, ...)."
+                )
+            if eu_type in {"swag", "swag_diag"}:
+                setattr(model, "EU_type", "none")
+                print(
+                    f"[direct_au] Treating SWAG checkpoint '{self.checkpoint_paths[idx]}' as a standard model (no SWAG sampling)."
+                )
+        return 1
+
     @staticmethod
     def _inspect_splits_file(splits_path):
         with open(splits_path, "rb") as handle:
@@ -251,6 +286,8 @@ class Tester:
             )
 
     def expand_eu_models(self, base_models, checkpoints, checkpoint_paths):
+        if self.direct_au:
+            return list(base_models)
         expanded_models = []
         total = len(base_models)
         for idx in range(total):
@@ -647,7 +684,8 @@ class Tester:
             "gt": gt,
             "dataset": batch["dataset"],
         }
-        multiple_generative = sum(1 for m in self.models if getattr(m, "is_generative", False)) > 1
+        generative_count = sum(1 for m in self.models if getattr(m, "is_generative", False))
+        multiple_generative = generative_count > 1 and not self.direct_au
         for model in self.models:
             #print("allpreds groups shape:", all_preds["softmax_pred_groups"][-1].shape if all_preds["softmax_pred_groups"] else "N/A")
             with self._model_device_scope(model):

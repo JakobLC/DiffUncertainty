@@ -55,7 +55,9 @@ trainer:
   gradient_clip_algorithm: norm
   profiler: "simple"
   check_val_every_n_epoch: ${val_every_n_epochs}
+  accumulate_grad_batches: 1
   # log_every_n_steps: 50
+  
 
 ckpt_save_freq:
   use_linear_saving: false

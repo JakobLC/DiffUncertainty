@@ -81,6 +81,15 @@ def test_cli(
         help="Number of models to sample (for EU models (SWAG, MC Dropout, etc.)).",
     )
     parser.add_argument(
+        "--direct-au",
+        dest="direct_au",
+        action="store_true",
+        default=False,
+        help=(
+            "Treat generative AU samples as ensemble members directly. Requires AU_type generative and EU_type none/swag."
+        ),
+    )
+    parser.add_argument(
         "--diffusion-num-steps",
         dest="diffusion_num_steps",
         type=int,
@@ -91,7 +100,7 @@ def test_cli(
         "--diffusion-sampler",
         dest="diffusion_sampler_type",
         type=str,
-        default=None,
+        default="ddim",
         help="Override the diffusion sampler type during evaluation (when using diffusion AU models).",
     )
     parser.add_argument(

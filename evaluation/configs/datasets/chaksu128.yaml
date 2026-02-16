@@ -14,9 +14,9 @@ experiments:
 SWEEP_1:
   iter_params:
     shift: [ "scanner" ]
-    pred_model: ["prob_unet","diffusion", "softmax", "ssn" ]
+    pred_model: ["prob_unet", "diffusion", "ssn", "softmax"]
     seed: [ "120" ]
-    eu: ["swag_diag", "swag", "dropout"]
+    eu: ["ensemble"] #["swag_diag", "swag", "dropout"]
     cfg: [ "standard" ]
     data: [ "chaksu128" ]
   naming_scheme_pred_model: "chaksu128"

@@ -157,7 +157,7 @@ def main():
             iter_ckpts = ckpt_files
         for ckpt_path in iter_ckpts:
             try:
-                ckpt = torch.load(ckpt_path, map_location='cpu')
+                ckpt = torch.load(ckpt_path, map_location='cpu', weights_only=False)
             except Exception as exc:
                 print(f"Failed to load checkpoint {ckpt_path}: {exc}")
                 continue
