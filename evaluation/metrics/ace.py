@@ -168,7 +168,7 @@ def platt_scale_confid(uncalib_confid, platt_scale_file, uncertainty):
 
 
 def calib_stats(correct, calib_confids):
-    # calib_confids = np.clip(self.confids, 0, 1)
+    calib_confids = np.clip(calib_confids, 0, 1)
     n_bins = 20
     y_true = sk_utils.column_or_1d(correct)
     y_prob = sk_utils.column_or_1d(calib_confids)
@@ -200,6 +200,13 @@ def calib_stats(correct, calib_confids):
     prob_total = bin_total[nonzero] / bin_total.sum()
 
     bin_discrepancies = np.abs(prob_true - prob_pred)
+    """if (1 / num_nonzero) * np.sum(bin_discrepancies) < 1/200:
+        print(bin_discrepancies, prob_total, num_nonzero)
+        print((1 / num_nonzero) * np.sum(bin_discrepancies))
+        print(prob_true, prob_pred)
+        print(correct.shape, calib_confids.shape)
+        exit()  
+    """
     return bin_discrepancies, prob_total, num_nonzero
 
 
@@ -208,11 +215,54 @@ def calc_ace(correct, calib_confids):
     return (1 / num_nonzero) * np.sum(bin_discrepancies)
 
 
+class GlobalCalibAccumulator:
+    """Accumulates calibration bin statistics incrementally across many images,
+    then computes ACE once over the full dataset — equivalent to treating all
+    pixels as a single super-image but without ever concatenating them.
+
+    Bins are the same 20 uniform bins over [0, 1+1e-8] used in calib_stats.
+    """
+
+    N_BINS = 20
+
+    def __init__(self):
+        n = self.N_BINS + 1          # calib_stats passes minlength=len(bins)
+        self.bin_sums  = np.zeros(n, dtype=np.float64)   # sum of confidences
+        self.bin_true  = np.zeros(n, dtype=np.float64)   # sum of correct labels
+        self.bin_total = np.zeros(n, dtype=np.int64)     # count of samples
+
+    def accumulate(self, correct, calib_confids):
+        """Add one batch of (correct, calib_confids) — both 1-D arrays."""
+        calib_confids = np.clip(calib_confids, 0.0, 1.0)
+        y_true = correct.astype(np.float64).ravel()
+        y_prob = calib_confids.ravel()
+
+        bins   = np.linspace(0.0, 1.0 + 1e-8, self.N_BINS + 1)
+        binids = np.digitize(y_prob, bins) - 1
+
+        n = self.N_BINS + 1
+        self.bin_sums  += np.bincount(binids, weights=y_prob, minlength=n)
+        self.bin_true  += np.bincount(binids, weights=y_true, minlength=n)
+        self.bin_total += np.bincount(binids,                 minlength=n)
+
+    def compute_ace(self):
+        """Return the global ACE computed from all accumulated data."""
+        nonzero     = self.bin_total > 0
+        num_nonzero = int(nonzero.sum())
+        if num_nonzero == 0:
+            return float("nan")
+        prob_true     = self.bin_true[nonzero]  / self.bin_total[nonzero]
+        prob_pred     = self.bin_sums[nonzero]  / self.bin_total[nonzero]
+        discrepancies = np.abs(prob_true - prob_pred)
+        return float((1.0 / num_nonzero) * np.sum(discrepancies))
+
+
 def calibration_error(exp_dataloader: ExperimentDataloader, ignore_value=None):
     calib_dict = {}
     calib_dict["mean"] = {}
     for unc_type in exp_dataloader.exp_version.unc_types:
         aces_unc = []
+        global_accum = GlobalCalibAccumulator()
         for image_id in tqdm(exp_dataloader.image_ids):
             if image_id not in calib_dict.keys():
                 calib_dict[image_id] = {}
@@ -221,9 +271,14 @@ def calibration_error(exp_dataloader: ExperimentDataloader, ignore_value=None):
             unc_map = exp_dataloader.get_unc_map(image_id, unc_type)
             # 2d unc map is loaded in shape (W, H)
             if pred_seg.shape != unc_map.shape:
+                import warnings
+                warnings.warn(
+                    f"Uncertainty map shape {unc_map.shape} does not match pred_seg shape {pred_seg.shape} for image {image_id}. Attempting to swap axes."
+                )
                 unc_map = np.swapaxes(unc_map, 0, 1)
-            pred_seg = np.repeat(pred_seg[np.newaxis, :], reference_segs.shape[0], 0)
-            unc_map = np.repeat(unc_map[np.newaxis, :], reference_segs.shape[0], 0)
+            n_gt = reference_segs.shape[0]
+            pred_seg = np.repeat(pred_seg[np.newaxis, :], n_gt, 0)
+            unc_map = np.repeat(unc_map[np.newaxis, :], n_gt, 0)
             rater_correct = (reference_segs == pred_seg).astype(int)
             platt_scale_file = (
                 exp_dataloader.exp_version.exp_path / "platt_scale_params.json"
@@ -235,7 +290,9 @@ def calibration_error(exp_dataloader: ExperimentDataloader, ignore_value=None):
                     platt_scale_file=platt_scale_file,
                     uncertainty=unc_type,
                 )
+
                 ace = calc_ace(rater_correct[ignore_mask], unc_map)
+                global_accum.accumulate(rater_correct[ignore_mask], unc_map)
                 calib_dict[image_id][unc_type] = {"metrics": {"ace": ace}}
                 aces_unc.append(ace)
             else:
@@ -245,9 +302,17 @@ def calibration_error(exp_dataloader: ExperimentDataloader, ignore_value=None):
                     uncertainty=unc_type,
                 )
                 ace = calc_ace(rater_correct.flatten(), unc_map)
+                global_accum.accumulate(rater_correct.flatten(), unc_map)
                 calib_dict[image_id][unc_type] = {"metrics": {"ace": ace}}
                 aces_unc.append(ace)
-        calib_dict["mean"][unc_type] = {"metrics": {"ace": np.mean(np.array(aces_unc))}}
+            """if ace<0.005 and unc_type=="EU":
+                p = "/home/jloch/Desktop/diff/luzern/random_experiments/calib_debug.npy"
+                np.save(p, {"reference_segs": reference_segs, 
+                "pred_seg": pred_seg, 
+                "unc_map": unc_map,
+                "ace": ace})
+                exit()"""
+        calib_dict["mean"][unc_type] = {"metrics": {"ace": np.mean(np.array(aces_unc)), "gace": global_accum.compute_ace()}}
     save_path = exp_dataloader.dataset_path / "calibration.json"
     with open(save_path, "w") as f:
         json.dump(calib_dict, f, indent=2)

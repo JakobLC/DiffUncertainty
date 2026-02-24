@@ -9,18 +9,41 @@ data:
   data_input_dir: ${data_input_dir}
 base_splits_path: "/home/jloch/Desktop/diff/luzern/values_datasets/chaksu128/splits"
 experiments:
-  - ${SWEEP_1}
+  - ${SWEEP_ALL}
+  - ${SWEEP_NONE} 
+  
+SWEEP_NONE:
+  iter_params:
+    shift: [ "scanner" ]
+    pred_model: ["prob_unet", "diffusion", "ssn"]
+    seed: [ "120" ]
+    seed1: [ "0", "1", "2", "3", "4" ]
+    eu: ["none"]
+    cfg: [ "standard" ]
+    data: [ "chaksu128" ]
+  naming_scheme_pred_model: "chaksu128"
+  naming_scheme_version: "{pred_model}_{eu}_{seed1}/e500_ema"
+  aggregations: [ "all" ]
+  fold: 0
+  rank: 5
+  image_ending: ".png"
+  unc_ending: ".tif"
+  n_reference_segs: 5
+  only_pu: false
+  evaluate_training_data: ${evaluate_training_data}
 
-SWEEP_1:
+
+SWEEP_ALL:
   iter_params:
     shift: [ "scanner" ]
     pred_model: ["prob_unet", "diffusion", "ssn", "softmax"]
     seed: [ "120" ]
-    eu: ["ensemble"] #["swag_diag", "swag", "dropout"]
+    seed1: [ "0", "1", "2", "3", "4" ]
+    eu: ["ensemble", "swag_diag", "swag", "dropout"]
     cfg: [ "standard" ]
     data: [ "chaksu128" ]
   naming_scheme_pred_model: "chaksu128"
-  naming_scheme_version: "{pred_model}_{eu}_1/e500_ema"
+  naming_scheme_version: "{pred_model}_{eu}_{seed1}/e500_ema"
   aggregations: [ "all" ]
   fold: 0
   rank: 5

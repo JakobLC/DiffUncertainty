@@ -195,6 +195,12 @@ def test_cli(
             "Skip evaluation when metrics.json already contains a mean entry for the job (best-effort check)."
         ),
     )
+    parser.add_argument(
+        "--discretize",
+        action="store_true",
+        default=False,
+        help="Discretize predictions to hard labels before computing metrics.",
+    )
 
     if extra_args_fn is not None:
         extra_args_fn(parser)

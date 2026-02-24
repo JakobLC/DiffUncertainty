@@ -65,6 +65,7 @@ class Tester:
         args.test_split = normalized_split
         self.test_batch_size = args.test_batch_size
         self.tta = args.tta
+        self.discretize = args.discretize
         self.direct_au = bool(getattr(args, "direct_au", False))
         self.test_dataloader = self.get_test_dataloader(args, hparams)
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -118,6 +119,7 @@ class Tester:
             self.checkpoint_epoch, self.use_ema
         )
         self.metrics_only = bool(getattr(args, "metrics_only", False))
+        self.skip_saving = bool(getattr(args, "skip_saving", False))
         self.create_save_dirs()
         self.skip_existing = bool(getattr(args, "skip_existing", False))
 
@@ -405,9 +407,11 @@ class Tester:
             path_parts.append(self.checkpoint_subdir)
         path_parts.append(self.save_split_name)
         self.save_dir = os.path.join(*path_parts)
-        print(f"saving to results dir {self.save_dir}")
         self.save_pred_dir = os.path.join(self.save_dir, "pred_seg")
         self.save_pred_prob_dir = os.path.join(self.save_dir, "pred_prob")
+        if self.skip_saving:
+            return
+        print(f"saving to results dir {self.save_dir}")
         os.makedirs(self.save_dir, exist_ok=True)
         if not self.metrics_only:
             os.makedirs(self.save_pred_dir, exist_ok=True)
@@ -705,11 +709,11 @@ class Tester:
                     if multiple_generative:
                         softmax_samples = F.softmax(output_samples, dim=2)
                         all_preds["softmax_pred_groups"].append(softmax_samples)
-                        all_preds["softmax_pred"].append(softmax_samples.mean(dim=0))
+                        #all_preds["softmax_pred"].append(softmax_samples.mean(dim=0))
                     else:
                         for output_sample in output_samples:
                             output_softmax = F.softmax(output_sample, dim=1)
-                            all_preds["softmax_pred"].append(output_softmax)
+                            #all_preds["softmax_pred"].append(output_softmax)
                             all_preds["softmax_pred_groups"].append(output_softmax.unsqueeze(0))
                 elif au_type == "diffusion":
                     inputs = batch["data"]
@@ -739,10 +743,10 @@ class Tester:
                     sample_stack = torch.stack(sample_list)
                     if multiple_generative:
                         all_preds["softmax_pred_groups"].append(sample_stack)
-                        all_preds["softmax_pred"].append(sample_stack.mean(dim=0))
+                        #all_preds["softmax_pred"].append(sample_stack.mean(dim=0))
                     else:
                         for sample in sample_stack:
-                            all_preds["softmax_pred"].append(sample)
+                            #all_preds["softmax_pred"].append(sample)
                             all_preds["softmax_pred_groups"].append(sample.unsqueeze(0))
                 elif au_type == "prob_unet" or getattr(model, "prob_unet_enabled", False):
                     inputs = batch["data"]
@@ -754,10 +758,10 @@ class Tester:
                     softmax_stack = torch.softmax(logits_stack, dim=2)
                     if multiple_generative:
                         all_preds["softmax_pred_groups"].append(softmax_stack)
-                        all_preds["softmax_pred"].append(softmax_stack.mean(dim=0))
+                        #all_preds["softmax_pred"].append(softmax_stack.mean(dim=0))
                     else:
                         for sample in softmax_stack:
-                            all_preds["softmax_pred"].append(sample)
+                            #all_preds["softmax_pred"].append(sample)
                             all_preds["softmax_pred_groups"].append(sample.unsqueeze(0))
                 elif self.tta:
                     for index, image in enumerate(batch["data"]):
@@ -769,14 +773,21 @@ class Tester:
                             pred_tensor = torch.flip(output_softmax, [-1])
                         else:
                             pred_tensor = output_softmax
-                        all_preds["softmax_pred"].append(pred_tensor)
+                        #all_preds["softmax_pred"].append(pred_tensor)
                         all_preds["softmax_pred_groups"].append(pred_tensor.unsqueeze(0))
                 else:
                     output = model.forward(batch["data"].to(self.device))
                     output_softmax = F.softmax(output, dim=1)
-                    all_preds["softmax_pred"].append(output_softmax)
+                    #all_preds["softmax_pred"].append(output_softmax)
                     all_preds["softmax_pred_groups"].append(output_softmax.unsqueeze(0))
-        all_preds["softmax_pred"] = torch.stack(all_preds["softmax_pred"])
+        if self.discretize:
+            def _discretize(group):
+                    return F.one_hot(torch.argmax(group, dim=2), num_classes=group.shape[2]).permute(0, 1, 4, 2, 3).float()
+            all_preds["softmax_pred_groups"] = [_discretize(group) for group in all_preds["softmax_pred_groups"]]
+
+        all_preds["softmax_pred"] = torch.stack(all_preds["softmax_pred_groups"]).mean(dim=1)
+        #p1 = torch.stack(all_preds["softmax_pred_groups"])
+        #p2 = all_preds["softmax_pred"]
         return all_preds
 
     def _prepare_raw_batch(self, batch_preds, detach=True, move_to_cpu=True):
@@ -802,11 +813,116 @@ class Tester:
         detach=True,
         move_to_cpu=True,
         show_progress=False,
+        random_seed=None,
+        n_resamples_for_largest=1,
+        skip_saving=False,
     ):
-        """Return unreduced prediction tensors for downstream analysis."""
-        iterator = self.test_dataloader
+        """Return unreduced prediction tensors for downstream analysis.
+        
+        Args:
+            max_batches: Maximum number of batches to process
+            detach: Whether to detach tensors from computation graph
+            move_to_cpu: Whether to move tensors to CPU
+            show_progress: Whether to show progress bar
+            random_seed: Random seed for selecting images. If None, uses sequential order.
+                        If non-negative integer, uses it as seed. If negative, samples a random seed.
+            n_resamples_for_largest: Number of times to resample batches to select ones with largest label areas.
+            skip_saving: If True, suppresses any folder creation or file saving (overrides the
+                         instance-level skip_saving set at construction time).
+        """
+        import random
+        import numpy as np
+
+        # Honour skip_saving even if it wasn't set at construction time
+        if skip_saving:
+            self.skip_saving = True
+
+        # Validate parameters
+        if random_seed is None and n_resamples_for_largest > 1:
+            raise ValueError(
+                f"n_resamples_for_largest={n_resamples_for_largest} requires random_seed to be set. "
+                "Please provide a random_seed value (non-negative integer or negative for auto-sampling)."
+            )
+        
+        # Handle random_seed
+        actual_seed = None
+        if random_seed is not None:
+            if random_seed < 0:
+                # Sample a random seed
+                actual_seed = random.randint(0, 2**31 - 1)
+                print(f"[collect_raw_predictions] Sampled random seed: {actual_seed}")
+            else:
+                actual_seed = random_seed
+        
+        # Get the underlying dataset from the dataloader
+        dataset = self.test_dataloader.dataset
+        dataset_size = len(dataset)
+        
+        # Determine batch size
+        batch_size = self.test_dataloader.batch_size
+        
+        # Determine how many images we need (for the final output)
+        if max_batches is not None:
+            n_batches_needed = max_batches
+            n_images_needed = n_batches_needed * batch_size
+        else:
+            n_batches_needed = len(self.test_dataloader)
+            n_images_needed = n_batches_needed * batch_size
+        
+        # Sample n_images_needed * n_resamples_for_largest candidates (like qualitative_plot_models)
+        n_candidate_images = n_images_needed * n_resamples_for_largest
+        
+        # Sample indices
+        if actual_seed is not None:
+            # Random sampling with seed
+            np.random.seed(actual_seed)
+            random.seed(actual_seed)
+            candidate_indices = np.random.choice(dataset_size, size=n_candidate_images, replace=True)
+        else:
+            # Sequential sampling (original behavior)
+            candidate_indices = np.arange(min(n_candidate_images, dataset_size))
+        
+        # Load candidate samples
+        candidate_samples = [dataset[int(idx)] for idx in candidate_indices]
+        
+        # Helper function to compute label area for a single sample
+        def compute_label_area(sample):
+            return sample['seg'].sum()
+        
+        # Select images based on n_resamples_for_largest
+        if n_resamples_for_largest > 1:
+            # Compute areas for all candidate samples
+            areas = np.array([compute_label_area(sample) for sample in candidate_samples])
+            # Reshape to (n_images_needed, n_resamples_for_largest)
+            areas_matrix = areas.reshape(n_images_needed, n_resamples_for_largest)
+            
+            # Get indices of largest areas across resampling dimension
+            largest_indices = np.argmax(areas_matrix, axis=1)
+            
+            # Reshape candidate_indices similarly and select based on largest_indices
+            candidate_indices_matrix = candidate_indices.reshape(n_images_needed, n_resamples_for_largest)
+            selected_indices = candidate_indices_matrix[np.arange(n_images_needed), largest_indices]
+            
+            # Load the selected samples
+            selected_samples = [dataset[int(idx)] for idx in selected_indices]
+        else:
+            # Just use the first n_images_needed
+            selected_samples = candidate_samples[:n_images_needed]
+        
+        # Collate individual images into batches
+        from torch.utils.data import default_collate
+        selected_batches = []
+        for i in range(0, len(selected_samples), batch_size):
+            batch_samples = selected_samples[i:i+batch_size]
+            if batch_samples:
+                batched = default_collate(batch_samples)
+                selected_batches.append(batched)
+        
+        # Now process the selected batches
+        iterator = selected_batches
         if show_progress:
             iterator = tqdm(iterator)
+        
         results = []
         prev_grad_state = torch.is_grad_enabled()
         torch.set_grad_enabled(False)
@@ -820,8 +936,6 @@ class Tester:
                         move_to_cpu=move_to_cpu,
                     )
                 )
-                if max_batches is not None and batch_idx + 1 >= max_batches:
-                    break
         finally:
             torch.set_grad_enabled(prev_grad_state)
         return results

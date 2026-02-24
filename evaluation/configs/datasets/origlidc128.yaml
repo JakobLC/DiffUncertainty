@@ -1,0 +1,118 @@
+#@package _global_
+defaults:
+  - /../../uncertainty_modeling/configs/data/origlidc128
+  - _self_
+
+data_input_dir: "/home/jloch/Desktop/diff/luzern/values_datasets/origlidc128"
+datamodule_config: ${data}
+data:
+  data_input_dir: ${data_input_dir}
+base_splits_path: "/home/jloch/Desktop/diff/luzern/values_datasets/origlidc128/splits"
+experiments:
+  - ${ENS_SWEEP}
+  - ${NONE_SWEEP}
+  - ${ALL_SWEEP}
+#  - ${CALIB_WEIRD_TEST}
+#  - ${WEIRD_TEST}
+#  - ${FIRST_SWEEP}
+
+
+CALIB_WEIRD_TEST:
+  iter_params:
+    shift: [ "ood_aug" ]
+    pred_model: ["prob_unet"]
+    seed: [ "120" ]
+    seed1: [ "0" ]
+    eu: ["none" ] # , "swag", "swag_diag"]
+    cfg: [ "standard" ]
+    data: [ "origlidc128" ]
+  naming_scheme_pred_model: "origlidc128"
+  naming_scheme_version: "{pred_model}_{eu}_{seed1}_tmp/e1000_ema"
+  aggregations: [ "all" ]
+  fold: 0
+  rank: 5
+  image_ending: ".png"
+  unc_ending: ".tif"
+  n_reference_segs: 4
+  only_pu: false
+  evaluate_training_data: ${evaluate_training_data}
+
+WEIRD_TEST:
+  iter_params:
+    shift: [ "ood_aug" ]
+    pred_model: ["prob_unet"]
+    seed: [ "120" ]
+    seed1: [ "0" ]
+    eu: ["swag", "swag_diag"]
+    cfg: [ "standard" ]
+    data: [ "origlidc128" ]
+  naming_scheme_pred_model: "origlidc128"
+  naming_scheme_version: "TEST_{pred_model}_{eu}_{seed1}/e1000_ema"
+  aggregations: [ "all" ]
+  fold: 0
+  rank: 5
+  image_ending: ".png"
+  unc_ending: ".tif"
+  n_reference_segs: 4
+  only_pu: false
+  evaluate_training_data: ${evaluate_training_data}
+
+ENS_SWEEP:
+  iter_params:
+    shift: [ "ood_aug" ]
+    pred_model:  ["diffusion", "softmax", "ssn" ]
+    seed: [ "120" ]
+    seed1: [ "0" ]  
+    eu: ["ensemble"] #,"ensemble", "dropout" ]
+    cfg: [ "standard" ]
+    data: [ "origlidc128" ]
+  naming_scheme_pred_model: "origlidc128"
+  naming_scheme_version: "{pred_model}_{eu}_{seed1}/e1000_ema"
+  aggregations: [ "all" ]
+  fold: 0
+  rank: 5
+  image_ending: ".png"
+  unc_ending: ".tif"
+  n_reference_segs: 4
+  only_pu: false
+  evaluate_training_data: ${evaluate_training_data}
+
+NONE_SWEEP:
+  iter_params:
+    shift: [ "ood_aug" ]
+    pred_model: ["prob_unet","diffusion", "ssn" ] # no softmax
+    seed: [ "120" ]
+    seed1: [ "0" ]
+    eu: ["none"]
+    cfg: [ "standard" ]
+    data: [ "origlidc128" ]
+  naming_scheme_pred_model: "origlidc128"
+  naming_scheme_version: "{pred_model}_{eu}_{seed1}/e1000_ema"
+  aggregations: [ "all" ]
+  fold: 0
+  rank: 5
+  image_ending: ".png"
+  unc_ending: ".tif"
+  n_reference_segs: 4
+  only_pu: false
+  evaluate_training_data: ${evaluate_training_data}
+
+ALL_SWEEP:
+  iter_params:
+    shift: [ "ood_aug" ]
+    pred_model:  ["prob_unet", "diffusion", "softmax", "ssn" ]
+    seed: [ "120" ]
+    seed1: [ "0" ]  
+    eu: ["dropout", "swag", "swag_diag"] #,"ensemble", "dropout" ]
+    cfg: [ "standard" ]
+    data: [ "origlidc128" ]
+  naming_scheme_pred_model: "origlidc128"
+  naming_scheme_version: "{pred_model}_{eu}_{seed1}/e1000_ema"
+  aggregations: [ "all" ]
+  fold: 0
+  rank: 5
+  image_ending: ".png"
+  unc_ending: ".tif"
+  n_reference_segs: 4
+  only_pu: false
+  evaluate_training_data: ${evaluate_training_data}

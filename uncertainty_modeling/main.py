@@ -11,6 +11,7 @@ import random
 
 import pytorch_lightning as pl
 from pytorch_lightning.callbacks import ModelCheckpoint
+from pytorch_lightning.utilities.rank_zero import rank_zero_info
 from omegaconf import DictConfig, OmegaConf, open_dict
 from uncertainty_modeling.callbacks import ScheduledCheckpointCallback
 from uncertainty_modeling.callbacks import GracefulShutdownCallback
@@ -229,40 +230,23 @@ def main(cfg_hydra: DictConfig):
 
     model = LightningExperiment(config, **config)
 
-    # Resolve checkpoint path: prefer explicit ckpt_path, otherwise use
-    # resume_from_ckpt (relative to the current version directory) if provided.
-    ckpt_path = None
-    try:
-        if "ckpt_path" in config and config.ckpt_path is not None and str(config.ckpt_path) != "null":
-            ckpt_path = str(config.ckpt_path)
-    except Exception:
-        ckpt_path = None
+    # ckpt_path: just load weights, don't pass to trainer
+    if "ckpt_path" in config and config.ckpt_path is not None and str(config.ckpt_path) != "null":
+        checkpoint = torch.load(config.ckpt_path, map_location="cpu", weights_only=False)
+        model.load_state_dict(checkpoint.get("state_dict", checkpoint), strict=False)
+        rank_zero_info(f"Loaded weights from {config.ckpt_path}")
 
-    # Minimal mapping from resume_from_ckpt (relative) to an absolute ckpt_path
-    if ckpt_path is None and hasattr(config, "resume_from_ckpt"):
-        rel = str(config.resume_from_ckpt or "").strip()
-        if rel not in ["", "null"]:
-            if config.version is None:
-                raise ValueError("resume_from_ckpt is set but config.version is None. A version must be specified to resume.")
+    # resume_from_ckpt: pass to trainer for full resume
+    resume_path = None
+    if hasattr(config, "resume_from_ckpt") and config.resume_from_ckpt not in [None, "", "null"]:
+        if config.version is None:
+            raise ValueError("resume_from_ckpt requires config.version to be set")
+        version_dir = logger.log_dir if hasattr(logger, "log_dir") and logger.log_dir else os.path.join(config.save_dir, str(config.version))
+        resume_path = os.path.join(version_dir, config.resume_from_ckpt)
+        if not os.path.exists(resume_path):
+            raise FileNotFoundError(f"resume_from_ckpt '{resume_path}' does not exist")
 
-            # Use the logger's version directory as the base for relative checkpoints
-            if hasattr(logger, "log_dir") and logger.log_dir is not None:
-                version_dir = logger.log_dir
-            else:
-                # Fallback: construct from save_dir and version
-                if wandb_logger_requested:
-                    version_dir = getattr(config, "save_dir", os.getcwd())
-                else:
-                    base_save_dir = getattr(config, "save_dir", os.getcwd())
-                    version_str = str(config.version)
-                    version_dir = os.path.join(base_save_dir, version_str)
-
-            candidate = os.path.join(version_dir, rel)
-            if not os.path.exists(candidate):
-                raise FileNotFoundError(f"resume_from_ckpt '{candidate}' does not exist.")
-            ckpt_path = candidate
-
-    trainer.fit(model, datamodule=dm, ckpt_path=ckpt_path)
+    trainer.fit(model, datamodule=dm, ckpt_path=resume_path)
 
 
 if __name__ == "__main__":

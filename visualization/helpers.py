@@ -12,7 +12,14 @@ import sys
 import torch
 from matplotlib.colors import LinearSegmentedColormap
 import os
+import copy
 from PIL import Image
+from scipy import ndimage
+import csv
+import warnings
+import pickle
+from mpl_toolkits.axes_grid1 import make_axes_locatable
+
 sys.path.append("/home/jloch/Desktop/diff/luzern/values")
 sys.path.append("/home/jloch/Desktop/diff/luzern/values/uncertainty_modeling/")
 from uncertainty_modeling.test_2D import test_cli, Tester
@@ -34,12 +41,15 @@ def load_result_table(epoch=320,
                 save_path = "/home/jloch/Desktop/diff/luzern/values/saves/ood_aug/test_results/",
                 aggregation_type="patch_level",
                 split_as_dict = True,
-                swap_AU_EU = False):
+                swap_AU_EU = False,
+                add_avg_ood = False,
+                gace_instead_of_ace = False,):
+    ace = "gace" if gace_instead_of_ace else "ace"
     table = pd.DataFrame()
     first_aggr_check = True
     for values in product(*loop_params.values()):
         add_dict = dict(zip(loop_params.keys(),values))
-        version = formatter.format(**add_dict)#.replace("ensemble","ens12[1,2,3,4,5]")
+        version = formatter.format(**add_dict)
         if not (Path(f"{save_path}")/version).exists():
             print("Skipping missing version:", version)
             continue
@@ -75,9 +85,9 @@ def load_result_table(epoch=320,
         p = f"{save_path}{version}/e{epoch}{ema}/id/calibration.json"
         with open(p, "r") as f:
             loaded = json.load(f)
-        add_dict["EU_ace_id"] = loaded["mean"][EU]["metrics"]["ace"]
-        add_dict["AU_ace_id"] = loaded["mean"][AU]["metrics"]["ace"]
-        add_dict["TU_ace_id"] = loaded["mean"][TU]["metrics"]["ace"]
+        add_dict["EU_ace_id"] = loaded["mean"][EU]["metrics"][ace]
+        add_dict["AU_ace_id"] = loaded["mean"][AU]["metrics"][ace]
+        add_dict["TU_ace_id"] = loaded["mean"][TU]["metrics"][ace]
         p = f"{save_path}{version}/e{epoch}{ema}/ood_detection.json"
         with open(p, "r") as f:
             loaded = json.load(f)
@@ -103,9 +113,9 @@ def load_result_table(epoch=320,
                 k2 = p.parts[-2]
                 with open(p, "r") as f:
                     loaded = json.load(f)
-                add_dict[f"EU_ace_{k2}"] = loaded["mean"][EU]["metrics"]["ace"]
-                add_dict[f"AU_ace_{k2}"] = loaded["mean"][AU]["metrics"]["ace"]
-                add_dict[f"TU_ace_{k2}"] = loaded["mean"][TU]["metrics"]["ace"]
+                add_dict[f"EU_ace_{k2}"] = loaded["mean"][EU]["metrics"][ace]
+                add_dict[f"AU_ace_{k2}"] = loaded["mean"][AU]["metrics"][ace]
+                add_dict[f"TU_ace_{k2}"] = loaded["mean"][TU]["metrics"][ace]
         else:
             add_dict["EU_auc"] = loaded["mean"][EU][aggregation_type]["metrics"]["auroc"]
             add_dict["AU_auc"] = loaded["mean"][AU][aggregation_type]["metrics"]["auroc"]
@@ -119,9 +129,9 @@ def load_result_table(epoch=320,
             p = f"{save_path}{version}/e{epoch}{ema}/ood/calibration.json"
             with open(p, "r") as f:
                 loaded = json.load(f)
-            add_dict["EU_ace_ood"] = loaded["mean"][EU]["metrics"]["ace"]
-            add_dict["AU_ace_ood"] = loaded["mean"][AU]["metrics"]["ace"]
-            add_dict["TU_ace_ood"] = loaded["mean"][TU]["metrics"]["ace"]
+            add_dict["EU_ace_ood"] = loaded["mean"][EU]["metrics"][ace]
+            add_dict["AU_ace_ood"] = loaded["mean"][AU]["metrics"][ace]
+            add_dict["TU_ace_ood"] = loaded["mean"][TU]["metrics"][ace]
         table = pd.concat([table, pd.DataFrame([add_dict])], ignore_index=True)
     #raise error incase table is empty
     if table.empty:
@@ -168,7 +178,12 @@ def load_result_table(epoch=320,
             if not matched:
                 new_table[col] = table[col]
         table = new_table
-
+        if add_avg_ood:
+            for col in table.columns:
+                item0 = table[col][0]
+                if isinstance(item0, dict) and any(k in item0 for k in valid_ood_keys):
+                    for i in range(len(table)):
+                        table.at[i, col]["ood"] = sum(table.at[i, col][k] for k in valid_ood_keys) / len(valid_ood_keys)
     return table
 
 def entropy(probs, dim=1, eps=1e-8):
@@ -220,7 +235,7 @@ def apply_colormap_tensor(
 
 def _get_colors(num_classes: int, device, dtype) -> torch.Tensor:
     # repeats the same bright saturated colors
-    base_cmap = ["#000000", "#ff00a2", "#34ff30","#f24b4d", "#81c2f7", "#7300ff", "#ff7f00", "#ffff33", "#a65628", "#f781bf"]
+    base_cmap = ["#000000", "#ff69b7", "#5c00c5","#f24b4d", "#392cef", "#7300ff", "#ff7f00", "#ffff33", "#a65628", "#f781bf"]
     colors = []
     for i in range(num_classes):
         color_hex = base_cmap[i % len(base_cmap)]
@@ -288,20 +303,118 @@ def prepare_image_tensor(image_data) -> torch.Tensor:
 
 def pred_grid_computation(ckpt_path = "/home/jloch/Desktop/diff/luzern/values/saves/lidc64/diffusion_swag/checkpoints/last.ckpt",
                           split = "id_test",
-                          test_batch_size = 16):
-    args.checkpoint_paths = [ckpt_path]
+                          test_batch_size = 16,
+                          special_eu = None,
+                          n_pred=None,
+                          random_seed=None,
+                          n_resamples_for_largest=1,
+                          discretize=False,
+                          n_models=10,
+                          skip_saving=True,
+                          ):
+    # Validate parameters
+    if random_seed is None and n_resamples_for_largest > 1:
+        raise ValueError(
+            f"n_resamples_for_largest={n_resamples_for_largest} requires random_seed to be set. "
+            "Please provide a random_seed value (non-negative integer or negative for auto-sampling)."
+        )
+    
+    if special_eu:
+        assert isinstance(ckpt_path,str), "For special EU cases, ckpt_path should be a single checkpoint string, not a list."
+        assert special_eu in ["swag_diag", "none", "ensemble"], f"Got unsupported special_eu: {special_eu}"
+        if special_eu=="ensemble":
+            assert "*" in ckpt_path, "For ensemble special_eu, ckpt_path should contain a wildcard '*' to match multiple checkpoints."
+            args.ensemble_mode = True
+            args.checkpoint_paths = [ckpt_path.replace("*", str(i)) for i in range(5)]
+        elif special_eu=="swag_diag":
+            assert "swag" in ckpt_path, "For swag_diag special_eu, ckpt_path should contain 'swag' to indicate the specific checkpoint."
+            args.swag_low_rank_cov = True
+            args.checkpoint_paths = [ckpt_path]
+        elif special_eu=="none":
+            args.direct_au = True
+            args.checkpoint_paths = [ckpt_path]
+    else:      
+        args.ensemble_mode = isinstance(ckpt_path, list)
+        args.checkpoint_paths = [ckpt_path] if not isinstance(ckpt_path, list) else ckpt_path
     args.test_split = split
+    args.n_models = n_models
+    args.discretize = discretize
     args.test_batch_size = test_batch_size
+    if n_pred is not None:
+        args.n_pred = n_pred
+    args.skip_saving = skip_saving
     tester = Tester(args)
-    raw_batches = tester.collect_raw_predictions(max_batches=1)
+    raw_batches = tester.collect_raw_predictions(max_batches=1, random_seed=random_seed, n_resamples_for_largest=n_resamples_for_largest, skip_saving=skip_saving)
 
     batch0 = raw_batches[0]
-    data = Path(ckpt_path).parts[-4]
+    if isinstance(ckpt_path,list):
+        data = Path(ckpt_path[0]).parts[-4]
+    else:
+        data = Path(ckpt_path).parts[-4]
     p = f"/home/jloch/Desktop/diff/luzern/values_datasets/{data}/preprocessed/images/{{id}}.npy"
     images = [np.load(p.format(id=f"{batch0['image_id'][i]}")) for i in range(len(batch0["image_id"]))]
     return images, batch0
 
-def plot_pred_grid(images, batch0, i=0, crop_unused=False, s=1.3, entropy_cmap="viridis"):
+def plot_grid_arrow(ax, row, col, direction, grid_w_unit, grid_h_unit, s=1.3, letter=None, color=[0.5]*3):
+    """Plot an arrow at grid position (row, col) with optional letter overlay.
+    
+    Args:
+        ax: matplotlib axis
+        row: row index (0-based) in the grid
+        col: column index (0-based) in the grid
+        direction: 'right', 'left', 'down', or 'up'
+        grid_w_unit: width of one grid cell in pixels
+        grid_h_unit: height of one grid cell in pixels
+        s: scale factor for arrow and text
+        letter: optional letter to display on top of arrow (e.g., 'E', 'H')
+        color: arrow color
+    """
+    directions = {
+        'right': (0.2, 0.5, 0.6, 0),
+        'left': (0.8, 0.5, -0.6, 0),
+        'down': (0.5, 0.2, 0, 0.6),
+        'up': (0.5, 0.8, 0, -0.6),
+    }
+    
+    if direction not in directions:
+        raise ValueError(f"direction must be one of {list(directions.keys())}")
+    
+    x_offset, y_offset, dx_frac, dy_frac = directions[direction]
+    
+    x = grid_w_unit * (col + x_offset)
+    y = grid_h_unit * (row + y_offset)
+    dx = grid_w_unit * dx_frac
+    dy = grid_h_unit * dy_frac
+    
+    ax.arrow(
+        x=x,
+        y=y,
+        dx=dx,
+        dy=dy,
+        width=2,
+        head_width=grid_h_unit * 0.2,
+        head_length=grid_w_unit * 0.2,
+        length_includes_head=True,
+        color=color
+    )
+    
+    if letter:
+        text_x = x + dx * 0.33
+        text_y = y + dy * 0.33
+        ax.text(
+            x=text_x,
+            y=text_y,
+            s=letter,
+            fontname="STIXGeneral",
+            color="black",
+            fontsize=14*s,
+            ha="center",
+            va="center",
+            path_effects=[pe.withStroke(linewidth=2, foreground=(1, 1, 1, 0.6))]
+        )
+
+def plot_pred_grid(images, batch0, i=0, crop_unused=False, s=1.3, entropy_cmap="viridis", 
+                   setup_v2=False, save_path=None):
     image = prepare_image_tensor(images[i])
 
     pred = torch.stack(batch0["softmax_pred_groups"], dim=0).float().cpu()
@@ -328,75 +441,117 @@ def plot_pred_grid(images, batch0, i=0, crop_unused=False, s=1.3, entropy_cmap="
     pred_cropped = per_image_preds[:, :, :, d1, d2].contiguous()
     num_classes = max(int(pred_cropped.shape[2]), 1)
     entropy_vmin = 0.0
-    entropy_vmax = math.log(num_classes)
+    entropy_vmax = math.log(2)
+    print(batch0["softmax_pred"].shape)
     E_y_p_full = batch0["softmax_pred"].float().cpu()[:, i, :, d1, d2].contiguous()
     image = image[:, d1, d2]
     image_display = format_image_tensor_for_display(image)
-    n_AU, n_EU = pred_cropped.shape[:2]
-    if n_EU < 4:
-        raise ValueError("plot_pred_grid expects at least 4 EU samples to render the layout.")
-    grid_dims = (n_AU + 2, n_EU + 4)
+    n_EU, n_AU = pred_cropped.shape[:2]
+    if n_AU < 4:
+        n_pad_images = 4 - n_AU
+    if setup_v2:
+        grid_dims = (n_EU + 4, n_AU + 4)
+    else:
+        grid_dims = (n_EU + 2, n_AU + 4)
     height, width = pred_cropped.shape[-2:]
-    blank_tile = torch.ones((3, height, width), dtype=pred_cropped.dtype)
+    # Create RGBA blank tile with alpha = 0
+    blank_tile = torch.zeros((4, height, width), dtype=pred_cropped.dtype)
+    blank_tile[:3] = 1.0  # RGB = white
+    blank_tile[3] = 0.0   # Alpha = 0 (transparent)
 
     H_E_y_p = entropy(E_y_p_full, dim=1)
     AU_map = H_E_y_p.mean(0, keepdim=True)
     E_th_E_y_p = E_y_p_full.mean(0, keepdim=True)
     TU_map = entropy(E_th_E_y_p, dim=1)
     EU_map = TU_map - AU_map
-
+    _to_cmap = lambda x: apply_colormap_tensor(
+        x.squeeze(0),
+        cmap_name=entropy_cmap,
+        vmin=entropy_vmin,
+        vmax=entropy_vmax,
+    )
+    print(E_y_p_full.shape,n_EU,n_AU)
     grid_rows = []
-    for au_idx in range(n_AU):
+    for eu_idx in range(n_EU):
         row_tiles = []
-        for eu_idx in range(n_EU):
-            row_tiles.append(prediction_to_display(pred_cropped[au_idx, eu_idx]))
+        for au_idx in range(n_AU):
+            # Convert RGB to RGBA for predictions
+            pred_rgb = prediction_to_display(pred_cropped[eu_idx, au_idx])
+            pred_rgba = torch.cat([pred_rgb, torch.ones((1, height, width))], dim=0)
+            row_tiles.append(pred_rgba)
         row_tiles.append(blank_tile.clone())
-        row_tiles.append(prediction_to_display(E_y_p_full[au_idx]))
+        pred_rgb = prediction_to_display(E_y_p_full[eu_idx])
+        pred_rgba = torch.cat([pred_rgb, torch.ones((1, height, width))], dim=0)
+        row_tiles.append(pred_rgba)
         row_tiles.append(blank_tile.clone())
-        row_tiles.append(
-            apply_colormap_tensor(
-                H_E_y_p[au_idx],
-                cmap_name=entropy_cmap,
-                vmin=entropy_vmin,
-                vmax=entropy_vmax,
-            )
-        )
+        entropy_rgb = _to_cmap(H_E_y_p[eu_idx])
+        entropy_rgba = torch.cat([entropy_rgb, torch.ones((1, height, width))], dim=0)
+        row_tiles.append(entropy_rgba)
         grid_rows.append([tile.detach().cpu() for tile in row_tiles])
 
+    # Convert image_display to RGBA
+    image_rgba = torch.cat([image_display, torch.ones((1, height, width))], dim=0)
     grid_rows.append([blank_tile.clone().detach().cpu() for _ in range(grid_dims[1])])
+    if setup_v2:
+        # Convert to RGBA for bottom rows
+        pred_rgb = prediction_to_display(E_th_E_y_p.squeeze(0))
+        pred_rgba = torch.cat([pred_rgb, torch.ones((1, height, width))], dim=0)
+        au_rgb = _to_cmap(AU_map)
+        au_rgba = torch.cat([au_rgb, torch.ones((1, height, width))], dim=0)
+        
+        bottom_rows = [[blank_tile.clone() for _ in range(n_AU + 1)]+[
+            pred_rgba,
+            blank_tile.clone(),
+            au_rgba
+            ]]
+        bottom_rows.append([blank_tile.clone() for _ in range(n_AU + 4)])
+        
+        tu_rgb = _to_cmap(TU_map)
+        tu_rgba = torch.cat([tu_rgb, torch.ones((1, height, width))], dim=0)
+        eu_rgb = _to_cmap(EU_map)
+        eu_rgba = torch.cat([eu_rgb, torch.ones((1, height, width))], dim=0)
+        
+        bottom_rows.append([image_rgba]+[blank_tile.clone() for _ in range(n_AU)]+[
+            tu_rgba,
+            blank_tile.clone(),
+            eu_rgba
+            ])
 
-    bottom_row = [image_display]
-    bottom_row.extend([blank_tile.clone() for _ in range(n_EU - 4)])
-    bottom_row.extend([
-        apply_colormap_tensor(
-            EU_map.squeeze(0),
-            cmap_name=entropy_cmap,
-            vmin=entropy_vmin,
-            vmax=entropy_vmax,
-        ),
-        blank_tile.clone(),
-        apply_colormap_tensor(
-            TU_map.squeeze(0),
-            cmap_name=entropy_cmap,
-            vmin=entropy_vmin,
-            vmax=entropy_vmax,
-        ),
-        blank_tile.clone(),
-        prediction_to_display(E_th_E_y_p.squeeze(0)),
-        blank_tile.clone(),
-        apply_colormap_tensor(
-            AU_map.squeeze(0),
-            cmap_name=entropy_cmap,
-            vmin=entropy_vmin,
-            vmax=entropy_vmax,
-        ),
-    ])
-    grid_rows.append([tile.detach().cpu() for tile in bottom_row])
-
-    assert len(grid_rows) == grid_dims[0]
-    for row in grid_rows:
-        assert len(row) == grid_dims[1]
-
+        for bottom_row in bottom_rows:
+            grid_rows.append([tile.detach().cpu() for tile in bottom_row])
+    else:
+        bottom_row = [image_rgba]
+        bottom_row.extend([blank_tile.clone() for _ in range(n_AU - 4)])
+        
+        # Convert all bottom row elements to RGBA
+        eu_rgb = _to_cmap(EU_map)
+        eu_rgba = torch.cat([eu_rgb, torch.ones((1, height, width))], dim=0)
+        
+        tu_rgb = _to_cmap(TU_map)
+        tu_rgba = torch.cat([tu_rgb, torch.ones((1, height, width))], dim=0)
+        
+        pred_rgb = prediction_to_display(E_th_E_y_p.squeeze(0))
+        pred_rgba = torch.cat([pred_rgb, torch.ones((1, height, width))], dim=0)
+        
+        au_rgb = _to_cmap(AU_map)
+        au_rgba = torch.cat([au_rgb, torch.ones((1, height, width))], dim=0)
+        
+        bottom_row.extend([
+            eu_rgba,
+            blank_tile.clone(),
+            tu_rgba,
+            blank_tile.clone(),
+            pred_rgba,
+            blank_tile.clone(),
+            au_rgba,
+        ])
+        grid_rows.append([tile.detach().cpu() for tile in bottom_row])
+        assert len(grid_rows) == grid_dims[0]
+        if n_AU < 4:
+            blank_image_list = [blank_tile.clone().detach().cpu()]
+            grid_rows.extend(copy.deepcopy(grid_rows[-2:]))
+            grid_rows[-3] = blank_image_list*(n_AU+4-len(grid_rows[-3])+3) + grid_rows[-3][3:]
+            grid_rows[-1] = [grid_rows[-1][0]]+blank_image_list+[grid_rows[-1][1]]+blank_image_list*(n_AU+4-3)
     tiles = [tile.float() for row in grid_rows for tile in row]
     grid_stack = torch.stack(tiles, dim=0)
 
@@ -407,135 +562,90 @@ def plot_pred_grid(images, batch0, i=0, crop_unused=False, s=1.3, entropy_cmap="
         value_range=[0, 1],
         pad_value=1,
     )
+    # Set alpha channel of padding to 0 (transparent)
+    # The padding appears as white (RGB=1) in channels 0-2, so set alpha=0 where RGB is all white
+    padding_mask = (grid2[0] == 1) & (grid2[1] == 1) & (grid2[2] == 1)
+    grid2[3, padding_mask] = 0
+    
     grid_img = grid2.permute(1, 2, 0).numpy()
     grid_h, grid_w = grid_img.shape[:2]
     grid_w_unit = grid_w / grid_dims[1]
     grid_h_unit = grid_h / grid_dims[0]
-
     # plot
-    plt.figure(figsize=(8 * s, 8 * s))
-    plt.imshow(grid_img)
-    plt.axis("off")
-    #plot a sequence of arrows to indicate direction from left (model samples) to right (ensemble)
+    fig, ax = plt.subplots(figsize=(8 * s, 8 * s))
+    ax.imshow(grid_img, interpolation='nearest', resample=False)
+    ax.axis("off")
+    
+    # Plot arrows using utility function
+    for j in range(n_EU):
+        # Arrow at column (n_AU + 0) pointing right with letter 'E'
+        plot_grid_arrow(ax, j, n_AU + 0, 'right', grid_w_unit, grid_h_unit, s=s, letter='E')
+        # Arrow at column (n_AU + 2) pointing right with letter 'H'
+        plot_grid_arrow(ax, j, n_AU + 2, 'right', grid_w_unit, grid_h_unit, s=s, letter='H')
+    if not setup_v2:
+        pos_to_title = {"top_row": {n_AU*1/6: "Varying AU \u2192", 
+                                    n_AU*1/2: "$p=p(y|x,\\theta)$", 
+                                    grid_dims[1]-2.5: "$E_y[p]$",
+                                    grid_dims[1]-0.5: "$H(E_y[p])$"},
+                        "left_col": {n_EU*1/6: "\u2190 Varying EU ($\\theta$)"},
+                        "btm_row": {grid_dims[1]-6.5: "$EU=TU-AU$\n(MI)",
+                                    grid_dims[1]-4.5: "$H(E_{\\theta}[E_y[p]])$\nTU",
+                                    grid_dims[1]-2.5: "$E_{\\theta}[E_y[p]]$",
+                                    grid_dims[1]-0.5: "$E_{\\theta}[H(E_y[p])]$\nAU"},
+                                    }
 
-    for j in range(10):
-        arrow_x_positions = [
-            grid_w_unit * (grid_dims[1] - 4 + 0.2),
-            grid_w_unit * (grid_dims[1] - 2 + 0.2),
-        ]
-        for x, letter in zip(arrow_x_positions, ["E", "H"]):
-            plt.arrow(
-                x=x,
-                y=grid_h_unit * (j + 0.5),
-                dx=grid_w_unit * 0.6,
-                dy=0,
-                width=2,
-                head_width=grid_h_unit * 0.2,
-                head_length=grid_w_unit * 0.2,
-                length_includes_head=True,
-                color="black"
-            )
-            #plt expectation "E" ontop of arrows
-            plt.text(
-                x=x + grid_w_unit * 0.2,
-                y=grid_h_unit * (j + 0.5),
-                s=letter,
-                color="white",
-                fontsize=14*s,
+        fontsize = 10
+        for pos, title in pos_to_title["top_row"].items():
+            ax.text(
+                x=pos * grid_w_unit,
+                y=0,
+                s=title,
+                color="black",
+                fontsize=fontsize*s,
                 ha="center",
+                va="bottom",
+            )
+        for pos, title in pos_to_title["left_col"].items():
+            ax.text(
+                x=0,
+                y=pos * grid_h_unit,
+                s=title,
+                color="black",
+                fontsize=fontsize*s,
+                ha="right",
                 va="center",
-                path_effects=[pe.withStroke(linewidth=2, foreground="black")]
+                rotation=90,
+            )
+        for pos, title in pos_to_title["btm_row"].items():
+            ax.text(
+                x=pos * grid_w_unit,
+                y=grid_h,
+                s=title,
+                color="black",
+                fontsize=fontsize*s,
+                ha="center",
+                va="top",
             )
 
-    pos_to_title = {"top_row": {n_AU*1/6: "Varying AU \u2192", 
-                                n_AU*1/2: "$p=p(y|x,\\theta)$", 
-                                grid_dims[1]-2.5: "$E_y[p]$",
-                                grid_dims[1]-0.5: "$H(E_y[p])$"},
-                    "left_col": {n_EU*1/6: "\u2190 Varying EU ($\\theta$)"},
-                    "btm_row": {grid_dims[1]-6.5: "$EU=TU-AU$\n(MI)",
-                                grid_dims[1]-4.5: "$H(E_{\\theta}[E_y[p]])$\nTU",
-                                grid_dims[1]-2.5: "$E_{\\theta}[E_y[p]]$",
-                                grid_dims[1]-0.5: "$E_{\\theta}[H(E_y[p])]$\nAU"},
-                                }
+    # Add down arrows below each column using utility function
+    # Arrow at column (n_AU + 1) pointing down with letter 'E'
+    plot_grid_arrow(ax, n_EU, n_AU + 1, 'down', grid_w_unit, grid_h_unit, s=s, letter='E')
+    # Arrow at column (n_AU + 3) pointing down with letter 'E'
+    plot_grid_arrow(ax, n_EU, n_AU + 3, 'down', grid_w_unit, grid_h_unit, s=s, letter='E')
+    
+    # Arrow pointing left with letter 'H'
+    if setup_v2:
+        plot_grid_arrow(ax, n_EU + 2, n_AU+1, 'down', grid_w_unit, grid_h_unit, s=s, letter='H')
+        plot_grid_arrow(ax, n_EU + 2, n_AU+3, 'down', grid_w_unit, grid_h_unit, s=s*1.3, letter='\u2212')
+        plot_grid_arrow(ax, n_EU + 3, n_AU+2, 'right', grid_w_unit, grid_h_unit, s=s*1.3, letter='+')
 
-    fontsize = 10
-    for pos, title in pos_to_title["top_row"].items():
-        plt.text(
-            x=pos * grid_w_unit,
-            y=0,
-            s=title,
-            color="black",
-            fontsize=fontsize*s,
-            ha="center",
-            va="bottom",
-        )
-    for pos, title in pos_to_title["left_col"].items():
-        plt.text(
-            x=0,
-            y=pos * grid_h_unit,
-            s=title,
-            color="black",
-            fontsize=fontsize*s,
-            ha="right",
-            va="center",
-            rotation=90,
-        )
-    for pos, title in pos_to_title["btm_row"].items():
-        plt.text(
-            x=pos * grid_w_unit,
-            y=grid_h,
-            s=title,
-            color="black",
-            fontsize=fontsize*s,
-            ha="center",
-            va="top",
-        )
-
-    # add down arrows below each column
-    for j in range(2):
-        plt.arrow(
-            x=grid_w_unit * (grid_dims[1] - 2.5 + j * 2),
-            y=grid_h_unit * (n_EU + 0.2),
-            dx=0,
-            dy=grid_w_unit * 0.6,
-            width=2,
-            head_width=grid_h_unit * 0.2,
-            head_length=grid_w_unit * 0.2,
-            length_includes_head=True,
-            color="black"
-        )
-        plt.text(
-            x=grid_w_unit * (grid_dims[1] - 2.5 + j * 2),
-            y=grid_h_unit * (n_EU + 0.2) + grid_w_unit * 0.2,
-            s="E",
-            color="white",
-            fontsize=14*s,
-            ha="center",
-            va="center",
-            path_effects=[pe.withStroke(linewidth=2, foreground="black")]
-        )
-    plt.arrow(
-        x=grid_w_unit * (grid_dims[1] - 4 + 0.4) + grid_w_unit * 0.4,
-        y=grid_h_unit * 11.5,
-        dx=-grid_w_unit * 0.6,
-        dy=0,
-        width=2,
-        head_width=grid_h_unit * 0.2,
-        head_length=grid_w_unit * 0.2,
-        length_includes_head=True,
-        color="black"
-    )
-    plt.text(
-        x=grid_w_unit * (grid_dims[1] - 4 + 0.2) + grid_w_unit * 0.4,
-        y=grid_h_unit * 11.5,
-        s="H",
-        color="white",
-        fontsize=14*s,
-        ha="center",
-        va="center",
-        path_effects=[pe.withStroke(linewidth=2, foreground="black")]
-    )
+    else:
+        plot_grid_arrow(ax, n_EU + 1, n_AU, 'left', grid_w_unit, grid_h_unit, s=s, letter='H')
+    
     plt.tight_layout()
+    if save_path:
+        replace_images_with_corner_markers(fig, save_images="pred_grid_images")
+        plt.savefig(save_path)
 
 def get_bbox_col(matrix, value, is_ace):
     # get min and max of matrix
@@ -625,7 +735,7 @@ def plot_metric_matrix(table,
         for (j, col_label) in enumerate(matrix.columns):
             value = matrix.loc[row_label, col_label]
             if reldiff:
-                bg_box_color = get_bbox_col(reldiff_matrix,reldiff_matrix.loc[row_label, col_label], is_ace="ace" in metric)
+                bg_box_color = get_bbox_col(reldiff_matrix,reldiff_matrix.loc[row_label, col_label], is_ace=ace in metric)
                 ax.text(j,i, f"{-reldiff_matrix.loc[row_label, col_label]:+.1%}",
                 ha="center", va="top",
                 fontsize=plt.rcParams["font.size"] * 1.3,
@@ -1140,17 +1250,18 @@ def plot_scatter_grid(table,
         kwarg_list = [
             [{"only_legend": True},
             {"x": "EU_ncc[id]", "y": "AU_ncc[id]", "xlabel": "EU NCC", "ylabel": "AU NCC →",
-             "title": "Ambiguity Modeling (ID)", "equal_scaling": True, "plot_legend": False},
-            {"x": "AU_ace[id]", "y": "TU_ace[id]", "entangle_is_up": True, "xlabel": "AU ACE", "ylabel": "TU ACE ←",
-             "title": "Calibration (ID)", "equal_scaling": True, "ignore_for_axis": {"EU": ["none"]},"plot_legend": False}],
+             "title": "Ambiguity Modeling (id)", "equal_scaling": True, "plot_legend": False},
+            {"x": "min(AU,EU)_ace[id]", "y": "TU_ace[id]", "entangle_is_up": True, "xlabel": "min(AU,EU) ACE", "ylabel": "TU ACE ←",
+             "title": "Calibration (id)", "equal_scaling": True, "ignore_for_axis": {"EU": ["none"]},"plot_legend": False}],
             [{"x": "AU_auc[ood]", "y": "EU_auc[ood]", "xlabel": "AU AUC", "ylabel": "EU AUC →", 
              "title": "Out-of-Distribution Detection", "equal_scaling": True, "plot_legend": False},
             {"x": "EU_ncc[ood]", "y": "AU_ncc[ood]", "xlabel": "EU NCC", "ylabel": "AU NCC →",
-             "title": "Ambiguity Modeling (OOD)", "equal_scaling": True, "plot_legend": False},
-            {"x": "AU_ace[ood]", "y": "TU_ace[ood]", "entangle_is_up": True, "xlabel": "AU ACE", "ylabel": "TU ACE ←",
-             "title": "Calibration (OOD)", "equal_scaling": True, "ignore_for_axis": {"EU": ["none"]},"plot_legend": False}]
+             "title": "Ambiguity Modeling (ood)", "equal_scaling": True, "plot_legend": False},
+            {"x": "min(AU,EU)_ace[ood]", "y": "TU_ace[ood]", "entangle_is_up": True, "xlabel": "min(AU,EU) ACE", "ylabel": "TU ACE ←",
+             "title": "Calibration (ood)", "equal_scaling": True, "ignore_for_axis": {"EU": ["none"]},"plot_legend": False}]
         ]
-    
+        #kwarg_list[0][2]["x"] = "AU_ace[id]"
+        #kwarg_list[1][2]["x"] = "AU_ace[id]"
     # Detect if kwarg_list is 1D or 2D
     is_2d = isinstance(kwarg_list[0], list)
     
@@ -1196,43 +1307,6 @@ def plot_scatter_grid(table,
         fig.savefig(save_path)
     return outputs
 
-
-"""
-import pickle
-from pathlib import Path
-import numpy as np
-import matplotlib.pyplot as plt
-p = "/home/jloch/Desktop/diff/luzern/values_datasets/origlidc128/splits/ood_aug/firstCycle/splits.pkl"
-with open(p, "rb") as f:
-    splits = pickle.load(f)
-p = "/home/jloch/Desktop/diff/luzern/values_datasets/origlidc128/preprocessed/images"
-pools_show = ["train","ood_contrast"]
-n_images_per_pool = 10
-m = len(pools_show)
-#plot a m x n grid of images
-concat_image = []
-for pool in pools_show:
-    pool_images = []
-    pool_labels = []
-    for i in range(n_images_per_pool):
-        img_path = np.random.choice(splits[0][pool])
-        img = np.load(Path(p)/img_path)
-        pool_images.append(img)
-        pool_labels.append([])
-        for j in range(4):
-            label_path = img_path.replace(".npy", f"_{j:02d}_mask.npy")
-            label = np.load(Path(p.replace("/images", "/labels"))/label_path)
-            pool_labels[-1].append(label)
-    concat_image.append(np.concatenate(pool_images, axis=1))
-final_image = np.concatenate(concat_image, axis=0)
-plt.figure(figsize=(15,7))
-plt.imshow(final_image, cmap="gray", vmin=-3,vmax=5)
-plt.yticks([(i+0.5)*final_image.shape[0]/m for i in range(m)], pools_show)
-plt.xticks([])
-plt.title("Random samples from different pools")
-
-"""
-
 def plot_lidc(n_rows=3,train_cols=4, val_cols=1, test_cols=1,
               train_text="Train", val_text="Val", test_text="Test (id)", test_ood_text="Test (ood)",
               label_color=(1,0,0), label_lw=1.0, pad=1, pad_color=(0,0,0), layout_pad=32, layout_pad_color=(1,1,1),
@@ -1260,7 +1334,6 @@ def plot_lidc(n_rows=3,train_cols=4, val_cols=1, test_cols=1,
     
     crop_ratio: float in (0, 1], controls what portion of the image to show (centered crop)
     """
-    import pickle
     
     # Load splits
     p = "/home/jloch/Desktop/diff/luzern/values_datasets/origlidc128/splits/ood_aug/firstCycle/splits.pkl"
@@ -1344,7 +1417,6 @@ def plot_lidc(n_rows=3,train_cols=4, val_cols=1, test_cols=1,
         img_rgb = np.stack([img, img, img], axis=-1)
         
         # Create label outline
-        from scipy import ndimage
         
         # Overlay all labels (there are 4 annotators)
         for label in labels:
@@ -1574,9 +1646,9 @@ def plot_lidc(n_rows=3,train_cols=4, val_cols=1, test_cols=1,
         fig.savefig(save_path)
     return fig, ax
 
-import warnings
 
-def replace_images_with_corner_markers(fig,save_images="",save_folder="/home/jloch/Desktop/diff/writing/ECCV2026/ECCV_2026_AU_EU/images"):
+def replace_images_with_corner_markers(fig,save_images="",
+                                       save_folder="/home/jloch/Desktop/diff/writing/ECCV2026/ECCV_2026_AU_EU/images"):
     if save_images:
         assert len(save_images.split("/"))==1, f"save_images should be a single name, not a path"
         os.makedirs(os.path.join(save_folder,save_images),exist_ok=True)
@@ -1611,6 +1683,8 @@ def checkerboard_image(image):
         cb_image = np.zeros_like(image)
         cb_image[::2, ::2, :] = 1
         cb_image[1::2, 1::2, :] = 1
+        if image.shape[2] == 4:
+            cb_image[:, :, 3] = 1  # Set alpha channel to fully opaque
     else:
         raise ValueError("Input image must be either 2D or 3D (grayscale or color).")
     print(cb_image.shape)
@@ -1629,8 +1703,6 @@ def plot_chaksu(n_rows=3, n_cols=10, scanners=["Remidio","Bosch","Forus"],scanne
     then it should specify the vertical and horizontal padding separately.
     To the left of each row, there should be a text label with the corresponding scanner title from scanner_titles, using text_fontsize for the font size.
     """
-    import pickle
-    import csv
     
     # Handle pad as tuple or scalar
     if isinstance(pad, tuple):
@@ -1685,8 +1757,6 @@ def plot_chaksu(n_rows=3, n_cols=10, scanners=["Remidio","Bosch","Forus"],scanne
         
         if masks is None:
             return img_rgb
-        
-        from scipy import ndimage
         
         # Each mask contains both disc (value 1) and cup (value 2)
         n_masks = len(masks)
@@ -1821,3 +1891,411 @@ def plot_chaksu(n_rows=3, n_cols=10, scanners=["Remidio","Bosch","Forus"],scanne
     if save_path is not None:
         fig.savefig(save_path)
     return fig, ax
+
+names_to_pretty = {
+    "ssn": "SSN",
+    "diffusion": "Diffusion",
+    "swag_diag": "SWAG-D",
+    "dropout": "Dropout",
+    "prob_unet": "Prob. UNet",
+    "none": "No EU",
+    "ensemble": "Ensemble",
+    "softmax": "Softmax",
+    "swag": "SWAG",
+}
+
+def qualitative_plot_models(AU=["ssn","diffusion","prob_unet"], 
+                            EU=["swag","swag_diag","dropout"], save_path=None,
+                            n_images=3, n_resamples_for_largest=2,
+                            gt_cmap="inferno", EU_top_row=True, padding=2, fontsize=12,
+                            colorbar=False, crop_ratio=1.0):
+    """Plots a large grid of images showing qualitative results for different models on the origlidc128 dataset.
+    The first column is the images themselves. The second row are GT segmentations. All (n_AU)x(n_EU) 
+    next columns are segmentations from the models. Above the grid we have various column titles. These come in two rows.
+    The first row is ["Im", "GT"] + pretty AU names. The top row is empty for the first two columns, then pretty EU names. 
+    The AU and EU names are swapped in case EU_top_row is False. The models are shown in the order of the AU and EU list.
+    The outer loop should be whichever of AU and EU is on the top row.
+    All segmentations are summed (with max=4 for GTs and e.g. 10 for preds) and shown using colormaps (inferno). 
+    The vmin and vmax is set to the number that was summed across.
+
+    To the left of the EU/AU titles in the bottom row of titles, an icon is shown following the legend of model_scatter().
+    
+    Use the code comment above for a reference on how the paths work, how to load images, etc.
+    """
+    # Setup paths
+    formatter = "/home/jloch/Desktop/diff/luzern/values/saves/origlidc128/test_results/{model}/e1000_ema/id/pred_seg"
+    image_path = "/home/jloch/Desktop/diff/luzern/values_datasets/origlidc128/preprocessed/images/{id}.npy"
+    labels_path = "/home/jloch/Desktop/diff/luzern/values_datasets/origlidc128/preprocessed/labels/{id}_{cls}_mask.npy"
+    
+    # Determine which is on top row and which is bottom
+    if EU_top_row:
+        top_list = EU
+        bottom_list = AU
+        top_type = "EU"
+        bottom_type = "AU"
+    else:
+        top_list = AU
+        bottom_list = EU
+        top_type = "AU"
+        bottom_type = "EU"
+    
+    n_top = len(top_list)
+    n_bottom = len(bottom_list)
+    
+ 
+
+    # Sample images from one of the models, picking the ones with largest GT areas
+    # Find a model that exists to sample from
+    first_model = None
+    for au in AU:
+        for eu in EU:
+            test_model = f"{au}_{eu}_0"
+            test_files = list(Path(formatter.format(model=test_model)).glob("*_mean.png"))
+            if test_files:
+                first_model = test_model
+                files = sorted(test_files)
+                break
+        if first_model:
+            break
+    
+    if not first_model:
+        raise ValueError("No models found with predictions!")
+    
+    # Sample n_images * n_resamples_for_largest candidates
+    n_candidates = n_images * n_resamples_for_largest
+    sampled_candidates = np.random.choice(files, size=n_candidates, replace=False)
+    
+    # Compute GT area for each candidate and select the largest from each group
+    sampled_files = []
+    for i in range(n_images):
+        group = sampled_candidates[i * n_resamples_for_largest:(i + 1) * n_resamples_for_largest]
+        max_area = -1
+        best_file = None
+        
+        for file in group:
+            img_id = Path(file).parts[-1].replace("_mean.png", "")
+            # Compute total GT area
+            label_paths = [labels_path.format(id=img_id, cls=f"{j:02d}") for j in range(4)]
+            gt_labels = [np.load(lp) for lp in label_paths]
+            gt_area = np.stack(gt_labels, axis=0).sum()
+            
+            if gt_area > max_area:
+                max_area = gt_area
+                best_file = file
+        
+        sampled_files.append(str(best_file).replace(first_model, "{model}"))
+    
+    # First pass: check which models exist and build column mapping
+    # Structure: model_exists[top_idx][bottom_idx] = (exists, global_col_idx)
+    model_exists = {}
+    col_counter = 2  # Start after Image and GT columns
+    
+    for top_idx, top_val in enumerate(top_list):
+        model_exists[top_idx] = {}
+        for bottom_idx, bottom_val in enumerate(bottom_list):
+            # Determine AU and EU based on which is on top
+            if EU_top_row:
+                au_val = bottom_val
+                eu_val = top_val
+            else:
+                au_val = top_val
+                eu_val = bottom_val
+            
+            model_name = f"{au_val}_{eu_val}_0"
+            
+            # Check if this model has predictions for the first sampled image
+            test_pred_path = sampled_files[0].format(model=model_name)
+            test_pred_file = test_pred_path.replace("_mean", "_01")
+            
+            if Path(test_pred_file).exists():
+                model_exists[top_idx][bottom_idx] = (True, col_counter)
+                col_counter += 1
+            else:
+                model_exists[top_idx][bottom_idx] = (False, -1)
+    
+    n_cols = col_counter  # Total columns including Image and GT
+    all_tiles = []
+    
+    if crop_ratio < 1.0:
+        # Calculate crop margins
+        crop_margin = int((1 - crop_ratio) / 2 * 128)  # Assuming original images are 128x128
+        crop = (slice(crop_margin, 128 - crop_margin), slice(crop_margin, 128 - crop_margin))
+    else:
+        crop = (slice(None), slice(None))
+
+    for img_idx, file in enumerate(sampled_files):
+        img_id = Path(file).parts[-1].replace("_mean.png", "")
+        
+        # First column: input image
+        image = np.load(image_path.format(id=img_id))
+        image = (image - image.min()) / (image.max() - image.min())
+        # Crop to center region
+        image = image[crop]
+        # Convert to RGB for consistency
+        image_rgb = np.stack([image, image, image], axis=0)
+        all_tiles.append(torch.from_numpy(image_rgb).float())
+        
+        # Second column: GT segmentation (summed over 4 classes)
+        label_paths = [labels_path.format(id=img_id, cls=f"{i:02d}") for i in range(4)]
+        gt_labels = [np.load(lp) for lp in label_paths]
+        gt_sum = np.stack(gt_labels, axis=0).sum(axis=0)
+        # Crop to center region
+        gt_sum = gt_sum[crop]
+        # Apply colormap
+        gt_cmap_obj = plt.get_cmap(gt_cmap)
+        gt_normalized = gt_sum / 4.0  # vmax = 4
+        gt_colored = gt_cmap_obj(gt_normalized)[:, :, :3]  # Get RGB, drop alpha
+        gt_colored_tensor = torch.from_numpy(gt_colored).permute(2, 0, 1).float()
+        all_tiles.append(gt_colored_tensor)
+        
+        # Remaining columns: model predictions in order of top x bottom
+        # Create a list to hold tiles in the correct order
+        row_tiles = [None] * (n_cols - 2)  # Excluding Image and GT
+        
+        for top_idx, top_val in enumerate(top_list):
+            for bottom_idx, bottom_val in enumerate(bottom_list):
+                exists, col_idx = model_exists[top_idx][bottom_idx]
+                
+                if not exists:
+                    continue  # Skip missing models
+                
+                # Determine AU and EU based on which is on top
+                if EU_top_row:
+                    au_val = bottom_val
+                    eu_val = top_val
+                else:
+                    au_val = top_val
+                    eu_val = bottom_val
+                
+                model_name = f"{au_val}_{eu_val}_0"
+                
+                # Load all 10 predictions and sum them
+                pred_path = file.format(model=model_name)
+                preds = []
+                for i in range(1, 11):  # Load predictions 01-10
+                    pred_file = pred_path.replace("_mean", f"_{i:02d}")
+                    if Path(pred_file).exists():
+                        pred_img = np.array(Image.open(pred_file)).astype(np.float32)
+                        # Normalize to 0-1 (images are 0-255)
+                        pred_img = pred_img / 255.0
+                        preds.append(pred_img)
+                
+                if preds:
+                    pred_sum = np.stack(preds, axis=0).sum(axis=0)
+                    # Crop to center region
+                    pred_sum = pred_sum[crop]
+                    # Apply colormap - normalize by 10 since we sum 10 predictions (each 0-1)
+                    pred_normalized = pred_sum / len(preds)
+                    pred_colored = gt_cmap_obj(pred_normalized)[:, :, :3]  # Get RGB, drop alpha
+                    pred_colored_tensor = torch.from_numpy(pred_colored).permute(2, 0, 1).float()
+                    row_tiles[col_idx - 2] = pred_colored_tensor
+        
+        # Add all row tiles to all_tiles
+        all_tiles.extend(row_tiles)
+    
+    # Stack all tiles and use make_grid to concatenate
+    grid_stack = torch.stack(all_tiles, dim=0)
+    grid = torchvision.utils.make_grid(
+        grid_stack,
+        nrow=n_cols,
+        padding=padding,
+        value_range=[0, 1],
+        pad_value=0.5,  # Grey padding by default
+    )
+    
+    # Make vertical padding white below black separator lines
+    # Find which columns have black lines (start of groups)
+    grid_np = grid.permute(1, 2, 0).numpy()
+    h, w = grid_np.shape[:2]
+    tile_h = (h - padding * (n_images - 1)) // n_images
+    tile_w = (w - padding * (n_cols - 1)) // n_cols
+    
+    # Identify columns where black lines will be drawn
+    black_line_cols = set()
+    
+    # Left edge of first group
+    all_cols = [col_idx for top_idx in model_exists for exists, col_idx in model_exists[top_idx].values() if exists]
+    if all_cols:
+        min_first_col = min(all_cols)
+        black_line_cols.add(min_first_col)
+    
+    # Between groups and right edge
+    prev_max_col = None
+    for top_idx in range(n_top):
+        cols_in_group = [col_idx for exists, col_idx in model_exists[top_idx].values() if exists]
+        if not cols_in_group:
+            continue
+        min_col = min(cols_in_group)
+        max_col = max(cols_in_group)
+        
+        if prev_max_col is not None and min_col > prev_max_col + 1:
+            black_line_cols.add(min_col)
+        elif prev_max_col is not None:
+            black_line_cols.add(min_col)
+        
+        prev_max_col = max_col
+    
+    # Make vertical padding strips white where black lines will be
+    for col_idx in black_line_cols:
+        if col_idx == 0:
+            continue  # No padding before first column
+        # Calculate pixel x-range for this vertical padding strip
+        x_start = col_idx * tile_w + (col_idx - 1) * padding + 2
+        x_end = x_start + padding
+        if x_end <= w:
+            grid_np[:, x_start:x_end, :] = 1.0  # Make it white
+    
+    # Convert back to tensor
+    grid = torch.from_numpy(grid_np).permute(2, 0, 1).float()
+    
+    # Convert to numpy for display
+    grid_img = grid.permute(1, 2, 0).numpy()
+    grid_h, grid_w = grid_img.shape[:2]
+    grid_w_unit = grid_w / n_cols
+    grid_h_unit = grid_h / n_images
+    
+    # Create figure and display
+    fig, ax = plt.subplots(figsize=(n_cols * 2, n_images * 2 + 1.5))
+    ax.imshow(grid_img, extent=[0, grid_w, grid_h, 0])
+    ax.axis('off')
+    ax.set_xlim(0, grid_w)
+    ax.set_ylim(grid_h, 0)
+    
+    # Add column titles
+    # Top row titles (EU or AU depending on EU_top_row)
+    title_y_top = -grid_h * 0.12
+    title_y_bottom = -grid_h * 0.05
+    title_y_icon = -grid_h * 0.02
+    
+    # For each top group, find the range of columns and add centered title
+    for top_idx, top_val in enumerate(top_list):
+        # Find min and max column indices for this top group
+        cols_in_group = [col_idx for exists, col_idx in model_exists[top_idx].values() if exists]
+        
+        if not cols_in_group:
+            continue  # Skip if no models exist for this top group
+        
+        min_col = min(cols_in_group)
+        max_col = max(cols_in_group)
+        center_col = (min_col + max_col + 1) / 2.0  # +1 because col_idx is 0-indexed but positions are centered
+        x_pos = center_col * grid_w_unit
+        ax.text(x_pos, title_y_top, names_to_pretty.get(top_val, top_val),
+               ha='center', va='bottom', fontsize=fontsize + 2,
+               clip_on=False)
+    
+    line_ext = 1.5
+    # Add vertical line separator between top groups and at edges
+    prev_max_col = None
+    for top_idx, top_val in enumerate(top_list):
+        cols_in_group = [col_idx for exists, col_idx in model_exists[top_idx].values() if exists]
+        
+        if not cols_in_group:
+            continue
+        
+        min_col = min(cols_in_group)
+        max_col = max(cols_in_group)
+        
+        # Left edge of this group (if it's the first group or after a gap)
+        if prev_max_col is None:
+            # First group - add left edge
+            x_pos = min_col * grid_w_unit
+            ax.plot([x_pos, x_pos], [title_y_top * line_ext, 0], color='black', 
+                   linewidth=2, linestyle='-', clip_on=False)
+        elif min_col > prev_max_col + 1:
+            # Gap detected - add separator
+            x_pos = min_col * grid_w_unit
+            ax.plot([x_pos, x_pos], [title_y_top * line_ext, 0], color='black', 
+                   linewidth=2, linestyle='-', clip_on=False)
+        else:
+            # Adjacent groups - add separator between them
+            x_pos = min_col * grid_w_unit
+            ax.plot([x_pos, x_pos], [title_y_top * line_ext, 0], color='black', 
+                   linewidth=2, linestyle='-', clip_on=False)
+        
+        prev_max_col = max_col
+    
+    # Add right edge after last group
+    if prev_max_col is not None:
+        x_pos = (prev_max_col + 1) * grid_w_unit
+        ax.plot([x_pos, x_pos], [title_y_top * line_ext, 0], color='black', 
+               linewidth=2, linestyle='-', clip_on=False)
+    
+    # Bottom row titles
+    ax.text(0.5 * grid_w_unit, title_y_bottom, "Image", ha='center', va='center', 
+           fontsize=fontsize, clip_on=False)
+    ax.text(1.5 * grid_w_unit, title_y_bottom, "Ground\nTruth", ha='center', va='center', 
+           fontsize=fontsize, clip_on=False)
+    
+    # Add titles and icons for each existing model
+    for top_idx, top_val in enumerate(top_list):
+        for bottom_idx, bottom_val in enumerate(bottom_list):
+            exists, col_idx = model_exists[top_idx][bottom_idx]
+            
+            if not exists:
+                continue  # Skip missing models
+            
+            x_pos = (col_idx + 0.5) * grid_w_unit
+            
+            # Icon combines both AU and EU: marker from AU, color from EU
+            if EU_top_row:
+                au_val = bottom_val
+                eu_val = top_val
+            else:
+                au_val = top_val
+                eu_val = bottom_val
+            
+            marker = AU_to_marker.get(au_val, "o")
+            icon_color = EU_to_color.get(eu_val, "C7")
+            
+            # Text color matches bottom row type
+            if bottom_type == "AU":
+                text_color = "black"
+            else:
+                text_color = EU_to_color.get(bottom_val, "C7")
+            
+            # Add icon between top and bottom titles
+            ax.scatter(x_pos, title_y_icon, marker=marker, color=icon_color, 
+                      s=300, clip_on=False, zorder=10)
+            
+            # Add text with matching color
+            ax.text(x_pos, title_y_bottom, names_to_pretty.get(bottom_val, bottom_val),
+                   ha='center', va='bottom', fontsize=fontsize,
+                   color=text_color, clip_on=False)
+    
+    # Add labels to the right indicating EU and AU rows
+    # Find the rightmost column position
+    all_cols = [col_idx for top_idx in model_exists for exists, col_idx in model_exists[top_idx].values() if exists]
+    if all_cols:
+        rightmost_col = max(all_cols) + 1
+        x_label_pos = (rightmost_col + 0.1) * grid_w_unit
+        
+        # Add arrow labels for top and bottom rows
+        if EU_top_row:
+            ax.text(x_label_pos, title_y_top, "← EU", ha='left', va='bottom', 
+                   fontsize=fontsize, clip_on=False, style='italic')
+            ax.text(x_label_pos, title_y_bottom, "← AU", ha='left', va='bottom', 
+                   fontsize=fontsize, clip_on=False, style='italic')
+        else:
+            ax.text(x_label_pos, title_y_top, "← AU", ha='left', va='bottom', 
+                   fontsize=fontsize, clip_on=False, style='italic')
+            ax.text(x_label_pos, title_y_bottom, "← EU", ha='left', va='bottom', 
+                   fontsize=fontsize, clip_on=False, style='italic')
+    
+    if colorbar:
+        # Add colorbar for the segmentations
+        divider = make_axes_locatable(ax)
+        cax = divider.append_axes("right", size="2%", pad=0.1)
+        norm = plt.Normalize(vmin=0, vmax=1)  # Assuming max sum is 10 for predictions
+        sm = plt.cm.ScalarMappable(cmap=gt_cmap, norm=norm)
+        sm.set_array([])
+        cbar = plt.colorbar(sm, cax=cax)
+        cbar.set_label('Foreground Rate', rotation=270, labelpad=5, fontsize=fontsize)
+        cbar.set_ticks([0, 1])
+        cbar.set_ticklabels(['0', '1'])
+        #fontsize
+        cbar.ax.tick_params(labelsize=fontsize - 2)
+
+    if save_path:
+        plt.savefig(save_path, dpi=150, bbox_inches='tight')
+    
+    return fig

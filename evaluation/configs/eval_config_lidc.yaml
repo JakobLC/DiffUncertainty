@@ -1,7 +1,7 @@
 #@package _global_
 defaults:
   - _self_
-  - datasets: lidc64
+  - datasets: origlidc128
   - tasks/threshold
   - tasks/area
   - tasks/aggregation_all
@@ -12,8 +12,8 @@ second_cycle_path: "/home/jloch/Desktop/diff/luzern/values/experiments/SecondCyc
 evaluate_training_data: null
 evaluate_all_raters: true
 
-tasks: ["threshold","area","aggregation","ood_detection","ambiguity_modeling","calibration"] #,"cleanup"
-#tasks: ["ambiguity_modeling"]
+#tasks: ["threshold","area","aggregation","ood_detection","ambiguity_modeling","calibration"] #,"cleanup"
+tasks: ["calibration"]
 #tasks: ["cleanup"]
 
 task_params:

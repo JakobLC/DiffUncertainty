@@ -58,7 +58,7 @@ class MultiRater2DDataset(torch.utils.data.Dataset):
             raise ValueError("Each fold entry inside splits.pkl must be a dictionary.")
         self.split_metadata = fold_entry.get("_meta", {})
         self.split_schema = self.split_metadata.get("schema")
-        self.dataset_label = self.dataset_label or self.split_metadata.get("dataset_name", "lidc2d")
+        self.dataset_label = self.dataset_label or self.split_metadata.get("dataset_name", "lidc2d") #TODO: instead of this, use the last part of base_dir as the name
         meta_num_raters = self.split_metadata.get("num_raters")
         if self.num_raters is None:
             self.num_raters = int(meta_num_raters) if meta_num_raters is not None else 4
