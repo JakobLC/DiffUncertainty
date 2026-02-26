@@ -10,8 +10,8 @@ data:
 base_splits_path: "/home/jloch/Desktop/diff/luzern/values_datasets/origlidc128/splits"
 experiments:
   - ${ENS_SWEEP}
-  - ${NONE_SWEEP}
-  - ${ALL_SWEEP}
+#  - ${NONE_SWEEP}
+#  - ${ALL_SWEEP}
 #  - ${CALIB_WEIRD_TEST}
 #  - ${WEIRD_TEST}
 #  - ${FIRST_SWEEP}
@@ -60,7 +60,7 @@ WEIRD_TEST:
 ENS_SWEEP:
   iter_params:
     shift: [ "ood_aug" ]
-    pred_model:  ["diffusion", "softmax", "ssn" ]
+    pred_model:  ["prob_unet"] #["diffusion", "softmax", "ssn" ]
     seed: [ "120" ]
     seed1: [ "0" ]  
     eu: ["ensemble"] #,"ensemble", "dropout" ]

@@ -19,7 +19,7 @@ import csv
 import warnings
 import pickle
 from mpl_toolkits.axes_grid1 import make_axes_locatable
-
+from argparse import Namespace
 sys.path.append("/home/jloch/Desktop/diff/luzern/values")
 sys.path.append("/home/jloch/Desktop/diff/luzern/values/uncertainty_modeling/")
 from uncertainty_modeling.test_2D import test_cli, Tester
@@ -29,6 +29,83 @@ with patch("sys.argv", ["notebook"]):
 
 #AU, EU, TU = "aleatoric_uncertainty", "epistemic_uncertainty", "predictive_uncertainty"
 AU, EU, TU = "AU", "EU", "TU" # new
+
+def to_rank(x,ascending=False):
+    #takes a panda series and converts all numbers to their rank.
+    #also works with series of dicts
+    if isinstance(x.iloc[0], dict):
+        df = pd.DataFrame(list(x))
+        ranked = df.rank(method="average", ascending=ascending)
+        return pd.Series(ranked.to_dict(orient="records"), index=x.index)
+    else:
+        return x.rank(ascending=ascending)
+
+def smart_mean_table(tables, std_instead=False):
+    # take a list of pandas tables and average all index-column pairs.
+    # Asserts that non-numeric values are the same across tables.
+    # can also average columns containing dicts by averaging the values in the dicts with the same keys.
+    # raises an error if the dicts do not have the same keys across tables, or if a dict with non-numeric values is not the same across tables.
+    assert len(tables) > 0, "Need at least one table"
+    ref = tables[0]
+    for t in tables[1:]:
+        assert list(t.index) == list(ref.index), "Tables must have the same index"
+        assert list(t.columns) == list(ref.columns), "Tables must have the same columns"
+
+    def _mean_dicts(dicts):
+        keys = set(dicts[0].keys())
+        for d in dicts[1:]:
+            if set(d.keys()) != keys:
+                raise ValueError(f"Dicts have different keys: {keys} vs {set(d.keys())}")
+        result = {}
+        for k in keys:
+            vals = [d[k] for d in dicts]
+            if all(isinstance(v, (int, float)) for v in vals):
+                if std_instead:
+                    result[k] = float(np.std(vals, ddof=1)) if len(vals) > 1 else 0.0
+                else:
+                    result[k] = float(np.mean(vals))
+            else:
+                if len(set(vals)) != 1:
+                    raise ValueError(f"Non-numeric dict values differ for key '{k}': {vals}")
+                result[k] = vals[0]
+        return result
+
+    def _mean_cells(cells):
+        first = cells[0]
+        if isinstance(first, dict):
+            return _mean_dicts(cells)
+        elif isinstance(first, (int, float, np.integer, np.floating)) and not isinstance(first, bool):
+            if std_instead:
+                return float(np.std([c for c in cells if c is not None and not (isinstance(c, float) and np.isnan(c))], ddof=1) if any(c is not None for c in cells) else 0.0)
+            else:
+                return float(np.mean([c for c in cells if c is not None and not (isinstance(c, float) and np.isnan(c))]) if any(c is not None for c in cells) else np.nan)
+        else:
+            if len(set(cells)) != 1:
+                raise ValueError(f"Non-numeric values differ: {cells}")
+            return first
+
+    result = ref.copy()
+    for col in ref.columns:
+        for idx in ref.index:
+            cells = [t.at[idx, col] for t in tables]
+            result.at[idx, col] = _mean_cells(cells)
+    return result
+
+def pretty_pivot(table, key, T=True):
+    #make a table where "AU" and "EU" columns become index and the values are the "ENTRANK_avg" values
+    assert "AU" in table.columns and "EU" in table.columns and key in table.columns, "Table must have AU, EU and key columns"
+    rank_table = table[["AU", "EU", key]].copy()
+    rank_table = rank_table.pivot(columns="EU",index="AU", values=key)
+    rank_table = rank_table.reindex(GRID_ORDER_AU, axis=0)
+    rank_table = rank_table.reindex(GRID_ORDER_EU, axis=1)
+    #rename
+    names_to_pretty_f = lambda x: [names_to_pretty[item] for item in x]
+    rank_table.columns = names_to_pretty_f(rank_table.columns)
+    rank_table.index = names_to_pretty_f(rank_table.index)
+    chaksu_rank_table = rank_table.copy().T if T else rank_table
+    return rank_table
+
+
 def load_result_table(epoch=320,
                       ema = "_ema",
                 loop_params = {
@@ -43,7 +120,26 @@ def load_result_table(epoch=320,
                 split_as_dict = True,
                 swap_AU_EU = False,
                 add_avg_ood = False,
-                gace_instead_of_ace = False,):
+                gace_instead_of_ace = True,
+                add_rank=False,
+                mean_seeded_table=None,
+                std_seeded_table=None,):
+    if mean_seeded_table or std_seeded_table:
+        kwargs = copy.deepcopy(locals())
+        kwargs["mean_seeded_table"] = None
+        kwargs["std_seeded_table"] = None
+        mini_tables = []
+        v0 = None
+        loop_vals = mean_seeded_table if mean_seeded_table else std_seeded_table
+        for seed in loop_vals:
+            kwargs["formatter"] = formatter.replace("{seed}", seed)
+            mini_table = load_result_table(**kwargs)
+            if v0 is None:
+                v0 = mini_table["version"] # so the version key doesn't cause an error when averaging tables, but we can still keep track of which version it is in the mini_table for reference
+            else:
+                mini_table["version"] = v0
+            mini_tables.append(mini_table)
+        return smart_mean_table(mini_tables, std_instead=not mean_seeded_table)
     ace = "gace" if gace_instead_of_ace else "ace"
     table = pd.DataFrame()
     first_aggr_check = True
@@ -157,6 +253,9 @@ def load_result_table(epoch=320,
     table[f"(AU-EU)_ncc_id"] = (table["AU_ncc_id"] - table["EU_ncc_id"])/table["AU_ncc_id"]
     table[f"min(AU,EU)_ace_id"] = table[["AU_ace_id", "EU_ace_id"]].min(axis=1)
     table[f"(TU-min(AU,EU))_ace_id"] = (table["TU_ace_id"]-table[f"min(AU,EU)_ace_id"])/table["TU_ace_id"]
+    #Uc_names = ["EU_auc", "AU_ncc_[split]", "TU_ace_[split]"]
+    #Uw_names = ["AU_auc", "EU_ncc_[split]", "min(AU,EU)_ace_[split]"]
+    # add the ENT_[...] columns
     if split_as_dict:
         # look for column names sharing the same prefix before a valid split key, i.e.
         # [id, val, ood, ood_[something]]
@@ -184,7 +283,46 @@ def load_result_table(epoch=320,
                 if isinstance(item0, dict) and any(k in item0 for k in valid_ood_keys):
                     for i in range(len(table)):
                         table.at[i, col]["ood"] = sum(table.at[i, col][k] for k in valid_ood_keys) / len(valid_ood_keys)
+    
+    if add_rank:
+        assert add_avg_ood and split_as_dict, "add_rank requires add_avg_ood and split_as_dict to be True"
+        # initialize empty dicts
+        for k in ["ENT_auc", "ENT_ncc", "ENT_ace", "ENTRANK_auc", "ENTRANK_ncc", "ENTRANK_ace"]:
+            table[k] = [{} for _ in range(len(table))]
+        for i in range(len(table)):
+            for k2 in set(valid_ood_keys+["id","ood"]):
+                if k2 != "id":
+                    table.at[i,f"ENT_auc"][k2] = entangle_metric(table.at[i,f"EU_auc"][k2], 
+                                                                 table.at[i,f"AU_auc"][k2], 
+                                                                 lower_is_better=False)
+                table.at[i,f"ENT_ncc"][k2] = entangle_metric(table.at[i,f"AU_ncc"][k2], 
+                                                             table.at[i,f"EU_ncc"][k2], 
+                                                             lower_is_better=False)
+                
+                table.at[i,f"ENT_ace"][k2] = entangle_metric(table.at[i,f"TU_ace"][k2],
+                                                             table.at[i,f"min(AU,EU)_ace"][k2], 
+                                                             lower_is_better=True)
+
+        #        table.at[i,f"ENTRANK_auc"][k2] = table.at[i,f"ENT_auc"][k2].rank(ascending=False)
+        #        table.at[i,f"ENTRANK_ncc"][k2] = table.at[i,f"ENT_ncc"][k2].rank(ascending=False)
+        #        table.at[i,f"ENTRANK_ace"][k2] = table.at[i,f"ENT_ace"][k2].rank(ascending=True)
+        #print(table["ENT_auc"][0].keys())
+        table["ENTRANK_auc"] = to_rank(table["ENT_auc"]).apply(lambda x: x["ood"])
+        table["ENTRANK_ncc"] = to_rank(table["ENT_ncc"]).apply(lambda x: x["ood"]*0.5+x["id"]*0.5)
+        table["ENTRANK_ace"] = to_rank(table["ENT_ace"]).apply(lambda x: x["ood"]*0.5+x["id"]*0.5)
+        mean_rank = (table["ENTRANK_auc"] + table["ENTRANK_ncc"] + table["ENTRANK_ace"]) / 3
+        table["ENTRANK_avg"] = mean_rank
+        table["PERFRANK_auc"] = to_rank(table["EU_auc"]).apply(lambda x: x["ood"])
+        table["PERFRANK_ncc"] = to_rank(table["AU_ncc"]).apply(lambda x: x["ood"]*0.5+x["id"]*0.5)
+        table["PERFRANK_ace"] = to_rank(table["TU_ace"],ascending=True).apply(lambda x: x["ood"]*0.5+x["id"]*0.5)
+        mean_rank = (table["PERFRANK_auc"] + table["PERFRANK_ncc"] + table["PERFRANK_ace"]) / 3
+        table["PERFRANK_avg"] = mean_rank
     return table
+
+def entangle_metric(Uc,Uw,lower_is_better=False):
+    # \Delta = s \frac{\arctan(U_c/U_w)-\pi/4}{\pi/4}
+    s = -1 if lower_is_better else 1
+    return s * (np.arctan2(Uc, Uw) - np.pi / 4) / (np.pi / 4)
 
 def entropy(probs, dim=1, eps=1e-8):
     return -torch.sum(probs * torch.log(probs + eps), dim=dim)
@@ -816,53 +954,13 @@ def _idx(row, key_with_subkey):
     else:            
         raise ValueError(f"Key {key_with_subkey} not found in row or not a dict with subkey: {row}")
     
-def plot_4_stat_arrows(table,x1="TU_ace[id]",y1="TU_ace[ood]",x2="min(AU,EU)_ace[id]",y2="min(AU,EU)_ace[ood]",
-                        add_xy=True):
-    # goes through all models, plots an arrow from (x1,y1) to (x2,y2) with marker and color determined by the model type
-
-    xmin,xmax = float('inf'),float('-inf')
-    ymin,ymax = float('inf'),float('-inf')
-    plt.figure(figsize=(8,8))
-    for idx, row in table.iterrows():
-        AU_type = row["AU"]
-        EU_type = row["EU"]
-        marker = AU_to_marker.get(AU_type, "o")
-        color = EU_to_color.get(EU_type, "C7")
-        X1, Y1 = _idx(row, x1), _idx(row, y1)
-        X2, Y2 = _idx(row, x2), _idx(row, y2)
-        xmin, xmax = min(xmin, X1, X2), max(xmax, X1, X2)
-        ymin, ymax = min(ymin, Y1, Y2), max(ymax, Y1, Y2)
-        plt.scatter(X1, Y1, marker=marker, color=color, s=100)
-        plt.scatter(X2, Y2, marker=marker, color=color, s=0)
-        plt.annotate("",
-                    xy=(X2, Y2),
-                    xytext=(X1, Y1),
-                    arrowprops=dict(arrowstyle="->", color=color, lw=2))
-    plt.xlabel(x1)
-    plt.ylabel(y1)
-    if add_xy:
-        #add x=y line
-        xmin, xmax = plt.xlim()
-        ymin, ymax = plt.ylim()
-        lim_min = min(xmin, ymin)
-        lim_max = max(xmax, ymax)
-        plt.plot([lim_min, lim_max], [lim_min, lim_max], 'k', linestyle='--')
-        plt.xlim(xmin, xmax)
-        plt.ylim(ymin, ymax)
-    plt.title(f"Arrows from ({x1}, {y1}) to ({x2}, {y2})")
-    plt.grid()
-    #create legend for AU types
-    for AU_type, marker in AU_to_marker.items():
-        plt.scatter([], [], marker=marker, color="black", label=AU_type, s=100)
-    for EU_type, color in EU_to_color.items():
-        plt.scatter([], [], marker="o", color=color, label=EU_type, s=100)
-    plt.legend()
-    plt.tight_layout()
-
-
-def model_scatter(table, x="AU_auc[ood]", y="EU_auc[ood]", add_xy=True, entangle_is_up=False,
+def model_scatter(table=None, x="AU_auc[ood]", y="EU_auc[ood]", add_xy=True, entangle_is_up=False,
                   xlabel=None, ylabel=None, title=None, plot_legend=True, equal_scaling=True, 
-                  ignore_for_axis=None, only_legend=False, ax=None):
+                  ignore_for_axis=None, only_legend=False, ax=None,
+                  mini_tables=[], mini_alpha=0.5, mini_size_multiplier=0.3,
+                  mini_mean=True):
+    if table is None:
+        assert mini_tables, "If table is None, mini_tables must be provided to plot their mean."
     # similar to the arrow plot without the arrows
     if ax is None:
         fig, ax = plt.subplots(figsize=(5, 5))
@@ -874,10 +972,10 @@ def model_scatter(table, x="AU_auc[ood]", y="EU_auc[ood]", add_xy=True, entangle
         ax.axis('off')
         for EU_type in GRID_ORDER_EU:
             color = EU_to_color.get(EU_type, "C7")
-            ax.scatter([], [], marker="o", color=color, label=EU_type, s=100)
+            ax.scatter([], [], marker="o", color=color, label=names_to_pretty.get(EU_type, EU_type), s=100)
         for AU_type in GRID_ORDER_AU:
             marker = AU_to_marker.get(AU_type, "o")
-            ax.scatter([], [], marker=marker, color="black", label=AU_type, s=100)
+            ax.scatter([], [], marker=marker, color="black", label=names_to_pretty.get(AU_type, AU_type), s=100)
         legend = ax.legend(loc='center', frameon=True, fontsize=15, ncol=2)
         if ax is None:
             fig.tight_layout()
@@ -890,23 +988,49 @@ def model_scatter(table, x="AU_auc[ood]", y="EU_auc[ood]", add_xy=True, entangle
     scatter_points = []
     ignored_points = []
     
-    for idx, row in table.iterrows():
-        AU_type = row["AU"]
-        EU_type = row["EU"]
-        marker = AU_to_marker.get(AU_type, "o")
-        color = EU_to_color.get(EU_type, "C7")
-        X, Y = _idx(row, x), _idx(row, y)
-        
-        # Check if this point should be ignored for axis calculation
-        should_ignore = False
-        for key, ignore_values in ignore_for_axis.items():
-            if key in row and row[key] in ignore_values:
-                should_ignore = True
-                break
-        
-        if should_ignore:
-            ignored_points.append((X, Y, marker, color))
-        else:
+    if table is not None:
+        for idx, row in table.iterrows():
+            AU_type = row["AU"]
+            EU_type = row["EU"]
+            marker = AU_to_marker.get(AU_type, "o")
+            color = EU_to_color.get(EU_type, "C7")
+            X, Y = _idx(row, x), _idx(row, y)
+            
+            # Check if this point should be ignored for axis calculation
+            should_ignore = False
+            for key, ignore_values in ignore_for_axis.items():
+                if key in row and row[key] in ignore_values:
+                    should_ignore = True
+                    break
+            
+            if should_ignore:
+                ignored_points.append((X, Y, marker, color))
+            else:
+                scatter_points.append((X, Y))
+                ax.scatter(X, Y, marker=marker, color=color, s=100)
+
+    # Mini tables: repeat scatter with reduced alpha and size
+    if mini_alpha > 0:
+        for mini_table in mini_tables:
+            for idx, row in mini_table.iterrows():
+                AU_type = row["AU"]
+                EU_type = row["EU"]
+                marker = AU_to_marker.get(AU_type, "o")
+                color = EU_to_color.get(EU_type, "C7")
+                X, Y = _idx(row, x), _idx(row, y)
+                scatter_points.append((X, Y))
+                ax.scatter(X, Y, marker=marker, color=color,
+                           s=100 * mini_size_multiplier, alpha=mini_alpha)
+
+    # If mini_mean=True and table=None, plot the per-(AU,EU) mean across all mini_tables
+    if mini_mean and table is None and mini_tables:
+        import pandas as pd
+        combined = pd.concat(mini_tables, ignore_index=True)
+        for (AU_type, EU_type), group in combined.groupby(["AU", "EU"]):
+            marker = AU_to_marker.get(AU_type, "o")
+            color = EU_to_color.get(EU_type, "C7")
+            X = group.apply(lambda r: _idx(r, x), axis=1).mean()
+            Y = group.apply(lambda r: _idx(r, y), axis=1).mean()
             scatter_points.append((X, Y))
             ax.scatter(X, Y, marker=marker, color=color, s=100)
 
@@ -922,9 +1046,9 @@ def model_scatter(table, x="AU_auc[ood]", y="EU_auc[ood]", add_xy=True, entangle
     legend = None
     if plot_legend:
         for EU_type, color in EU_to_color.items():
-            ax.scatter([], [], marker="o", color=color, label=EU_type, s=100)
+            ax.scatter([], [], marker="o", color=color, label=names_to_pretty.get(EU_type, EU_type), s=100)
         for AU_type, marker in AU_to_marker.items():
-            ax.scatter([], [], marker=marker, color="black", label=AU_type, s=100)
+            ax.scatter([], [], marker=marker, color="black", label=names_to_pretty.get(AU_type, AU_type), s=100)
         legend = ax.legend()
     
     # Apply equal scaling if requested
@@ -1223,7 +1347,9 @@ def model_scatter(table, x="AU_auc[ood]", y="EU_auc[ood]", add_xy=True, entangle
 def plot_scatter_grid(table, 
                       kwarg_list=None,
                       figsize_per_plot=(5, 4),
-                      save_path=None):
+                      save_path=None,
+                      mini_tables=[],
+                      override={}):
     """
     Plot a grid of model scatter plots.
     
@@ -1284,7 +1410,8 @@ def plot_scatter_grid(table,
             row_outputs = []
             for j in range(n_cols):
                 kwargs = kwarg_list[i][j].copy()
-                out = model_scatter(table, ax=axes[i, j], **kwargs)
+                kwargs.update(override)
+                out = model_scatter(table, ax=axes[i, j], mini_tables=mini_tables, **kwargs)
                 row_outputs.append(out)
             outputs.append(row_outputs)
     else:
@@ -1299,7 +1426,8 @@ def plot_scatter_grid(table,
         outputs = []
         for i, kwargs in enumerate(kwarg_list):
             kwargs = kwargs.copy()
-            out = model_scatter(table, ax=axes[i], **kwargs)
+            kwargs.update(override)
+            out = model_scatter(table, ax=axes[i], mini_tables=mini_tables, **kwargs)
             outputs.append(out)
     
     fig.tight_layout()
@@ -2299,3 +2427,109 @@ def qualitative_plot_models(AU=["ssn","diffusion","prob_unet"],
         plt.savefig(save_path, dpi=150, bbox_inches='tight')
     
     return fig
+
+from matplotlib.patches import Wedge
+
+def entangle_metric_vis(save_path=None):
+    fig, ax = plt.subplots(figsize=(4, 4))
+
+    # --- Axes limits / ticks / labels ---
+    ax.set_xlim(-1, 10)
+    ax.set_ylim(-1, 10)
+    ax.set_xticks([])
+    ax.set_yticks([])
+    ax.set_aspect("equal", adjustable="box")
+
+    # Draw x/y axes as arrows with arrowheads at the positive ends
+    ax.annotate("", xy=(10, 0), xytext=(-1, 0),
+                arrowprops=dict(arrowstyle="-|>,head_width=0.4,head_length=0.5", color="black", lw=2.5),
+                annotation_clip=False)
+    ax.annotate("", xy=(0, 10), xytext=(0, -1),
+                arrowprops=dict(arrowstyle="-|>,head_width=0.4,head_length=0.5", color="black", lw=2.5),
+                annotation_clip=False)
+
+    # Axis labels near the arrowheads
+    ax.text(9.5, -0.2, "Wrong Unc. Measure ($U_w$)", ha='right', va='top', fontsize=11)
+    ax.text(0.3, 9.5, "Correct Unc.\nMeasure ($U_c$)", ha='left', va='top', fontsize=11)
+
+    # --- Pie-like colored sectors in the first quadrant ---
+    R = 10 * np.sqrt(2)  # big enough to cover up to (10,10) after clipping by axes
+
+    # Angles are in degrees from +x axis; x=y corresponds to 45°
+    # [0,30] darker red, [30,45] light red, [45,60] light green, [60,90] darker green
+    sectors = [
+        (0, 30,  "#f2a6a6"),  # slightly darker (still light) red
+        (30, 45, "#ffd1d1"),  # light red
+        (45, 60, "#d7f5d7"),  # light green
+        (60, 90, "#aee8ae"),  # slightly darker (still light) green
+    ]
+    for a1, a2, c in sectors:
+        ax.add_patch(Wedge((0, 0), R, a1, a2, facecolor=c, edgecolor="none", alpha=0.9, zorder=0))
+
+    # --- Fade background colors to transparent between fade_start and fade_end ---
+    _fade_start = 8
+    _fade_end = 9.5
+    _N = 500
+    _xs = np.linspace(-1, 10, _N)
+    _ys = np.linspace(-1, 10, _N)
+    _XX, _YY = np.meshgrid(_xs, _ys)
+    _alpha_x = np.clip((_XX - _fade_start) / (_fade_end - _fade_start), 0, 1)
+    _alpha_y = np.clip((_YY - _fade_start) / (_fade_end - _fade_start), 0, 1)
+    _alpha = np.maximum(_alpha_x, _alpha_y)
+    _fade = np.ones((_N, _N, 4))  # white RGBA
+    _fade[:, :, 3] = _alpha
+    ax.imshow(_fade, extent=[-1, 10, -1, 10], origin='lower', aspect='auto',
+              zorder=1, interpolation='bilinear')
+
+    # --- x=y line (black dashed) ---
+    x = np.linspace(0, 10, 400)
+    ax.plot(x, x, "k--", lw=1.5, zorder=2)
+
+    # Points requested — pass label and subscript index
+    _points = [(2, 5), (6, 4)]
+    _labels = ["Entangled", "Disentangled"]
+    _phi_subs = ["1", "2"]
+    _label_colors = ["#881122","#118822"]#["#1a7a1a","#c00000"]
+    for (px, py), label, phi_sub, lcolor in zip(_points, _labels, _phi_subs, _label_colors):
+        # Draw the slice (arc + radial line + marker)
+        lw = 1.8
+        ax.plot(px, py, marker="o", markersize=12, markerfacecolor="white",
+                markeredgecolor="black", markeredgewidth=2, zorder=5)
+        ax.text(px, py, phi_sub, ha='center', va='center_baseline', fontsize=8,
+                fontweight='bold', color='black', zorder=6)
+        ax.plot([0, px], [0, py], color="black", lw=lw, zorder=4)
+        r = np.hypot(px, py)
+        ang_pt = np.degrees(np.arctan2(py, px))
+        ang1, ang2 = sorted([ang_pt, 45.0])
+        t = np.radians(np.linspace(ang1, ang2, 200))
+        ax.plot(r * np.cos(t), r * np.sin(t), color="black", lw=lw, zorder=4)
+        mid_angle = np.radians((ang1 + ang2) / 2)
+        ax.text(r * np.cos(mid_angle) + 0.25, r * np.sin(mid_angle) + 0.25,
+                r"$\phi_{" + phi_sub + r"}$",
+                ha='center', va='center', fontsize=11, zorder=10)
+
+        # Delta annotation: signed wedge angle (negative if point is below x=y line)
+        delta_val = np.radians(ang_pt - 45.0) / (np.pi / 4)
+        delta_str = r"$\Delta\!=\!" + f"{delta_val:.3f}" + r"$"
+        if phi_sub == "1":
+            ax.text(px + 0.3, py + 0.3, delta_str, ha='center', va='bottom', fontsize=10, zorder=10)
+        else:
+            ax.text(px + 0.3, py - 0.3, delta_str, ha='left', va='center', fontsize=10, zorder=10)
+
+    # Region labels placed in the constant dark red / dark green sectors
+    # Dark red: 0–30°, place at midangle=15°, radius~5
+    _r_label = 6.0
+    _theta_label = 10
+    ax.text(_r_label * np.cos(np.radians(_theta_label)), _r_label * np.sin(np.radians(_theta_label)),
+            "Entangled", ha='center', va='center', fontsize=12,
+            color="#881122", fontweight='bold', rotation=_theta_label, zorder=6)
+    # Dark green: 60–90°, place at midangle=75°, radius~5
+    ax.text(_r_label * np.cos(np.radians(90-_theta_label)), _r_label * np.sin(np.radians(90-_theta_label)),
+            "Disentangled", ha='center', va='center', fontsize=12,
+            color="#118822", fontweight='bold', rotation=90-_theta_label, zorder=6)
+
+    plt.tight_layout()
+    for spine in ax.spines.values():
+        spine.set_visible(False)
+    if save_path:
+        plt.savefig(save_path, bbox_inches='tight')
