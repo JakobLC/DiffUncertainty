@@ -200,13 +200,6 @@ def calib_stats(correct, calib_confids):
     prob_total = bin_total[nonzero] / bin_total.sum()
 
     bin_discrepancies = np.abs(prob_true - prob_pred)
-    """if (1 / num_nonzero) * np.sum(bin_discrepancies) < 1/200:
-        print(bin_discrepancies, prob_total, num_nonzero)
-        print((1 / num_nonzero) * np.sum(bin_discrepancies))
-        print(prob_true, prob_pred)
-        print(correct.shape, calib_confids.shape)
-        exit()  
-    """
     return bin_discrepancies, prob_total, num_nonzero
 
 
@@ -305,13 +298,6 @@ def calibration_error(exp_dataloader: ExperimentDataloader, ignore_value=None):
                 global_accum.accumulate(rater_correct.flatten(), unc_map)
                 calib_dict[image_id][unc_type] = {"metrics": {"ace": ace}}
                 aces_unc.append(ace)
-            """if ace<0.005 and unc_type=="EU":
-                p = "/home/jloch/Desktop/diff/luzern/random_experiments/calib_debug.npy"
-                np.save(p, {"reference_segs": reference_segs, 
-                "pred_seg": pred_seg, 
-                "unc_map": unc_map,
-                "ace": ace})
-                exit()"""
         calib_dict["mean"][unc_type] = {"metrics": {"ace": np.mean(np.array(aces_unc)), "gace": global_accum.compute_ace()}}
     save_path = exp_dataloader.dataset_path / "calibration.json"
     with open(save_path, "w") as f:

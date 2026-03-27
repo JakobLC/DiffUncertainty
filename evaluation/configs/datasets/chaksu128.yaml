@@ -10,8 +10,30 @@ data:
 base_splits_path: "/home/jloch/Desktop/diff/luzern/values_datasets/chaksu128/splits"
 experiments:
   - ${SWEEP_ALL}
-  - ${SWEEP_NONE} 
+  - ${SWEEP_NONE}
   
+DROPOUT_SWEEP:
+  iter_params:
+    shift: [ "scanner" ]
+    pred_model: ["softmax"]
+    seed: [ "120" ]
+    seed1: [ "0", "1", "2", "3", "4" ]
+    d_rate: [ "0.1", "0.2", "0.3", "0.4", "0.5", "0.6", "0.8", "0.9" ]
+    eu: ["dropout"]
+    cfg: [ "standard" ]
+    data: [ "chaksu128" ]
+  naming_scheme_pred_model: "chaksu128_dropoutsweep"
+  naming_scheme_version: "{pred_model}_{eu}_{d_rate}/e500_ema"
+  aggregations: [ "all" ]
+  fold: 0
+  rank: 5
+  image_ending: ".png"
+  unc_ending: ".tif"
+  n_reference_segs: 5
+  only_pu: false
+  evaluate_training_data: ${evaluate_training_data}
+
+
 SWEEP_NONE:
   iter_params:
     shift: [ "scanner" ]

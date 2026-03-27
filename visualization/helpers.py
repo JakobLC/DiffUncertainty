@@ -17,6 +17,7 @@ from PIL import Image
 from scipy import ndimage
 import csv
 import warnings
+from matplotlib.patches import Wedge, Polygon
 import pickle
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 from argparse import Namespace
@@ -102,11 +103,11 @@ def pretty_pivot(table, key, T=True):
     names_to_pretty_f = lambda x: [names_to_pretty[item] for item in x]
     rank_table.columns = names_to_pretty_f(rank_table.columns)
     rank_table.index = names_to_pretty_f(rank_table.index)
-    chaksu_rank_table = rank_table.copy().T if T else rank_table
+    rank_table = rank_table.copy().T if T else rank_table
     return rank_table
 
 
-def load_result_table(epoch=320,
+def load_result_table(epochs=[500,1000],
                       ema = "_ema",
                 loop_params = {
                     "AU": ["softmax", "ssn", "diffusion" ],
@@ -120,7 +121,7 @@ def load_result_table(epoch=320,
                 split_as_dict = True,
                 swap_AU_EU = False,
                 add_avg_ood = False,
-                gace_instead_of_ace = True,
+                gace_instead_of_ace = None,
                 add_rank=False,
                 mean_seeded_table=None,
                 std_seeded_table=None,):
@@ -140,6 +141,8 @@ def load_result_table(epoch=320,
                 mini_table["version"] = v0
             mini_tables.append(mini_table)
         return smart_mean_table(mini_tables, std_instead=not mean_seeded_table)
+    if gace_instead_of_ace is None:
+        gace_instead_of_ace = "lidc" in save_path
     ace = "gace" if gace_instead_of_ace else "ace"
     table = pd.DataFrame()
     first_aggr_check = True
@@ -150,7 +153,23 @@ def load_result_table(epoch=320,
             print("Skipping missing version:", version)
             continue
         add_dict["version"] = version
+        #if epoch is a list use whichever one exists, if there are multiples, raise error
+
+        if isinstance(epochs,int):
+            epoch = epochs
+        else:
+            assert isinstance(epochs,list), "Epoch must be an int or a list of ints"
+            existing_epochs = []
+            for e in epochs:
+                if (Path(f"{save_path}")/version/f"e{e}{ema}").exists():
+                    existing_epochs.append(e)
+            if len(existing_epochs) == 0:
+                raise ValueError(f"No existing epochs found for version: {version} in {save_path}. Checked epochs: {epochs}")
+            elif len(existing_epochs) > 1:
+                raise ValueError(f"Multiple existing epochs found for version: {version} in {save_path}. Found epochs: {existing_epochs}. Please specify a single epoch.")
+            epoch = existing_epochs[0]
         p = f"{save_path}{version}/e{epoch}{ema}/val/metrics.json"
+
         with open(p, "r") as f:
             loaded = json.load(f)
         add_dict["val_dice"] = loaded["mean"]["metrics"]["dice"]
@@ -302,21 +321,16 @@ def load_result_table(epoch=320,
                 table.at[i,f"ENT_ace"][k2] = entangle_metric(table.at[i,f"TU_ace"][k2],
                                                              table.at[i,f"min(AU,EU)_ace"][k2], 
                                                              lower_is_better=True)
-
-        #        table.at[i,f"ENTRANK_auc"][k2] = table.at[i,f"ENT_auc"][k2].rank(ascending=False)
-        #        table.at[i,f"ENTRANK_ncc"][k2] = table.at[i,f"ENT_ncc"][k2].rank(ascending=False)
-        #        table.at[i,f"ENTRANK_ace"][k2] = table.at[i,f"ENT_ace"][k2].rank(ascending=True)
-        #print(table["ENT_auc"][0].keys())
         table["ENTRANK_auc"] = to_rank(table["ENT_auc"]).apply(lambda x: x["ood"])
         table["ENTRANK_ncc"] = to_rank(table["ENT_ncc"]).apply(lambda x: x["ood"]*0.5+x["id"]*0.5)
         table["ENTRANK_ace"] = to_rank(table["ENT_ace"]).apply(lambda x: x["ood"]*0.5+x["id"]*0.5)
-        mean_rank = (table["ENTRANK_auc"] + table["ENTRANK_ncc"] + table["ENTRANK_ace"]) / 3
-        table["ENTRANK_avg"] = mean_rank
+        table["ENTRANK_avg"] = (table["ENTRANK_auc"] + table["ENTRANK_ncc"] + table["ENTRANK_ace"]) / 3
         table["PERFRANK_auc"] = to_rank(table["EU_auc"]).apply(lambda x: x["ood"])
         table["PERFRANK_ncc"] = to_rank(table["AU_ncc"]).apply(lambda x: x["ood"]*0.5+x["id"]*0.5)
         table["PERFRANK_ace"] = to_rank(table["TU_ace"],ascending=True).apply(lambda x: x["ood"]*0.5+x["id"]*0.5)
-        mean_rank = (table["PERFRANK_auc"] + table["PERFRANK_ncc"] + table["PERFRANK_ace"]) / 3
-        table["PERFRANK_avg"] = mean_rank
+        table["PERFRANK_avg"] = (table["PERFRANK_auc"] + table["PERFRANK_ncc"] + table["PERFRANK_ace"]) / 3
+    #replace all AU prob_unet2 -> prob_unet
+    table["AU"] = table["AU"].apply(lambda x: x.replace("prob_unet2", "prob_unet"))
     return table
 
 def entangle_metric(Uc,Uw,lower_is_better=False):
@@ -552,7 +566,7 @@ def plot_grid_arrow(ax, row, col, direction, grid_w_unit, grid_h_unit, s=1.3, le
         )
 
 def plot_pred_grid(images, batch0, i=0, crop_unused=False, s=1.3, entropy_cmap="viridis", 
-                   setup_v2=False, save_path=None):
+                   setup_v2=False, save_path=None, replace=False):
     image = prepare_image_tensor(images[i])
 
     pred = torch.stack(batch0["softmax_pred_groups"], dim=0).float().cpu()
@@ -782,7 +796,9 @@ def plot_pred_grid(images, batch0, i=0, crop_unused=False, s=1.3, entropy_cmap="
     
     plt.tight_layout()
     if save_path:
-        replace_images_with_corner_markers(fig, save_images="pred_grid_images")
+        if replace:
+            name = Path(save_path).stem
+            replace_images_with_corner_markers(fig, save_images=f"raw_ims/{name}.png")
         plt.savefig(save_path)
 
 def get_bbox_col(matrix, value, is_ace):
@@ -1049,7 +1065,7 @@ def model_scatter(table=None, x="AU_auc[ood]", y="EU_auc[ood]", add_xy=True, ent
             ax.scatter([], [], marker="o", color=color, label=names_to_pretty.get(EU_type, EU_type), s=100)
         for AU_type, marker in AU_to_marker.items():
             ax.scatter([], [], marker=marker, color="black", label=names_to_pretty.get(AU_type, AU_type), s=100)
-        legend = ax.legend()
+        legend = ax.legend(fontsize=9, ncol=2)
     
     # Apply equal scaling if requested
     if equal_scaling:
@@ -1778,9 +1794,14 @@ def plot_lidc(n_rows=3,train_cols=4, val_cols=1, test_cols=1,
 def replace_images_with_corner_markers(fig,save_images="",
                                        save_folder="/home/jloch/Desktop/diff/writing/ECCV2026/ECCV_2026_AU_EU/images"):
     if save_images:
-        assert len(save_images.split("/"))==1, f"save_images should be a single name, not a path"
-        os.makedirs(os.path.join(save_folder,save_images),exist_ok=True)
-        k = 0
+
+        if save_images.endswith(".png"):
+            assert sum([len(ax.get_images()) for ax in fig.axes])==1, f"save_images is a single file but there are multiple images in the figure"
+        else:
+            assert len(save_images.split("/"))==1, f"save_images should be a single name, not a path"
+            os.makedirs(os.path.join(save_folder,save_images),exist_ok=True)
+            #set k to len of existing images in the folder, so that we don't overwrite existing images
+            k = 0
     for ax in fig.axes:
         for im in ax.get_images():
             arr = im.get_array()
@@ -1797,9 +1818,12 @@ def replace_images_with_corner_markers(fig,save_images="",
                 arr = (arr*255).astype(np.uint8)
                 if not len(arr.shape)==3:
                     arr = arr[:,:,None]
-                save_path = os.path.join(save_folder,save_images, f"im_{k}.png")
+                if save_images.endswith(".png"):
+                    save_path = os.path.join(save_folder,save_images)
+                else:
+                    save_path = os.path.join(save_folder,save_images, f"im_{k}.png")
+                    k += 1
                 Image.fromarray(arr).save(save_path)
-                k += 1
 
 def checkerboard_image(image):
     """Returns an image with identical dimensions as the input image, but with a checkerboard pattern. If multi channel, then each channel is identical"""
@@ -2036,8 +2060,9 @@ def qualitative_plot_models(AU=["ssn","diffusion","prob_unet"],
                             EU=["swag","swag_diag","dropout"], save_path=None,
                             n_images=3, n_resamples_for_largest=2,
                             gt_cmap="inferno", EU_top_row=True, padding=2, fontsize=12,
-                            colorbar=False, crop_ratio=1.0):
-    """Plots a large grid of images showing qualitative results for different models on the origlidc128 dataset.
+                            colorbar=False, crop_ratio=1.0,
+                            replace=False, use_ood=False, chaksu_instead=False):
+    """Plots a large grid of images showing qualitative results for different models on the origlidc128 or chaksu128 dataset.
     The first column is the images themselves. The second row are GT segmentations. All (n_AU)x(n_EU) 
     next columns are segmentations from the models. Above the grid we have various column titles. These come in two rows.
     The first row is ["Im", "GT"] + pretty AU names. The top row is empty for the first two columns, then pretty EU names. 
@@ -2050,11 +2075,20 @@ def qualitative_plot_models(AU=["ssn","diffusion","prob_unet"],
     
     Use the code comment above for a reference on how the paths work, how to load images, etc.
     """
-    # Setup paths
-    formatter = "/home/jloch/Desktop/diff/luzern/values/saves/origlidc128/test_results/{model}/e1000_ema/id/pred_seg"
-    image_path = "/home/jloch/Desktop/diff/luzern/values_datasets/origlidc128/preprocessed/images/{id}.npy"
-    labels_path = "/home/jloch/Desktop/diff/luzern/values_datasets/origlidc128/preprocessed/labels/{id}_{cls}_mask.npy"
-    
+    # Dataset-specific paths
+    if chaksu_instead:
+        _pred_root = "/home/jloch/Desktop/diff/luzern/values/saves/chaksu128/test_results/{model}/e500_ema"
+        _image_path = "/home/jloch/Desktop/diff/luzern/values_datasets/chaksu128/preprocessed/images/{id}.npy"
+        _aug_image_path = None  # Chaksu has no augmented OOD images
+        _labels_path = "/home/jloch/Desktop/diff/luzern/values_datasets/chaksu128/preprocessed/labels/{id}_{cls}_mask.npy"
+        _n_annotators = 5
+    else:
+        _pred_root = "/home/jloch/Desktop/diff/luzern/values/saves/origlidc128/test_results/{model}/e1000_ema"
+        _image_path = "/home/jloch/Desktop/diff/luzern/values_datasets/origlidc128/preprocessed/images/{id}.npy"
+        _aug_image_path = "/home/jloch/Desktop/diff/luzern/values_datasets/origlidc128/preprocessed/augmented/{split}/images/{id}.npy"
+        _labels_path = "/home/jloch/Desktop/diff/luzern/values_datasets/origlidc128/preprocessed/labels/{id}_{cls}_mask.npy"
+        _n_annotators = 4
+
     # Determine which is on top row and which is bottom
     if EU_top_row:
         top_list = EU
@@ -2072,46 +2106,62 @@ def qualitative_plot_models(AU=["ssn","diffusion","prob_unet"],
     
  
 
-    # Sample images from one of the models, picking the ones with largest GT areas
-    # Find a model that exists to sample from
+    # Discover available splits
+    def _get_available_ood_splits():
+        for au in AU:
+            for eu in EU:
+                m = f"{au}_{eu}_0"
+                model_root = Path(_pred_root.format(model=m))
+                if model_root.exists():
+                    splits = sorted([d.name for d in model_root.iterdir()
+                                     if d.is_dir() and d.name.startswith("ood")])
+                    if splits:
+                        return splits
+        return []
+
+    if use_ood:
+        available_splits = _get_available_ood_splits()
+        if not available_splits:
+            raise ValueError("No OOD splits found!")
+    else:
+        available_splits = ["id"]
+
+    # Find a model that exists; use first available split to enumerate candidate images
+    ref_split = available_splits[0]
     first_model = None
     for au in AU:
         for eu in EU:
             test_model = f"{au}_{eu}_0"
-            test_files = list(Path(formatter.format(model=test_model)).glob("*_mean.png"))
+            pred_dir = Path(_pred_root.format(model=test_model)) / ref_split / "pred_seg"
+            test_files = sorted(pred_dir.glob("*_mean.png")) if pred_dir.exists() else []
             if test_files:
                 first_model = test_model
-                files = sorted(test_files)
+                files = test_files
                 break
         if first_model:
             break
-    
+
     if not first_model:
         raise ValueError("No models found with predictions!")
-    
-    # Sample n_images * n_resamples_for_largest candidates
+
+    # Sample candidates, pick best by GT area, assign random OOD split per image
     n_candidates = n_images * n_resamples_for_largest
     sampled_candidates = np.random.choice(files, size=n_candidates, replace=False)
-    
-    # Compute GT area for each candidate and select the largest from each group
-    sampled_files = []
+
+    sampled_ids = []  # list of (img_id, split)
     for i in range(n_images):
         group = sampled_candidates[i * n_resamples_for_largest:(i + 1) * n_resamples_for_largest]
         max_area = -1
-        best_file = None
-        
+        best_id = None
         for file in group:
-            img_id = Path(file).parts[-1].replace("_mean.png", "")
-            # Compute total GT area
-            label_paths = [labels_path.format(id=img_id, cls=f"{j:02d}") for j in range(4)]
-            gt_labels = [np.load(lp) for lp in label_paths]
-            gt_area = np.stack(gt_labels, axis=0).sum()
-            
+            img_id = Path(file).stem.replace("_mean", "")
+            label_paths = [_labels_path.format(id=img_id, cls=f"{j:02d}") for j in range(_n_annotators)]
+            gt_area = sum(np.load(lp).sum() for lp in label_paths if Path(lp).exists())
             if gt_area > max_area:
                 max_area = gt_area
-                best_file = file
-        
-        sampled_files.append(str(best_file).replace(first_model, "{model}"))
+                best_id = img_id
+        img_split = available_splits[np.random.randint(len(available_splits))]
+        sampled_ids.append((best_id, img_split))
     
     # First pass: check which models exist and build column mapping
     # Structure: model_exists[top_idx][bottom_idx] = (exists, global_col_idx)
@@ -2132,10 +2182,10 @@ def qualitative_plot_models(AU=["ssn","diffusion","prob_unet"],
             model_name = f"{au_val}_{eu_val}_0"
             
             # Check if this model has predictions for the first sampled image
-            test_pred_path = sampled_files[0].format(model=model_name)
-            test_pred_file = test_pred_path.replace("_mean", "_01")
-            
-            if Path(test_pred_file).exists():
+            ref_img_id, ref_split_check = sampled_ids[0]
+            test_pred_file = Path(_pred_root.format(model=model_name)) / ref_split_check / "pred_seg" / f"{ref_img_id}_01.png"
+
+            if test_pred_file.exists():
                 model_exists[top_idx][bottom_idx] = (True, col_counter)
                 col_counter += 1
             else:
@@ -2143,7 +2193,12 @@ def qualitative_plot_models(AU=["ssn","diffusion","prob_unet"],
     
     n_cols = col_counter  # Total columns including Image and GT
     all_tiles = []
-    
+
+    def _idx_to_onehot_local(arr, n_classes=3):
+        """(H,W) integer class-index array → (n_classes, H, W) float32 one-hot."""
+        idx = arr.astype(np.int64)
+        return (np.arange(n_classes)[:, None, None] == idx[None]).astype(np.float32)
+
     if crop_ratio < 1.0:
         # Calculate crop margins
         crop_margin = int((1 - crop_ratio) / 2 * 128)  # Assuming original images are 128x128
@@ -2151,29 +2206,39 @@ def qualitative_plot_models(AU=["ssn","diffusion","prob_unet"],
     else:
         crop = (slice(None), slice(None))
 
-    for img_idx, file in enumerate(sampled_files):
-        img_id = Path(file).parts[-1].replace("_mean.png", "")
-        
+    for img_idx, (img_id, split) in enumerate(sampled_ids):
+
         # First column: input image
-        image = np.load(image_path.format(id=img_id))
+        if not chaksu_instead and split != "id":
+            img_path = _aug_image_path.format(split=split, id=img_id)
+        else:
+            img_path = _image_path.format(id=img_id)
+        image = np.load(img_path)
         image = (image - image.min()) / (image.max() - image.min())
         # Crop to center region
         image = image[crop]
-        # Convert to RGB for consistency
-        image_rgb = np.stack([image, image, image], axis=0)
+        # Convert to RGB for consistency (handles both grayscale and RGB)
+        if image.ndim == 2:
+            image_rgb = np.stack([image, image, image], axis=0)
+        else:  # (H, W, C) -> (C, H, W)
+            image_rgb = image.transpose(2, 0, 1)
         all_tiles.append(torch.from_numpy(image_rgb).float())
         
-        # Second column: GT segmentation (summed over 4 classes)
-        label_paths = [labels_path.format(id=img_id, cls=f"{i:02d}") for i in range(4)]
+        # Second column: GT segmentation (summed/averaged over annotators)
+        label_paths = [_labels_path.format(id=img_id, cls=f"{i:02d}") for i in range(_n_annotators)]
         gt_labels = [np.load(lp) for lp in label_paths]
-        gt_sum = np.stack(gt_labels, axis=0).sum(axis=0)
-        # Crop to center region
-        gt_sum = gt_sum[crop]
-        # Apply colormap
-        gt_cmap_obj = plt.get_cmap(gt_cmap)
-        gt_normalized = gt_sum / 4.0  # vmax = 4
-        gt_colored = gt_cmap_obj(gt_normalized)[:, :, :3]  # Get RGB, drop alpha
-        gt_colored_tensor = torch.from_numpy(gt_colored).permute(2, 0, 1).float()
+        if chaksu_instead:
+            # Average one-hot over annotators → onehot_to_rgb
+            onehots = np.stack([_idx_to_onehot_local(lbl) for lbl in gt_labels], axis=0)  # (N,3,H,W)
+            mean_onehot = onehots.mean(axis=0)  # (3,H,W)
+            mean_onehot_cropped = mean_onehot[:, crop[0], crop[1]]
+            gt_colored_tensor = onehot_to_rgb(torch.from_numpy(mean_onehot_cropped))
+        else:
+            gt_sum = np.stack(gt_labels, axis=0).sum(axis=0)[crop]
+            gt_cmap_obj = plt.get_cmap(gt_cmap)
+            gt_normalized = gt_sum / _n_annotators
+            gt_colored = gt_cmap_obj(gt_normalized)[:, :, :3]
+            gt_colored_tensor = torch.from_numpy(gt_colored).permute(2, 0, 1).float()
         all_tiles.append(gt_colored_tensor)
         
         # Remaining columns: model predictions in order of top x bottom
@@ -2198,24 +2263,28 @@ def qualitative_plot_models(AU=["ssn","diffusion","prob_unet"],
                 model_name = f"{au_val}_{eu_val}_0"
                 
                 # Load all 10 predictions and sum them
-                pred_path = file.format(model=model_name)
+                pred_stem = str(Path(_pred_root.format(model=model_name)) / split / "pred_seg" / img_id)
                 preds = []
                 for i in range(1, 11):  # Load predictions 01-10
-                    pred_file = pred_path.replace("_mean", f"_{i:02d}")
+                    pred_file = pred_stem + f"_{i:02d}.png"
                     if Path(pred_file).exists():
-                        pred_img = np.array(Image.open(pred_file)).astype(np.float32)
-                        # Normalize to 0-1 (images are 0-255)
-                        pred_img = pred_img / 255.0
-                        preds.append(pred_img)
+                        pred_img = np.array(Image.open(pred_file))
+                        if chaksu_instead:
+                            preds.append(pred_img)  # keep as uint8 class-index
+                        else:
+                            preds.append(pred_img.astype(np.float32) / 255.0)
                 
                 if preds:
-                    pred_sum = np.stack(preds, axis=0).sum(axis=0)
-                    # Crop to center region
-                    pred_sum = pred_sum[crop]
-                    # Apply colormap - normalize by 10 since we sum 10 predictions (each 0-1)
-                    pred_normalized = pred_sum / len(preds)
-                    pred_colored = gt_cmap_obj(pred_normalized)[:, :, :3]  # Get RGB, drop alpha
-                    pred_colored_tensor = torch.from_numpy(pred_colored).permute(2, 0, 1).float()
+                    if chaksu_instead:
+                        # preds are class-index (H,W) uint8 images; average one-hot → onehot_to_rgb
+                        onehots = np.stack([_idx_to_onehot_local(p.astype(np.int64)) for p in preds], axis=0)  # (N,3,H,W)
+                        mean_pred_onehot = onehots.mean(axis=0)[:, crop[0], crop[1]]  # (3,H,W)
+                        pred_colored_tensor = onehot_to_rgb(torch.from_numpy(mean_pred_onehot))
+                    else:
+                        pred_sum = np.stack(preds, axis=0).sum(axis=0)[crop]
+                        pred_normalized = pred_sum / len(preds)
+                        pred_colored = gt_cmap_obj(pred_normalized)[:, :, :3]
+                        pred_colored_tensor = torch.from_numpy(pred_colored).permute(2, 0, 1).float()
                     row_tiles[col_idx - 2] = pred_colored_tensor
         
         # Add all row tiles to all_tiles
@@ -2293,7 +2362,7 @@ def qualitative_plot_models(AU=["ssn","diffusion","prob_unet"],
     # Top row titles (EU or AU depending on EU_top_row)
     title_y_top = -grid_h * 0.12
     title_y_bottom = -grid_h * 0.05
-    title_y_icon = -grid_h * 0.02
+    title_y_icon = -grid_h * 0.03
     
     # For each top group, find the range of columns and add centered title
     for top_idx, top_val in enumerate(top_list):
@@ -2409,7 +2478,7 @@ def qualitative_plot_models(AU=["ssn","diffusion","prob_unet"],
             ax.text(x_label_pos, title_y_bottom, "← EU", ha='left', va='bottom', 
                    fontsize=fontsize, clip_on=False, style='italic')
     
-    if colorbar:
+    if colorbar and not chaksu_instead:
         # Add colorbar for the segmentations
         divider = make_axes_locatable(ax)
         cax = divider.append_axes("right", size="2%", pad=0.1)
@@ -2424,66 +2493,538 @@ def qualitative_plot_models(AU=["ssn","diffusion","prob_unet"],
         cbar.ax.tick_params(labelsize=fontsize - 2)
 
     if save_path:
+        if replace:
+            name = Path(save_path).stem
+            replace_images_with_corner_markers(fig, save_images=f"raw_ims/{name}.png")
         plt.savefig(save_path, dpi=150, bbox_inches='tight')
     
     return fig
 
-from matplotlib.patches import Wedge
+
+def qualitative_plot_uncertainty(AU=["ssn","diffusion","prob_unet"],
+                                  EU=["swag","swag_diag","dropout"], save_path=None,
+                                  n_images_lidc=2, n_images_chaksu=2,
+                                  n_resamples_for_largest=2,
+                                  EU_top_row=True, padding=2, fontsize=12,
+                                  crop_ratio=1.0, replace=False,
+                                  use_ood=False):
+    """Plots a large grid showing AU, EU, TU uncertainty maps for LIDC and Chaksu datasets.
+
+    n_images_lidc LIDC images are shown first, then n_images_chaksu Chaksu images.
+    Each image occupies 3 rows (AU / EU / TU). The first two columns show:
+      AU row:  input image | GT4 for Chaksu (5th annotator) / white for LIDC
+      EU row:  annotator 0 GT | annotator 1 GT
+      TU row:  annotator 2 GT | annotator 3 GT  (white if annotator doesn't exist)
+    LIDC GTs are binary masks shown as greyscale; Chaksu GTs are 3-class index maps
+    converted to one-hot and rendered with onehot_to_rgb.
+    """
+    _LIDC   = "lidc"
+    _CHAKSU = "chaksu"
+
+    # Per-dataset path templates (without split suffix)
+    _base_root = {
+        _LIDC:   "/home/jloch/Desktop/diff/luzern/values/saves/origlidc128/test_results/{model}/e1000_ema",
+        _CHAKSU: "/home/jloch/Desktop/diff/luzern/values/saves/chaksu128/test_results/{model}/e500_ema",
+    }
+    _image_fmt = {
+        _LIDC:   "/home/jloch/Desktop/diff/luzern/values_datasets/origlidc128/preprocessed/images/{id}.npy",
+        _CHAKSU: "/home/jloch/Desktop/diff/luzern/values_datasets/chaksu128/preprocessed/images/{id}.npy",
+    }
+    # For LIDC OOD splits, images live under an augmented sub-directory
+    _augmented_image_fmt = {
+        _LIDC: "/home/jloch/Desktop/diff/luzern/values_datasets/origlidc128/preprocessed/augmented/{split}/images/{id}.npy",
+    }
+    _labels_fmt = {
+        _LIDC:   "/home/jloch/Desktop/diff/luzern/values_datasets/origlidc128/preprocessed/labels/{id}_{cls}_mask.npy",
+        _CHAKSU: "/home/jloch/Desktop/diff/luzern/values_datasets/chaksu128/preprocessed/labels/{id}_{cls}_mask.npy",
+    }
+    _n_annotators = {_LIDC: 4, _CHAKSU: 5}  # number of annotators per dataset
+
+    n_images = n_images_lidc + n_images_chaksu
+    unc_types = ["AU", "EU", "TU"]
+
+    # Determine which list goes on the top title row and which on the bottom
+    if EU_top_row:
+        top_list, bottom_list = EU, AU
+        bottom_type = "AU"
+    else:
+        top_list, bottom_list = AU, EU
+        bottom_type = "EU"
+
+    n_top = len(top_list)
+
+    # ---- Discover available OOD splits for a dataset ----
+    def _get_available_ood_splits(dataset):
+        """Return sorted list of OOD split directory names (e.g. ['ood', 'ood_blur', ...])."""
+        for au in AU:
+            for eu in EU:
+                m = f"{au}_{eu}_0"
+                model_root = Path(_base_root[dataset].format(model=m))
+                if model_root.exists():
+                    splits = sorted([d.name for d in model_root.iterdir()
+                                     if d.is_dir() and d.name.startswith("ood")])
+                    if splits:
+                        return splits
+        return []
+
+    # ---- Sample image IDs (and splits) from a dataset ----
+    def _sample_ids(dataset, n_req):
+        """Returns list of (img_id, split) pairs; split is 'id' or a random OOD split."""
+        n_annot = _n_annotators[dataset]
+        lbl_fmt = _labels_fmt[dataset]
+
+        if use_ood:
+            available_splits = _get_available_ood_splits(dataset)
+            if not available_splits:
+                raise ValueError(f"No OOD splits found for dataset '{dataset}'!")
+        else:
+            available_splits = ["id"]
+
+        # Use the first available split to discover candidate image IDs
+        ref_split = available_splits[0]
+        first_model, files = None, None
+        for au in AU:
+            for eu in EU:
+                m = f"{au}_{eu}_0"
+                au_dir = Path(_base_root[dataset].format(model=m)) / ref_split / "AU"
+                tfs = sorted(au_dir.glob("*.tif")) if au_dir.exists() else []
+                if tfs:
+                    first_model, files = m, tfs
+                    break
+            if first_model:
+                break
+        if not first_model:
+            raise ValueError(f"No models found for dataset '{dataset}'!")
+        n_cand = n_req * n_resamples_for_largest
+        cands = np.random.choice(files, size=min(n_cand, len(files)), replace=False)
+        sampled = []
+        for i in range(n_req):
+            group = cands[i * n_resamples_for_largest:(i + 1) * n_resamples_for_largest]
+            max_area, best_id = -1, None
+            for f in group:
+                img_id = Path(f).stem
+                lps = [lbl_fmt.format(id=img_id, cls=f"{j:02d}") for j in range(n_annot)]
+                area = sum(np.load(lp).sum() for lp in lps if Path(lp).exists())
+                if area > max_area:
+                    max_area, best_id = area, img_id
+            # Independently assign a random OOD split for each image
+            img_split = available_splits[np.random.randint(len(available_splits))]
+            sampled.append((best_id, img_split))
+        return sampled, first_model
+
+    lidc_pairs,   lidc_first   = _sample_ids(_LIDC,   n_images_lidc)   if n_images_lidc   > 0 else ([], None)
+    chaksu_pairs, chaksu_first = _sample_ids(_CHAKSU, n_images_chaksu) if n_images_chaksu > 0 else ([], None)
+
+    # Combined ordered list of (img_id, dataset, split)
+    sampled_items = [(img_id, _LIDC,   split) for img_id, split in lidc_pairs] + \
+                    [(img_id, _CHAKSU, split) for img_id, split in chaksu_pairs]
+
+    # Model existence checked against the first available reference image
+    _ref = lidc_pairs[0] if lidc_pairs else chaksu_pairs[0]
+    ref_img_id, ref_split = _ref[0], _ref[1]
+    ref_ds = _LIDC if lidc_pairs else _CHAKSU
+
+    model_exists = {}
+    col_counter = 2  # columns 0 and 1 are Image and GT
+    for top_idx, top_val in enumerate(top_list):
+        model_exists[top_idx] = {}
+        for bottom_idx, bottom_val in enumerate(bottom_list):
+            au_val, eu_val = (bottom_val, top_val) if EU_top_row else (top_val, bottom_val)
+            model_name = f"{au_val}_{eu_val}_0"
+            test_path = Path(_base_root[ref_ds].format(model=model_name)) / ref_split / "AU" / f"{ref_img_id}.tif"
+            if test_path.exists():
+                model_exists[top_idx][bottom_idx] = (True, col_counter)
+                col_counter += 1
+            else:
+                model_exists[top_idx][bottom_idx] = (False, -1)
+
+    n_cols = col_counter
+    n_rows = n_images * 3
+
+    # Crop setup
+    if crop_ratio < 1.0:
+        crop_margin = int((1 - crop_ratio) / 2 * 128)
+        crop = (slice(crop_margin, 128 - crop_margin), slice(crop_margin, 128 - crop_margin))
+        crop_sz = 128 - 2 * crop_margin
+    else:
+        crop = (slice(None), slice(None))
+        crop_sz = 128
+
+    viridis_cmap = plt.get_cmap('viridis')
+    gt_cmap_obj  = plt.get_cmap('inferno')
+
+    # ---- GT rendering helpers ----
+    def _idx_to_onehot(arr, n_classes=3):
+        """(H,W) integer index array → (n_classes, H, W) float32 one-hot."""
+        idx = arr.astype(np.int64)
+        return (np.arange(n_classes)[:, None, None] == idx[None]).astype(np.float32)
+
+    def _gt_individual_tile(mask_arr, dataset):
+        """Render a single annotator's GT mask as a 3-channel (C,H,W) tensor."""
+        if dataset == _LIDC:
+            g = mask_arr  # binary float32
+            return torch.from_numpy(np.stack([g, g, g], axis=0)).float()
+        else:  # chaksu: index map → one-hot → rgb
+            return onehot_to_rgb(torch.from_numpy(_idx_to_onehot(mask_arr)))
+
+    def _gt_sum_tile(gt_labels_all, dataset):
+        """Render a summary tile across all annotators."""
+        if dataset == _LIDC:
+            gt_sum = np.stack(gt_labels_all, axis=0).sum(axis=0)
+            gt_colored = gt_cmap_obj(gt_sum / len(gt_labels_all))[:, :, :3]
+            return torch.from_numpy(gt_colored).permute(2, 0, 1).float()
+        else:  # chaksu: average one-hot over annotators → rgb
+            onehots = np.stack([_idx_to_onehot(g) for g in gt_labels_all], axis=0)  # (N,3,H,W)
+            return onehot_to_rgb(torch.from_numpy(onehots.mean(axis=0)))
+
+    # max_vals[(grid_row, col_idx)] = vmax  – used later for red text overlays
+    max_vals = {}
+    # gt_overlay_labels: list of (grid_row, col_idx, label) for GT_N annotations
+    gt_overlay_labels = []
+
+    def white_tile():
+        return torch.ones(3, crop_sz, crop_sz).float()
+
+    all_tiles = []
+
+    for img_idx, (img_id, dataset, split) in enumerate(sampled_items):
+        n_annot   = _n_annotators[dataset]
+        lbl_fmt   = _labels_fmt[dataset]
+        img_fmt   = _image_fmt[dataset]
+        base_root = _base_root[dataset]
+
+        # Load all annotator GT masks for this image
+        lps = [lbl_fmt.format(id=img_id, cls=f"{i:02d}") for i in range(n_annot)]
+        gt_labels_all = [np.load(lp).astype(np.float32)[crop] for lp in lps]
+
+        for unc_type_idx, unc_type in enumerate(unc_types):
+            grid_row = img_idx * 3 + unc_type_idx
+
+            # --- Column 0: input image (AU) / annotator GT (EU→annot 0, TU→annot 2) ---
+            if unc_type_idx == 0:
+                if dataset == _LIDC and split != "id":
+                    img_path = _augmented_image_fmt[_LIDC].format(split=split, id=img_id)
+                else:
+                    img_path = img_fmt.format(id=img_id)
+                image = np.load(img_path)
+                image = (image - image.min()) / (image.max() - image.min())
+                image = image[crop]
+                # Handle both grayscale (H,W) and RGB (H,W,3) images
+                if image.ndim == 2:
+                    image_tensor = torch.from_numpy(np.stack([image, image, image], axis=0)).float()
+                else:  # (H, W, C) → (C, H, W)
+                    image_tensor = torch.from_numpy(image).permute(2, 0, 1).float()
+                all_tiles.append(image_tensor)
+            else:
+                # LIDC reading order col0: GT0, GT2; Chaksu reading order col0: GT1, GT3
+                if dataset == _LIDC:
+                    annot_idx = (unc_type_idx - 1) * 2      # EU→0, TU→2
+                else:
+                    annot_idx = (unc_type_idx - 1) * 2 + 1  # EU→1, TU→3
+                if annot_idx < n_annot:
+                    all_tiles.append(_gt_individual_tile(gt_labels_all[annot_idx], dataset))
+                    gt_overlay_labels.append((grid_row, 0, f"GT_{annot_idx}"))
+                else:
+                    all_tiles.append(white_tile())
+
+            # --- Column 1: GT4 for Chaksu (AU) / white for LIDC (AU) / annot GT (EU→1, TU→3) ---
+            if unc_type_idx == 0:
+                if dataset == _CHAKSU:
+                    # Chaksu reading order: GT0 goes in AU row col 1
+                    all_tiles.append(_gt_individual_tile(gt_labels_all[0], dataset))
+                    gt_overlay_labels.append((grid_row, 1, "GT_0"))
+                else:
+                    # LIDC has 4 annotators: leave AU row col 1 as white
+                    all_tiles.append(white_tile())
+            else:
+                # LIDC reading order col1: GT1, GT3; Chaksu reading order col1: GT2, GT4
+                if dataset == _LIDC:
+                    annot_idx = (unc_type_idx - 1) * 2 + 1  # EU→1, TU→3
+                else:
+                    annot_idx = (unc_type_idx - 1) * 2 + 2  # EU→2, TU→4
+                if annot_idx < n_annot:
+                    all_tiles.append(_gt_individual_tile(gt_labels_all[annot_idx], dataset))
+                    gt_overlay_labels.append((grid_row, 1, f"GT_{annot_idx}"))
+                else:
+                    all_tiles.append(white_tile())
+
+            # --- Remaining columns: uncertainty maps ---
+            row_tiles = [None] * (n_cols - 2)
+
+            for top_idx, top_val in enumerate(top_list):
+                for bottom_idx, bottom_val in enumerate(bottom_list):
+                    exists, col_idx = model_exists[top_idx][bottom_idx]
+                    if not exists:
+                        continue
+                    au_val, eu_val = (bottom_val, top_val) if EU_top_row else (top_val, bottom_val)
+                    model_name = f"{au_val}_{eu_val}_0"
+                    unc_path = Path(base_root.format(model=model_name)) / split / unc_type / f"{img_id}.tif"
+
+                    if unc_path.exists():
+                        unc_img = np.array(Image.open(unc_path)).astype(np.float32)[crop]
+                        vmax = float(unc_img.max())
+                        unc_norm = unc_img / vmax if vmax > 0 else unc_img
+                        unc_colored = viridis_cmap(unc_norm)[:, :, :3]
+                        row_tiles[col_idx - 2] = torch.from_numpy(unc_colored).permute(2, 0, 1).float()
+                        max_vals[(grid_row, col_idx)] = vmax
+                    else:
+                        row_tiles[col_idx - 2] = white_tile()
+
+            # Fill any missing model slots with white
+            for i, t in enumerate(row_tiles):
+                if t is None:
+                    row_tiles[i] = white_tile()
+
+            all_tiles.extend(row_tiles)
+
+    # --- Build grid ---
+    grid_stack = torch.stack(all_tiles, dim=0)
+    grid = torchvision.utils.make_grid(
+        grid_stack,
+        nrow=n_cols,
+        padding=padding,
+        value_range=[0, 1],
+        pad_value=0.5,
+    )
+
+    grid_np = grid.permute(1, 2, 0).numpy()
+    h, w = grid_np.shape[:2]
+    tile_h = (h - padding * (n_rows - 1)) // n_rows
+    tile_w = (w - padding * (n_cols - 1)) // n_cols
+
+    # Make HORIZONTAL padding strips white between image groups (every 3 rows).
+    # Robustly detect all-grey (pad_value=0.5) horizontal strips by scanning pixel rows,
+    # then whiten every 3rd one (indices 2, 5, 8, ...) which are image-group boundaries.
+    grey_strips = []
+    row_i = 0
+    while row_i < h:
+        if np.allclose(grid_np[row_i, :, :], 0.5, atol=0.01):
+            start = row_i
+            while row_i < h and np.allclose(grid_np[row_i, :, :], 0.5, atol=0.01):
+                row_i += 1
+            grey_strips.append((start, row_i))
+        else:
+            row_i += 1
+    for strip_idx, (y_start, y_end) in enumerate(grey_strips):
+        if strip_idx % 3 == 0:  # boundary between image groups of 3 rows (shifted +1)
+            grid_np[y_start:y_end, :, :] = 1.0
+
+    # Make VERTICAL padding strips white between model groups (same logic as qualitative_plot_models)
+    all_existing_cols = [col_idx for top_idx in model_exists
+                         for exists, col_idx in model_exists[top_idx].values() if exists]
+    white_vert_cols = set()
+    if all_existing_cols:
+        white_vert_cols.add(min(all_existing_cols))
+    prev_max_col = None
+    for top_idx in range(n_top):
+        cols_in_group = [col_idx for exists, col_idx in model_exists[top_idx].values() if exists]
+        if not cols_in_group:
+            continue
+        if prev_max_col is not None:
+            white_vert_cols.add(min(cols_in_group))
+        prev_max_col = max(cols_in_group)
+
+    for col_idx in white_vert_cols:
+        if col_idx == 0:
+            continue
+        x_start = col_idx * tile_w + (col_idx - 1) * padding + 2
+        x_end = x_start + padding
+        if x_end <= w:
+            grid_np[:, x_start:x_end, :] = 1.0
+
+    grid = torch.from_numpy(grid_np).permute(2, 0, 1).float()
+    grid_img = grid.permute(1, 2, 0).numpy()
+    grid_h, grid_w = grid_img.shape[:2]
+    grid_w_unit = grid_w / n_cols
+    grid_h_unit = grid_h / n_rows
+
+    # --- Create figure ---
+    # Keep the same figsize formula as qualitative_plot_models: width = n_cols*2 (unchanged),
+    # height = n_images*2 + 1.5 (not n_rows*2+1.5). This ensures text appears at the same
+    # physical size and the header area is proportional to a single tile, not to all 3*n_images rows.
+    fig, ax = plt.subplots(figsize=(n_cols * 2, n_images * 2 + 1.5))
+    ax.imshow(grid_img, extent=[0, grid_w, grid_h, 0])
+    ax.axis('off')
+    ax.set_xlim(0, grid_w)
+    ax.set_ylim(grid_h, 0)
+
+    # ---- Column titles (identical layout to qualitative_plot_models) ----
+    # Base offsets on tile_h (one image height) rather than grid_h so that the header
+    # area stays ~0.5 tiles tall regardless of how many rows are in the grid (n_rows = n_images*3).
+    title_y_top    = -tile_h * 0.6   # ≈ -grid_h*0.12 from old function when n_images=3
+    title_y_bottom = -tile_h * 0.3
+    title_y_icon   = -tile_h * 0.15
+
+    # Column title fontsizes reduced ~30% vs qualitative_plot_models to account for the
+    # larger figsize-to-tile ratio in this plot.
+    title_fontsize_top    = round((fontsize + 2) * 0.7)
+    title_fontsize_bottom = round(fontsize * 0.7)
+    icon_s = 80  # was 300
+
+    # Top-row group title (centered over each AU/EU group of columns)
+    for top_idx, top_val in enumerate(top_list):
+        cols_in_group = [col_idx for exists, col_idx in model_exists[top_idx].values() if exists]
+        if not cols_in_group:
+            continue
+        center_col = (min(cols_in_group) + max(cols_in_group) + 1) / 2.0
+        ax.text(center_col * grid_w_unit, title_y_top,
+                names_to_pretty.get(top_val, top_val),
+                ha='center', va='bottom', fontsize=title_fontsize_top, clip_on=False)
+
+    # Vertical separator lines flanking each top group.
+    # Hardcode top to -tile_h so lines always span exactly 1 tile height.
+    prev_max_col = None
+    for top_idx, top_val in enumerate(top_list):
+        cols_in_group = [col_idx for exists, col_idx in model_exists[top_idx].values() if exists]
+        if not cols_in_group:
+            continue
+        min_col = min(cols_in_group)
+        max_col = max(cols_in_group)
+        ax.plot([min_col * grid_w_unit] * 2, [-tile_h*0.9, 0],
+                color='black', linewidth=1, clip_on=False)
+        prev_max_col = max_col
+
+    if prev_max_col is not None:
+        ax.plot([(prev_max_col + 1) * grid_w_unit] * 2, [-tile_h*0.9, 0],
+                color='black', linewidth=1, clip_on=False)
+
+    # Fixed labels for first two columns
+    ax.text(1.0 * grid_w_unit,  title_y_bottom, "Image +\nGround Truths", ha='center', va='center', fontsize=title_fontsize_bottom, clip_on=False)
+
+    # Per-model bottom labels with icons
+    for top_idx, top_val in enumerate(top_list):
+        for bottom_idx, bottom_val in enumerate(bottom_list):
+            exists, col_idx = model_exists[top_idx][bottom_idx]
+            if not exists:
+                continue
+            x_pos = (col_idx + 0.5) * grid_w_unit
+            au_val, eu_val = (bottom_val, top_val) if EU_top_row else (top_val, bottom_val)
+            marker     = AU_to_marker.get(au_val, "o")
+            icon_color = EU_to_color.get(eu_val, "C7")
+            text_color = "black" if bottom_type == "AU" else EU_to_color.get(bottom_val, "C7")
+            ax.scatter(x_pos, title_y_icon, marker=marker, color=icon_color,
+                       s=icon_s, clip_on=False, zorder=10)
+            ax.text(x_pos, title_y_bottom, names_to_pretty.get(bottom_val, bottom_val),
+                    ha='center', va='bottom', fontsize=title_fontsize_bottom, color=text_color, clip_on=False)
+
+    # ---- AU / EU / TU row labels to the right of the grid ----
+    if all_existing_cols:
+        x_label_pos = (max(all_existing_cols) + 1.15) * grid_w_unit
+        for row_idx in range(n_rows):
+            unc_label = unc_types[row_idx % 3]
+            y_center = row_idx * (tile_h + padding) + tile_h / 2
+            ax.text(x_label_pos, y_center, unc_label,
+                    ha='left', va='center', fontsize=fontsize,
+                    fontweight='bold', clip_on=False)
+
+    # ---- Small red max-value annotation on each uncertainty tile ----
+    for (grid_row, col_idx), vmax in max_vals.items():
+        x_right = col_idx * (tile_w + padding) + tile_w
+        y_top   = grid_row * (tile_h + padding) + 3
+        ax.text(x_right - 2, y_top, pretty_num(vmax),
+                ha='right', va='top',
+                fontsize=max(fontsize - 5, 5), color='red', clip_on=True)
+
+    # ---- Small white GT_N labels on individual GT greyscale tiles ----
+    # label stored as e.g. "GT_0"; reformat to LaTeX subscript $\mathrm{GT}_0$
+    for grid_row, col_idx, label in gt_overlay_labels:
+        prefix, num = label.split("_")
+        latex_label = f"{prefix}{num}"
+        x_left   = col_idx * (tile_w + padding) + 3
+        y_top_px = grid_row * (tile_h + padding) + 3
+        ax.text(x_left, y_top_px, latex_label, ha='left', va='top',
+                fontsize=max(fontsize - 5, 4), color='white', clip_on=True,
+                fontweight='bold')
+
+    if save_path:
+        if replace:
+            name = Path(save_path).stem
+            replace_images_with_corner_markers(fig, save_images=f"raw_ims/{name}.png")
+        plt.savefig(save_path, dpi=150, bbox_inches='tight')
+
+    return fig
+
+
 
 def entangle_metric_vis(save_path=None):
     fig, ax = plt.subplots(figsize=(4, 4))
 
     # --- Axes limits / ticks / labels ---
     ax.set_xlim(-1, 10)
-    ax.set_ylim(-1, 10)
+    ax.set_ylim(-0.2, 10)
     ax.set_xticks([])
     ax.set_yticks([])
     ax.set_aspect("equal", adjustable="box")
 
     # Draw x/y axes as arrows with arrowheads at the positive ends
-    ax.annotate("", xy=(10, 0), xytext=(-1, 0),
+    ax.annotate("", xy=(10, 0), xytext=(-0.6, 0),
                 arrowprops=dict(arrowstyle="-|>,head_width=0.4,head_length=0.5", color="black", lw=2.5),
                 annotation_clip=False)
-    ax.annotate("", xy=(0, 10), xytext=(0, -1),
+    ax.annotate("", xy=(0, 10), xytext=(0, -0.3),
                 arrowprops=dict(arrowstyle="-|>,head_width=0.4,head_length=0.5", color="black", lw=2.5),
                 annotation_clip=False)
 
     # Axis labels near the arrowheads
-    ax.text(9.5, -0.2, "Wrong Unc. Measure ($U_w$)", ha='right', va='top', fontsize=11)
-    ax.text(0.3, 9.5, "Correct Unc.\nMeasure ($U_c$)", ha='left', va='top', fontsize=11)
+    ax.text(9.0, 0.2, "Wrong Unc. Measure ($U_w$)", ha='right', va='bottom', fontsize=11)
+    ax.text(0.3, 9.1, "Correct Unc.\nMeasure ($U_c$)", ha='left', va='top', fontsize=11)
 
-    # --- Pie-like colored sectors in the first quadrant ---
-    R = 10 * np.sqrt(2)  # big enough to cover up to (10,10) after clipping by axes
-
-    # Angles are in degrees from +x axis; x=y corresponds to 45°
-    # [0,30] darker red, [30,45] light red, [45,60] light green, [60,90] darker green
-    sectors = [
-        (0, 30,  "#f2a6a6"),  # slightly darker (still light) red
-        (30, 45, "#ffd1d1"),  # light red
-        (45, 60, "#d7f5d7"),  # light green
-        (60, 90, "#aee8ae"),  # slightly darker (still light) green
+    # --- Colored triangular sectors extending to plot boundaries ---
+    max_coord = 9.5  # extend triangles to this boundary
+    
+    # Calculate where each angle ray intersects the boundaries (x=max_coord or y=max_coord)
+    def get_boundary_point(angle_deg):
+        """Get point where ray at given angle hits x=max_coord or y=max_coord boundary"""
+        angle_rad = np.radians(angle_deg)
+        # Check if it hits x=max_coord (vertical line) or y=max_coord (horizontal line) first
+        y_at_x_bound = max_coord * np.tan(angle_rad)
+        x_at_y_bound = max_coord / np.tan(angle_rad) if angle_rad > 0 else np.inf
+        
+        if y_at_x_bound <= max_coord:
+            return [max_coord, y_at_x_bound]
+        else:
+            return [x_at_y_bound, max_coord]
+    
+    # Define triangular regions
+    triangle_regions = [
+        (0, 30,  "#f2a6a6"),   # darker red
+        (30, 45, "#ffd1d1"),   # light red
+        (45, 60, "#d7f5d7"),   # light green
+        (60, 90, "#aee8ae"),   # darker green
     ]
-    for a1, a2, c in sectors:
-        ax.add_patch(Wedge((0, 0), R, a1, a2, facecolor=c, edgecolor="none", alpha=0.9, zorder=0))
+    
+    for a1, a2, color in triangle_regions:
+        # Create triangle from origin to boundary points at angles a1 and a2
+        vertices = [
+            [0, 0],
+            get_boundary_point(a1),
+            get_boundary_point(a2)
+        ]
+        triangle = Polygon(vertices, facecolor=color, edgecolor="none", alpha=0.9, zorder=0)
+        ax.add_patch(triangle)
 
-    # --- Fade background colors to transparent between fade_start and fade_end ---
-    _fade_start = 8
-    _fade_end = 9.5
+    # --- White fade with constant opacity region ---
+    _fade_start = 9      # fade starts at 9
+    _fade_end = 9.5      # becomes fully opaque at 9.5
     _N = 500
-    _xs = np.linspace(-1, 10, _N)
-    _ys = np.linspace(-1, 10, _N)
+    _xs = np.linspace(-1, 10.1, _N)
+    _ys = np.linspace(-0.2, 10.1, _N)
     _XX, _YY = np.meshgrid(_xs, _ys)
-    _alpha_x = np.clip((_XX - _fade_start) / (_fade_end - _fade_start), 0, 1)
-    _alpha_y = np.clip((_YY - _fade_start) / (_fade_end - _fade_start), 0, 1)
-    _alpha = np.maximum(_alpha_x, _alpha_y)
+    
+    # Create alpha channel: 0 before fade_start, ramp from fade_start to fade_end, then 1 after
+    _dist = np.maximum(_XX, _YY)  # use max of x and y distance
+    _alpha = np.where(_dist < _fade_start, 0,
+                     np.where(_dist < _fade_end, 
+                             (_dist - _fade_start) / (_fade_end - _fade_start),
+                             1))
+    
     _fade = np.ones((_N, _N, 4))  # white RGBA
     _fade[:, :, 3] = _alpha
-    ax.imshow(_fade, extent=[-1, 10, -1, 10], origin='lower', aspect='auto',
+    ax.imshow(_fade, extent=[-1, 10.1, -0.2, 10.1], origin='lower', aspect='auto',
               zorder=1, interpolation='bilinear')
 
     # --- x=y line (black dashed) ---
     x = np.linspace(0, 10, 400)
-    ax.plot(x, x, "k--", lw=1.5, zorder=2)
+    ax.plot(x, x, "k--", lw=1.5, zorder=0)
 
     # Points requested — pass label and subscript index
     _points = [(2, 5), (6, 4)]
@@ -2519,17 +3060,51 @@ def entangle_metric_vis(save_path=None):
     # Region labels placed in the constant dark red / dark green sectors
     # Dark red: 0–30°, place at midangle=15°, radius~5
     _r_label = 6.0
-    _theta_label = 10
-    ax.text(_r_label * np.cos(np.radians(_theta_label)), _r_label * np.sin(np.radians(_theta_label)),
+    _theta_entangled = 15
+    _theta_disentangled = 80
+    ax.text(_r_label * np.cos(np.radians(_theta_entangled)), _r_label * np.sin(np.radians(_theta_entangled)),
             "Entangled", ha='center', va='center', fontsize=12,
-            color="#881122", fontweight='bold', rotation=_theta_label, zorder=6)
+            color="#881122", fontweight='bold', rotation=_theta_entangled, zorder=6)
     # Dark green: 60–90°, place at midangle=75°, radius~5
-    ax.text(_r_label * np.cos(np.radians(90-_theta_label)), _r_label * np.sin(np.radians(90-_theta_label)),
+    ax.text(_r_label * np.cos(np.radians(_theta_disentangled)), _r_label * np.sin(np.radians(_theta_disentangled)),
             "Disentangled", ha='center', va='center', fontsize=12,
-            color="#118822", fontweight='bold', rotation=90-_theta_label, zorder=6)
+            color="#118822", fontweight='bold', rotation=_theta_disentangled, zorder=6)
 
     plt.tight_layout()
     for spine in ax.spines.values():
         spine.set_visible(False)
     if save_path:
         plt.savefig(save_path, bbox_inches='tight')
+
+def pretty_num(num,decimals=2,e_switch=3):
+    # shows 0.123456 as .123 and 0.7 as .700, 1.23 as 1.23, 12.3 as 12.3, 123 as 123
+    # but 1.23e+4 for 12345 and larger; shows 0.00123456 as 1.23e-3 (controlled by e_switch)
+    if num == 0:
+        return "0"
+
+    sign = "-" if num < 0 else ""
+    num = abs(num)
+
+    exponent = math.floor(math.log10(num))
+
+    # --- Scientific notation branch ---
+    if exponent <= -e_switch or exponent >= e_switch:
+        s = f"{num:.{decimals-1}e}"
+        mantissa, exp = s.split("e")
+
+        exp = int(exp)
+
+        return f"{sign}{mantissa}e{exp:+d}"
+
+    # --- Fixed-point branch ---
+    # number of digits after decimal point needed
+    digits_after_decimal = decimals - exponent - 1
+    digits_after_decimal = max(digits_after_decimal, 0)
+
+    s = f"{num:.{digits_after_decimal}f}"
+
+    # remove leading zero for numbers between -1 and 1
+    if s.startswith("0."):
+        s = s[1:]
+
+    return sign + s

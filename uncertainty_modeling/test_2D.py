@@ -50,7 +50,7 @@ class Tester:
             hparams["seed"] = requested_seed
         set_seed(hparams["seed"])
         self.ignore_index = hparams["data"]["ignore_index"]
-        self.skip_ged = args.skip_ged
+        self.metrics_to_compute = set(args.metrics_compute.split(","))
         dataset_cfg = hparams.get("data", {}).get("dataset", {})
         if not isinstance(dataset_cfg, dict):
             dataset_cfg = {}
@@ -623,9 +623,12 @@ class Tester:
 
     def process_output(self, all_preds):
         ignore_index_map = all_preds["gt"] == self.ignore_index
-        compute_ged = not self.skip_ged and all_preds["gt"].shape[1] > 1
+        has_multiple_raters = all_preds["gt"].shape[1] > 1
+        compute_dice = "dice" in self.metrics_to_compute
+        compute_ged_bma = "ged_bma" in self.metrics_to_compute and has_multiple_raters
+        compute_ged = "ged" in self.metrics_to_compute and has_multiple_raters
         ged_ignore_index = (
-            self.ignore_index if compute_ged and self.ignore_index >= 0 else None
+            self.ignore_index if (compute_ged or compute_ged_bma) and self.ignore_index >= 0 else None
         )
         n_batch = all_preds["softmax_pred"].shape[1]
         raw_pred_groups = all_preds.get("softmax_pred_groups", [])
@@ -638,20 +641,22 @@ class Tester:
             self.results_dict[image_id]["metrics"] = {}
             gt_tensor = all_preds["gt"][image_idx]
             gt_for_backend = gt_tensor if is_lidc_dataset else gt_tensor.to(self.device)
-            self.results_dict[image_id]["metrics"].update(
-                self.calculate_test_metrics(mean_softmax_pred, gt_tensor)
-            )
-            if compute_ged:
+            if compute_dice:
+                self.results_dict[image_id]["metrics"].update(
+                    self.calculate_test_metrics(mean_softmax_pred, gt_tensor)
+                )
+            if compute_ged_bma:
                 bma_metrics = self._compute_ged_backend(
                     image_preds,
                     gt_for_backend,
                     ged_ignore_index,
-                    additional_metrics=["dice"],
+                    additional_metrics=["dice"] if compute_dice else [],
                 )
                 bma_ged = bma_metrics.pop("ged", None)
                 if bma_ged is not None:
                     self.results_dict[image_id]["metrics"]["ged_bma"] = float(bma_ged)
                 self.results_dict[image_id]["metrics"].update(bma_metrics)
+            if compute_ged:
                 per_image_raw_groups = (
                     [group[:, image_idx] for group in raw_pred_groups]
                     if raw_pred_groups

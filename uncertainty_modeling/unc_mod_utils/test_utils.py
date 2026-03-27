@@ -11,6 +11,10 @@ import torch.nn as nn
 import yaml
 
 from evaluation.metrics.dice_wrapped import dice
+from uncertainty_modeling.models.masked_subensemble import (
+    materialize_submodel,
+    replace_with_masked_layers,
+)
 
 
 def test_cli(
@@ -182,10 +186,13 @@ def test_cli(
         help="Override the random seed used for SWAG sampling and dataloaders (set >=0 to enable).",
     )
     parser.add_argument(
-        "--skip_ged",
-        action="store_true",
-        default=False,
-        help="Skip GED metric computation (useful for deterministic single-rater datasets).",
+        "--metrics_compute",
+        type=str,
+        default="dice,ged,ged_bma",
+        help=(
+            "Comma-separated list of metrics to compute. Recognised names: "
+            "'dice', 'ged', 'ged_bma'. Example: --metrics_compute=dice to skip all GED metrics."
+        ),
     )
     parser.add_argument(
         "--skip_existing",
@@ -500,13 +507,38 @@ def load_models_from_checkpoint(
 
         for key, value in cleaned:
             state_dict[key] = value
+
+        extraction_cfg = checkpoint.get("subensemble_extraction")
+        if extraction_cfg is None and isinstance(hparams, dict):
+            extraction_cfg = hparams.get("subensemble_extraction")
+        extraction_cfg = extraction_cfg if isinstance(extraction_cfg, dict) else {}
+        is_masked_subensemble = bool(extraction_cfg.get("enabled", False))
+        num_submodels = int(extraction_cfg.get("num_submodels", 0) or 0)
+        is_materialized_member = bool(
+            isinstance(hparams, dict) and hparams.get("is_subensemble_member", False)
+        )
+
         if "aleatoric_loss" in hparams and hparams["aleatoric_loss"] is not None:
             model = hydra.utils.instantiate(hparams["model"], aleatoric_loss=hparams["aleatoric_loss"])
         else:
             model = hydra.utils.instantiate(hparams["model"])
-        model.load_state_dict(state_dict=state_dict)
-        model.eval()
-        all_models.append(model.to(device))
+
+        if is_masked_subensemble and num_submodels > 0 and not is_materialized_member:
+            summary = replace_with_masked_layers(model, num_masks=num_submodels)
+            if summary.total_replaced == 0:
+                raise RuntimeError(
+                    "Sub-ensemble checkpoint requested masked loading, but no Linear/Conv2d layers were wrapped."
+                )
+            model.load_state_dict(state_dict=state_dict, strict=False)
+            model.eval()
+            for mask_idx in range(num_submodels):
+                member = materialize_submodel(model, mask_idx=mask_idx)
+                member.eval()
+                all_models.append(member.to(device))
+        else:
+            model.load_state_dict(state_dict=state_dict)
+            model.eval()
+            all_models.append(model.to(device))
     return all_models
 
 
