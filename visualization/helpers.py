@@ -982,7 +982,7 @@ def model_scatter(table=None, x="AU_auc[ood]", y="EU_auc[ood]", add_xy=True, ent
         fig, ax = plt.subplots(figsize=(5, 5))
     else:
         fig = ax.figure
-    
+    show_titles = "titles" in table.columns if table is not None else False
     # If only_legend is True, just create the legend and turn off axis
     if only_legend:
         ax.axis('off')
@@ -1024,6 +1024,9 @@ def model_scatter(table=None, x="AU_auc[ood]", y="EU_auc[ood]", add_xy=True, ent
             else:
                 scatter_points.append((X, Y))
                 ax.scatter(X, Y, marker=marker, color=color, s=100)
+                if show_titles:
+                    #plot small black title above the point
+                    ax.text(X, Y, row["titles"], fontsize=8, ha="center", va="bottom", color="black")
 
     # Mini tables: repeat scatter with reduced alpha and size
     if mini_alpha > 0:

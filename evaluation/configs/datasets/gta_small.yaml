@@ -31,7 +31,7 @@ GTA3:
     version: [ "aug0_s12[0,1,2]" ]
     epochs: [ 10, 20, 40, 80, 160, 320 ]
     ema: [ "_ema" ]
-  naming_scheme_pred_model: "gta-small-ssn"
+  exp_name: "gta-small-ssn"
   naming_scheme_version: "{version}/e{epochs}{ema}"
   aggregations: [ "image_level", "patch_level" ]
   fold: 0
@@ -53,7 +53,7 @@ GTA5:
     version: [ "aug0_s12[0,1,2,3,4]" ]
     epochs: [ 10, 20, 40, 80, 160, 320 ]
     ema: [ "_ema" ]
-  naming_scheme_pred_model: "gta-small-ssn"
+  exp_name: "gta-small-ssn"
   naming_scheme_version: "{version}/e{epochs}{ema}"
   aggregations: [ "image_level", "patch_level" ]
   fold: 0
@@ -75,7 +75,7 @@ GTA1:
     version: [ "aug0_s120" ]
     epochs: [ 10, 20, 40, 80, 160, 320 ]
     ema: [ "_ema" ]
-  naming_scheme_pred_model: "gta-small-ssn"
+  exp_name: "gta-small-ssn"
   naming_scheme_version: "{version}/e{epochs}{ema}"
   aggregations: [ "image_level", "patch_level" ]
   fold: 0

@@ -72,6 +72,64 @@ class GroupNorm32(nn.GroupNorm):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:  # type: ignore[override]
         return super().forward(x.float()).type(x.dtype)
+
+
+def _parse_dropout_probability_values(probability: Any) -> list[float]:
+    if isinstance(probability, str):
+        tokens = [token.strip() for token in probability.split(",") if token.strip()]
+        if not tokens:
+            raise ValueError("dropout probability string must contain at least one numeric value")
+        values = [float(token) for token in tokens]
+    elif isinstance(probability, (int, float)):
+        values = [float(probability)]
+    else:
+        raise TypeError(
+            "dropout probability must be a float/int or a comma-separated string of floats"
+        )
+    for value in values:
+        if not 0.0 <= value <= 1.0:
+            raise ValueError("dropout probability values must lie in [0, 1]")
+    return values
+
+
+def _normalize_dropout_cfg(dropout_cfg: Any, default_rate: float) -> dict[str, Any]:
+    defaults = {
+        "enabled": default_rate > 0.0,
+        "probability_values": [float(default_rate)],
+        "encoder": True,
+        "mid": True,
+        "decoder": True,
+        "skip_connections": False,
+        "residual_connections": False,
+        "per_block": True,
+    }
+    if dropout_cfg is None:
+        return defaults
+    if isinstance(dropout_cfg, DictConfig):
+        cfg_map = OmegaConf.to_container(dropout_cfg, resolve=True)
+    elif isinstance(dropout_cfg, Mapping):
+        cfg_map = dict(dropout_cfg)
+    else:
+        raise TypeError(f"dropout_cfg must be a mapping when provided, got {type(dropout_cfg)!r}.")
+    cfg_norm = {str(k).lower(): v for k, v in cfg_map.items()}
+    enabled = bool(cfg_norm.get("enabled", True))
+    prob_source = cfg_norm.get("probability", default_rate)
+    prob_values = _parse_dropout_probability_values(prob_source)
+    if not enabled:
+        prob_values = [0.0]
+    defaults.update(
+        {
+            "enabled": enabled,
+            "probability_values": prob_values,
+            "encoder": bool(cfg_norm.get("encoder", True)),
+            "mid": bool(cfg_norm.get("mid", True)),
+            "decoder": bool(cfg_norm.get("decoder", True)),
+            "skip_connections": bool(cfg_norm.get("skip_connections", False)),
+            "residual_connections": bool(cfg_norm.get("residual_connections", False)),
+            "per_block": bool(cfg_norm.get("per_block", True)),
+        }
+    )
+    return defaults
     
 class DiffUnet(nn.Module):
     """
@@ -117,6 +175,7 @@ class DiffUnet(nn.Module):
         diffusion_sampler_type: str = "ddpm",
         swag_enabled: bool = False,
         encoder_only: bool = False,
+        dropout_cfg: Mapping[str, Any] | DictConfig | None = None,
     ):
         super().__init__()
         if isinstance(act, str):
@@ -151,7 +210,11 @@ class DiffUnet(nn.Module):
             if ar < 0:
                 ar = len(channel_mult) + ar
             self.attention_resolutions.append(ar)
-        self.dropout = dropout
+        self.dropout_cfg = _normalize_dropout_cfg(dropout_cfg, default_rate=float(dropout))
+        # Keep scalar dropout attributes for backward-compatibility and metadata detection.
+        probability_values = list(self.dropout_cfg["probability_values"])
+        self.dropout = max(probability_values) if probability_values else 0.0
+        self._global_dropout_rate = self.dropout
         self.channel_mult = channel_mult
         self.conv_resample = conv_resample
 
@@ -194,19 +257,41 @@ class DiffUnet(nn.Module):
         self.input_skip = [False]
         input_block_chans = [model_channels]
         ch = model_channels
-        # 2D-only implementation for now: no generic dims handling.
-        res_block_kwargs = {
-            "emb_channels": time_embed_dim,
-            "dropout": dropout,
-            "use_scale_shift_norm": use_scale_shift_norm,
-            "act": act,
-        }
         attn_kwargs = {
             "num_heads": num_heads,
             "with_xattn": False,
             "xattn_channels": None,
         }
         resolution = 0
+
+        def _depth_dropout_rate(depth: int) -> float:
+            depth_idx = max(0, int(depth))
+            probability_values = self.dropout_cfg["probability_values"]
+            if not probability_values:
+                return 0.0
+            if depth_idx >= len(probability_values):
+                depth_idx = len(probability_values) - 1
+            return float(probability_values[depth_idx])
+
+        def _stage_dropout_rate(stage: str, depth: int) -> float:
+            enabled = {
+                "encoder": bool(self.dropout_cfg["encoder"]),
+                "mid": bool(self.dropout_cfg["mid"]),
+                "decoder": bool(self.dropout_cfg["decoder"]),
+            }[stage]
+            return _depth_dropout_rate(depth) if enabled else 0.0
+
+        def _res_block_kwargs(stage: str, depth: int) -> dict[str, Any]:
+            dropout_rate = _stage_dropout_rate(stage, depth)
+            residual_rate = dropout_rate if bool(self.dropout_cfg["residual_connections"]) else 0.0
+            return {
+                "emb_channels": time_embed_dim,
+                "dropout": dropout_rate,
+                "use_scale_shift_norm": use_scale_shift_norm,
+                "act": act,
+                "per_block": bool(self.dropout_cfg["per_block"]),
+                "residual_dropout": residual_rate,
+            }
         
         assert channel_mult[0] == 1, "channel_mult[0] must be 1"
         for level, (mult, n_res_blocks) in enumerate(
@@ -222,17 +307,20 @@ class DiffUnet(nn.Module):
                 layers = []
                 if resolution in self.attention_resolutions:
                     if self.mlp_attn:
+                        block_kwargs = _res_block_kwargs("encoder", resolution)
                         layers = [
-                            MLPBlock(ch, **res_block_kwargs),
+                            MLPBlock(ch, **block_kwargs),
                             AttentionBlock(ch, **attn_kwargs),
                         ]
                     else:
+                        block_kwargs = _res_block_kwargs("encoder", resolution)
                         layers = [
-                            ResBlock(ch_in, out_channels=ch, **res_block_kwargs),
+                            ResBlock(ch_in, out_channels=ch, **block_kwargs),
                             AttentionBlock(ch, **attn_kwargs),
                         ]
                 else:
-                    layers = [ResBlock(ch_in, out_channels=ch, **res_block_kwargs)]
+                    block_kwargs = _res_block_kwargs("encoder", resolution)
+                    layers = [ResBlock(ch_in, out_channels=ch, **block_kwargs)]
                 self.input_blocks.append(TimestepEmbedSequential(*layers))
                 self.input_skip.append(False)
                 input_block_chans.append(ch)
@@ -257,32 +345,32 @@ class DiffUnet(nn.Module):
                     sum(
                         [
                             [
-                                MLPBlock(ch, **res_block_kwargs),
+                                MLPBlock(ch, **_res_block_kwargs("mid", resolution)),
                                 AttentionBlock(ch, **attn_kwargs),
                             ]
                             for _ in range(num_middle_res_blocks - 1)
                         ],
                         [],
                     )
-                    + [MLPBlock(ch, **res_block_kwargs)]
+                    + [MLPBlock(ch, **_res_block_kwargs("mid", resolution))]
                 )
             else:
                 middle_layers = (
                     sum(
                         [
                             [
-                                ResBlock(ch, **res_block_kwargs),
+                                ResBlock(ch, **_res_block_kwargs("mid", resolution)),
                                 AttentionBlock(ch, **attn_kwargs),
                             ]
                             for _ in range(num_middle_res_blocks - 1)
                         ],
                         [],
                     )
-                    + [ResBlock(ch, **res_block_kwargs)]
+                    + [ResBlock(ch, **_res_block_kwargs("mid", resolution))]
                 )
         else:
             middle_layers = [
-                ResBlock(ch, **res_block_kwargs) for _ in range(num_middle_res_blocks)
+                ResBlock(ch, **_res_block_kwargs("mid", resolution)) for _ in range(num_middle_res_blocks)
             ]
 
         self.middle_block = TimestepEmbedSequential(*middle_layers)
@@ -290,12 +378,14 @@ class DiffUnet(nn.Module):
         if not self.encoder_only:
             attn_kwargs["num_heads"] = num_heads_upsample
             self.output_blocks = nn.ModuleList([])
+            self._output_block_depths: list[int] = []
             for level, mult, n_res_blocks in zip(
                 reversed(list(range(len(channel_mult)))),
                 channel_mult[::-1],
                 num_res_blocks[::-1],
             ):
                 for i in range(n_res_blocks + 1):
+                    block_depth = int(resolution)
                     if self.new_upsample_method:
                         ch = model_channels * mult
                         ch_in = ch
@@ -304,17 +394,20 @@ class DiffUnet(nn.Module):
                         ch = model_channels * mult
                     if resolution in self.attention_resolutions:
                         if self.mlp_attn:
+                            block_kwargs = _res_block_kwargs("decoder", block_depth)
                             layers = [
-                                MLPBlock(ch, **res_block_kwargs),
+                                MLPBlock(ch, **block_kwargs),
                                 AttentionBlock(ch, **attn_kwargs),
                             ]
                         else:
+                            block_kwargs = _res_block_kwargs("decoder", block_depth)
                             layers = [
-                                ResBlock(ch_in, out_channels=ch, **res_block_kwargs),
+                                ResBlock(ch_in, out_channels=ch, **block_kwargs),
                                 AttentionBlock(ch, **attn_kwargs),
                             ]
                     else:
-                        layers = [ResBlock(ch_in, out_channels=ch, **res_block_kwargs)]
+                        block_kwargs = _res_block_kwargs("decoder", block_depth)
+                        layers = [ResBlock(ch_in, out_channels=ch, **block_kwargs)]
                     if level and i == n_res_blocks:
                         resolution -= 1
                         ch_out = (
@@ -332,6 +425,7 @@ class DiffUnet(nn.Module):
                         )
 
                     self.output_blocks.append(TimestepEmbedSequential(*layers))
+                    self._output_block_depths.append(block_depth)
 
             if self.one_skip_per_reso:
                 assert self.new_upsample_method, "one_skip_per_reso only works with new_upsample_method"
@@ -374,6 +468,7 @@ class DiffUnet(nn.Module):
             if self.one_skip_per_reso:
                 raise ValueError("encoder_only=True is incompatible with one_skip_per_reso")
             self.output_blocks = nn.ModuleList()
+            self._output_block_depths = []
             self.out = None
             if self.ssn:
                 raise ValueError("SSN head is not supported when encoder_only=True")
@@ -409,11 +504,17 @@ class DiffUnet(nn.Module):
         h = self.middle_block(h, emb)
         if self.encoder_only:
             return h, emb
-        for module in self.output_blocks:
+        for module, block_depth in zip(self.output_blocks, self._output_block_depths):
+            skip_tensor = hs.pop()
+            if bool(self.dropout_cfg["skip_connections"]) and torch.is_tensor(skip_tensor):
+                probability_values = self.dropout_cfg["probability_values"]
+                skip_rate = probability_values[min(block_depth, len(probability_values) - 1)]
+                if skip_rate > 0.0:
+                    skip_tensor = F.dropout2d(skip_tensor, p=skip_rate, training=True)
             if self.new_upsample_method:
-                cat_in = h + hs.pop()
+                cat_in = h + skip_tensor
             else:
-                cat_in = torch.cat([h, hs.pop()], dim=1)
+                cat_in = torch.cat([h, skip_tensor], dim=1)
             h = module(cat_in, emb)
         return h, emb
 
@@ -595,7 +696,9 @@ class MLPBlock(TimestepBlock):
         dropout=0.0,
         out_channels=None,
         use_scale_shift_norm=False,
-        act=nn.SiLU
+        act=nn.SiLU,
+        per_block: bool = True,
+        residual_dropout: float = 0.0,
     ):
         super().__init__()
         self.act = act
@@ -850,22 +953,28 @@ class ResBlock(TimestepBlock):
         out_channels=None,
         use_conv=False,
         use_scale_shift_norm=False,
-        act=nn.SiLU
+        act=nn.SiLU,
+        per_block: bool = True,
+        residual_dropout: float = 0.0,
     ):
         super().__init__()
         self.act = act
         self.channels = channels
         self.emb_channels = emb_channels
-        self.dropout = dropout
+        self.dropout = float(dropout)
+        self.per_block = bool(per_block)
         self.out_channels = out_channels or channels
         self.use_conv = use_conv
         self.use_scale_shift_norm = use_scale_shift_norm
 
-        self.in_layers = nn.Sequential(
+        in_layers: list[nn.Module] = [
             GroupNorm32(channels),
             self.act(),
-            nn.Conv2d(channels, self.out_channels, 3, padding=1),
-        )
+        ]
+        if (not self.per_block) and self.dropout > 0.0:
+            in_layers.append(MC_Dropout2d(p=self.dropout))
+        in_layers.append(nn.Conv2d(channels, self.out_channels, 3, padding=1))
+        self.in_layers = nn.Sequential(*in_layers)
         self.emb_layers = nn.Sequential(
             self.act(),
             nn.Linear(
@@ -876,11 +985,12 @@ class ResBlock(TimestepBlock):
         self.out_layers = nn.Sequential(
             GroupNorm32(self.out_channels),
             self.act(),
-            MC_Dropout2d(p=dropout),
+            MC_Dropout2d(p=self.dropout),
             zero_module(
                 nn.Conv2d(self.out_channels, self.out_channels, 3, padding=1)
             ),
         )
+        self.residual_dropout = MC_Dropout2d(p=residual_dropout)
         
         if self.out_channels == channels:
             self.skip_connection = nn.Identity()
@@ -907,7 +1017,9 @@ class ResBlock(TimestepBlock):
         else:
             # No timestep conditioning; just apply the output layers.
             h = self.out_layers(h)
-        return self.skip_connection(x) + h
+        skip = self.skip_connection(x)
+        skip = self.residual_dropout(skip)
+        return skip + h
 
 
 class ProbUnetFcomb(nn.Module):
@@ -1120,6 +1232,36 @@ def _normalize_sampling_config(config: Any) -> dict[str, Any]:
     return normalized
 
 
+def _normalize_model_dropout_cfg(
+    dropout_cfg: Any,
+    default_rate: float,
+) -> tuple[dict[str, Any] | None, list[float]]:
+    if dropout_cfg is None:
+        return None, [float(default_rate)]
+    if isinstance(dropout_cfg, DictConfig):
+        cfg_map = OmegaConf.to_container(dropout_cfg, resolve=True)
+    elif isinstance(dropout_cfg, Mapping):
+        cfg_map = dict(dropout_cfg)
+    else:
+        raise TypeError(
+            f"dropout_cfg must be a mapping when provided, got {type(dropout_cfg)!r}."
+        )
+    normalized = {str(key).lower(): value for key, value in cfg_map.items()}
+    normalized.setdefault("enabled", True)
+    normalized.setdefault("encoder", True)
+    normalized.setdefault("mid", True)
+    normalized.setdefault("decoder", True)
+    normalized.setdefault("skip_connections", False)
+    normalized.setdefault("residual_connections", False)
+    normalized.setdefault("per_block", True)
+    probability_values = _parse_dropout_probability_values(
+        normalized.get("probability", default_rate)
+    )
+    if not bool(normalized.get("enabled", True)):
+        probability_values = [0.0]
+    return normalized, probability_values
+
+
 def _scale_channel_multipliers(channel_mult: list[int], scale: float | None) -> list[int]:
     if scale is None or abs(scale - 1.0) < 1e-6:
         return list(channel_mult)
@@ -1209,6 +1351,7 @@ def get_seg_model(cfg, **kwargs):
     cfg_dict = {k.lower(): v for k, v in cfg_dict.items()}
     swag_requested = bool(cfg_dict.pop("swag", False))
     dropout_rate_override = cfg_dict.pop("dropout_rate", None)
+    dropout_cfg_cfg = cfg_dict.pop("dropout_cfg", None)
     diffusion_kwargs_cfg = cfg_dict.pop("diffusion_kwargs", None)
     diffusion_sampling_cfg = cfg_dict.pop("diffusion_sampling", None)
     prob_unet_cfg = cfg_dict.pop("prob_unet", None)
@@ -1216,6 +1359,19 @@ def get_seg_model(cfg, **kwargs):
         prob = float(dropout_rate_override)
         if prob is not None:
             cfg_dict["dropout"] = prob
+    dropout_cfg_override = kwargs.pop("dropout_cfg", None)
+    default_dropout_rate = float(cfg_dict.get("dropout", 0.0))
+    raw_dropout_cfg = (
+        dropout_cfg_override if dropout_cfg_override is not None else dropout_cfg_cfg
+    )
+    normalized_dropout_cfg, probability_values = _normalize_model_dropout_cfg(
+        raw_dropout_cfg,
+        default_rate=default_dropout_rate,
+    )
+    if normalized_dropout_cfg is not None:
+        cfg_dict["dropout_cfg"] = normalized_dropout_cfg
+        if dropout_rate_override is None:
+            cfg_dict["dropout"] = float(probability_values[0])
     # Remove keys that DiffUnet.__init__ does not accept but might be present in shared configs.
     for stray_key in ("pretrained", "pretrained_weights"):
         cfg_dict.pop(stray_key, None)

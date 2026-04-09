@@ -3,7 +3,7 @@ import os
 from argparse import ArgumentParser, Namespace
 from collections import OrderedDict
 from pathlib import Path
-from typing import Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import hydra
 import torch
@@ -469,6 +469,105 @@ def load_models_from_checkpoint(
     device: str = "cpu",
     use_ema: bool = False,
 ) -> List[nn.Module]:
+    def _expand_grouped_conv_input_mask(
+        in_mask: torch.Tensor,
+        out_channels: int,
+        groups: int,
+    ) -> torch.Tensor:
+        in_per_group = int(in_mask.shape[0]) // int(groups)
+        out_per_group = int(out_channels) // int(groups)
+        expanded = torch.empty(
+            int(out_channels),
+            in_per_group,
+            device=in_mask.device,
+            dtype=in_mask.dtype,
+        )
+        for group_idx in range(int(groups)):
+            in_slice = in_mask[group_idx * in_per_group : (group_idx + 1) * in_per_group]
+            out_start = group_idx * out_per_group
+            out_end = (group_idx + 1) * out_per_group
+            expanded[out_start:out_end] = in_slice.unsqueeze(0).expand(out_per_group, -1)
+        return expanded
+
+    def _get_subensemble_member_from_binary_masks(
+        template_model: nn.Module,
+        mask_payload: Dict[str, Any],
+        mask_idx: int,
+    ) -> nn.Module:
+        member = copy.deepcopy(template_model)
+        modules = dict(member.named_modules())
+        layers = mask_payload.get("layers", [])
+
+        with torch.no_grad():
+            for layer_cfg in layers:
+                layer_name = str(layer_cfg.get("name", ""))
+                if not layer_name:
+                    raise ValueError("subensemble mask layer entry is missing 'name'.")
+                if layer_name not in modules:
+                    raise KeyError(f"subensemble mask layer '{layer_name}' not found in model.")
+                module = modules[layer_name]
+
+                in_masks = layer_cfg.get("input_masks")
+                out_masks = layer_cfg.get("output_masks")
+                if in_masks is None or out_masks is None:
+                    raise ValueError(
+                        f"subensemble mask layer '{layer_name}' is missing input/output masks."
+                    )
+
+                in_mask_tensor = torch.as_tensor(in_masks)
+                out_mask_tensor = torch.as_tensor(out_masks)
+                if mask_idx < 0 or mask_idx >= int(in_mask_tensor.shape[0]):
+                    raise IndexError(
+                        f"mask_idx={mask_idx} is out of range for layer '{layer_name}' "
+                        f"with {int(in_mask_tensor.shape[0])} masks."
+                    )
+
+                rows_only = bool(layer_cfg.get("rows_only", False))
+                layer_type = str(layer_cfg.get("type", ""))
+
+                if isinstance(module, nn.Linear):
+                    if layer_type and layer_type != "linear":
+                        raise TypeError(
+                            f"Mask payload type mismatch for '{layer_name}': expected linear, got '{layer_type}'."
+                        )
+                    out_mask = out_mask_tensor[mask_idx].to(device=module.weight.device, dtype=module.weight.dtype)
+                    if rows_only:
+                        in_mask = torch.ones(module.in_features, device=module.weight.device, dtype=module.weight.dtype)
+                    else:
+                        in_mask = in_mask_tensor[mask_idx].to(device=module.weight.device, dtype=module.weight.dtype)
+                    module.weight.mul_(out_mask.unsqueeze(1) * in_mask.unsqueeze(0))
+                    if module.bias is not None:
+                        module.bias.mul_(out_mask)
+                    continue
+
+                if isinstance(module, nn.Conv2d):
+                    if layer_type and layer_type != "conv2d":
+                        raise TypeError(
+                            f"Mask payload type mismatch for '{layer_name}': expected conv2d, got '{layer_type}'."
+                        )
+                    out_mask = out_mask_tensor[mask_idx].to(device=module.weight.device, dtype=module.weight.dtype)
+                    if rows_only:
+                        in_mask = torch.ones(module.in_channels, device=module.weight.device, dtype=module.weight.dtype)
+                    else:
+                        in_mask = in_mask_tensor[mask_idx].to(device=module.weight.device, dtype=module.weight.dtype)
+                    expanded_in = _expand_grouped_conv_input_mask(
+                        in_mask=in_mask,
+                        out_channels=module.out_channels,
+                        groups=module.groups,
+                    )
+                    channel_mask = out_mask.unsqueeze(1) * expanded_in
+                    module.weight.mul_(channel_mask.unsqueeze(-1).unsqueeze(-1))
+                    if module.bias is not None:
+                        module.bias.mul_(out_mask)
+                    continue
+
+                raise TypeError(
+                    f"Unsupported layer type for subensemble mask application: {type(module).__name__}"
+                )
+
+        member.eval()
+        return member
+
     all_models: List[nn.Module] = []
     for checkpoint in checkpoints:
         hparams = checkpoint["hyper_parameters"]
@@ -514,6 +613,10 @@ def load_models_from_checkpoint(
         extraction_cfg = extraction_cfg if isinstance(extraction_cfg, dict) else {}
         is_masked_subensemble = bool(extraction_cfg.get("enabled", False))
         num_submodels = int(extraction_cfg.get("num_submodels", 0) or 0)
+        subensemble_masks = checkpoint.get("subensemble_masks")
+        has_binary_masks = isinstance(subensemble_masks, dict) and isinstance(
+            subensemble_masks.get("layers"), list
+        )
         is_materialized_member = bool(
             isinstance(hparams, dict) and hparams.get("is_subensemble_member", False)
         )
@@ -523,7 +626,25 @@ def load_models_from_checkpoint(
         else:
             model = hydra.utils.instantiate(hparams["model"])
 
-        if is_masked_subensemble and num_submodels > 0 and not is_materialized_member:
+        if is_masked_subensemble and num_submodels > 0 and not is_materialized_member and has_binary_masks:
+            payload_num_submodels = int(subensemble_masks.get("num_submodels", 0) or 0)
+            if payload_num_submodels > 0 and payload_num_submodels != num_submodels:
+                raise ValueError(
+                    "subensemble_extraction.num_submodels and subensemble_masks.num_submodels do not match "
+                    f"({num_submodels} vs {payload_num_submodels})."
+                )
+            num_to_expand = payload_num_submodels if payload_num_submodels > 0 else num_submodels
+
+            model.load_state_dict(state_dict=state_dict)
+            model.eval()
+            for mask_idx in range(num_to_expand):
+                member = _get_subensemble_member_from_binary_masks(
+                    template_model=model,
+                    mask_payload=subensemble_masks,
+                    mask_idx=mask_idx,
+                )
+                all_models.append(member.to(device))
+        elif is_masked_subensemble and num_submodels > 0 and not is_materialized_member:
             summary = replace_with_masked_layers(model, num_masks=num_submodels)
             if summary.total_replaced == 0:
                 raise RuntimeError(

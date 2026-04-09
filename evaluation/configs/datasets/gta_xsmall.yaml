@@ -33,7 +33,7 @@ EU_TESTS:
     ema: [ "_ema" ]
     cfg: [ "standard", "sgd" ]
     data: [ "gta_xsmall" ] #, "lidc_2d_small" ]
-  naming_scheme_pred_model: "eu_tests"
+  exp_name: "eu_tests"
   naming_scheme_version: "{eu}_{pred_model}_{cfg}_{data}/e{epochs}{ema}"
   aggregations: [ "image_level", "patch_level" ]
   fold: 0

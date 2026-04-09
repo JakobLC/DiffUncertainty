@@ -6,6 +6,20 @@ eu_method:
 dropout:
   enabled: true
   probability: 0.2
+  encoder: true
+  mid: true
+  decoder: true
+  skip_connections: false
+  residual_connections: false
+  per_block: true
+
+#
+# "encoder": True,  should layers in the encoder part of the architecture have dropout? (includes prior+posterior networks for prob unet)
+# "mid": True,  should the mid_layers in between encoder and decoder have dropout (aka bottleneck)?
+# "decoder": True, should layers in the decoder part of the architecture have dropout?
+# "skip_connections": False, should we apply dropout to the skip connections before addition (connections between encoder and decoder)?
+# "residual_connections": False, should we apply dropout to the residual connections (connections within a ResBlock)?
+# "per_block": True, should we have a single dropout layer in each ResBlock? If False, we also apply dropout on the line inside ResBlock labeled "add optional dropout here".
 
 model:
   overrides:

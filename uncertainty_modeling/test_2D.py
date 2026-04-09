@@ -290,6 +290,15 @@ class Tester:
     def expand_eu_models(self, base_models, checkpoints, checkpoint_paths):
         if self.direct_au:
             return list(base_models)
+        # Single checkpoints can now expand into multiple concrete submodels at load time.
+        # In that case there is no 1:1 model<->checkpoint mapping for EU expansion logic.
+        if len(base_models) != len(checkpoints):
+            if self.n_models > 0 and not self.ensemble_mode:
+                print(
+                    f"[subensemble] Loaded {len(base_models)} model(s) from {len(checkpoints)} checkpoint(s); "
+                    f"treating as a pre-expanded ensemble and ignoring --n_models={self.n_models}."
+                )
+            return list(base_models)
         expanded_models = []
         total = len(base_models)
         for idx in range(total):

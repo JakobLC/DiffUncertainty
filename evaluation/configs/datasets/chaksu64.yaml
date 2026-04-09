@@ -19,7 +19,7 @@ FIRST_SWEEP:
     eu: ["swag_diag"]
     cfg: [ "standard" ]
     data: [ "chaksu64" ]
-  naming_scheme_pred_model: "chaksu64"
+  exp_name: "chaksu64"
   naming_scheme_version: "{pred_model}_{eu}/e640_ema"
   aggregations: [ "all" ]
   fold: 0

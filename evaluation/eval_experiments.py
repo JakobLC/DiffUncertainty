@@ -1,12 +1,12 @@
 from itertools import product
 from pathlib import Path
 import shutil
+from collections import Counter
 
 import hydra
 from omegaconf import ListConfig
 import sys
 
-from pathlib import Path
 sys.path.append(Path(__file__).parent.parent.as_posix())
 
 from experiment_version import ExperimentVersion
@@ -15,6 +15,9 @@ from pydantic.utils import deep_update
 
 
 class EvalExperiments:
+    LIDC_SPLITS = ["id", "val", "ood_noise", "ood_blur", "ood_jpeg", "ood_contrast"]
+    CHAKSU_SPLITS = ["id", "val", "ood"]
+
     def __init__(self, config):
         # base path is the path to the first experiment cycle
         self.base_path = Path(config.base_path)
@@ -24,6 +27,7 @@ class EvalExperiments:
         self.versions = self._init_versions(config)
         self.tasks = config.tasks
         self.config = config
+        self._version_status = {}
         return
 
     def _init_versions(self, config):
@@ -38,6 +42,9 @@ class EvalExperiments:
                 exp_config = dict(experiment)
                 exp_config.pop("iter_params")
                 version_params.update(exp_config)
+                # Defaults for optional execution controls.
+                version_params.setdefault("skip_missing", False)
+                version_params.setdefault("skip_finished", False)
                 version_params["base_path"] = self.base_path
                 version_params["second_cycle_path"] = self.second_cycle_path
                 # If the experiment did not include a datamodule_config, allow a top-level
@@ -77,6 +84,181 @@ class EvalExperiments:
                 exp_version = ExperimentVersion(**version_params)
                 versions.append(exp_version)
         return versions
+
+    @staticmethod
+    def _required_unc_folders(version):
+        required_unc = set()
+        for unc_type in version.unc_types:
+            if unc_type == "predictive_uncertainty":
+                required_unc.add("TU")
+            else:
+                required_unc.add(str(unc_type))
+        return sorted(required_unc)
+
+    @staticmethod
+    def _candidate_dataset_dirs(exp_path):
+        children = [p for p in sorted(exp_path.iterdir()) if p.is_dir()]
+        metric_children = [p for p in children if (p / "metrics.json").is_file()]
+        if metric_children:
+            return metric_children
+        if (exp_path / "metrics.json").is_file():
+            return [exp_path]
+        return children if children else [exp_path]
+
+    def _expected_dataset_splits(self, version):
+        data_key = str(version.version_params.get("data", "")).lower()
+        exp_name_key = str(getattr(version, "exp_name", "")).lower()
+        combined_key = f"{data_key} {exp_name_key}"
+        if "lidc" in combined_key:
+            return list(self.LIDC_SPLITS)
+        if "chaksu" in combined_key:
+            return list(self.CHAKSU_SPLITS)
+        return None
+
+    def _all_expected_dataset_dirs(self, version):
+        exp_path = Path(version.exp_path)
+        expected_splits = self._expected_dataset_splits(version)
+        if expected_splits is not None:
+            return [exp_path / split for split in expected_splits]
+        return self._candidate_dataset_dirs(exp_path)
+
+    def _get_task_params(self, task_name):
+        if "task_params" not in self.config:
+            return None
+        if task_name not in self.config.task_params:
+            return None
+        return self.config.task_params[task_name]
+
+    def _resolve_task_dataset_dirs(self, version, task_name):
+        task_params = self._get_task_params(task_name)
+        if task_params is None:
+            return []
+        dataset_spec = task_params["datasets"] if "datasets" in task_params.keys() else None
+        dataset_splits = self._normalize_dataset_spec(dataset_spec)
+        exp_path = Path(version.exp_path)
+
+        if len(dataset_splits) == 1 and dataset_splits[0] == "all":
+            return self._all_expected_dataset_dirs(version)
+
+        resolved_dirs = []
+        for split in dataset_splits:
+            if split is None:
+                resolved_dirs.append(exp_path)
+            elif isinstance(split, str) and "&" in split:
+                # Paired splits are not used by the completion files checked here.
+                continue
+            else:
+                resolved_dirs.append(exp_path / str(split))
+        return resolved_dirs
+
+    def _is_missing_version(self, version):
+        exp_path = Path(version.exp_path)
+        if not exp_path.exists():
+            return True
+
+        required_folders = ["pred_seg"] + self._required_unc_folders(version)
+        for dataset_dir in self._all_expected_dataset_dirs(version):
+            for folder_name in required_folders:
+                if not (dataset_dir / folder_name).is_dir():
+                    return True
+        return False
+
+    def _is_finished_version(self, version):
+        exp_path = Path(version.exp_path)
+        if not exp_path.exists():
+            return False
+
+        # "Finished" means outputs for the full evaluation task-set are present.
+        # The expected split coverage is task-dependent (e.g. calibration excludes val).
+        if self._get_task_params("threshold") is not None:
+            for file_name in ["quantile_analysis.json", "threshold_analysis.json"]:
+                if not (exp_path / file_name).is_file():
+                    return False
+
+        if self._get_task_params("ood_detection") is not None:
+            if not (exp_path / "ood_detection.json").is_file():
+                return False
+
+        if self._get_task_params("area") is not None:
+            for dataset_dir in self._resolve_task_dataset_dirs(version, "area"):
+                if not (dataset_dir / "area.json").is_file():
+                    return False
+
+        if self._get_task_params("aggregation") is not None:
+            required_unc = self._required_unc_folders(version)
+            for dataset_dir in self._resolve_task_dataset_dirs(version, "aggregation"):
+                for unc_name in required_unc:
+                    if not (dataset_dir / f"aggregated_{unc_name}.json").is_file():
+                        return False
+
+        if self._get_task_params("calibration") is not None:
+            for dataset_dir in self._resolve_task_dataset_dirs(version, "calibration"):
+                if not (dataset_dir / "calibration.json").is_file():
+                    return False
+
+        if self._get_task_params("ambiguity_modeling") is not None:
+            for dataset_dir in self._resolve_task_dataset_dirs(version, "ambiguity_modeling"):
+                if not (dataset_dir / "ambiguity_modeling.json").is_file():
+                    return False
+
+        return True
+
+    def _classify_versions(self):
+        statuses = {}
+        for version in self.versions:
+            missing = self._is_missing_version(version)
+            finished = self._is_finished_version(version)
+            statuses[version.exp_path.as_posix()] = {
+                "missing": missing,
+                "finished": finished,
+                "skip_missing": bool(version.version_params.get("skip_missing", False)),
+                "skip_finished": bool(version.version_params.get("skip_finished", False)),
+            }
+        self._version_status = statuses
+        return statuses
+
+    def _print_status_summary(self):
+        if not self._version_status:
+            return
+        matrix_counter = Counter(
+            (status["missing"], status["finished"])
+            for status in self._version_status.values()
+        )
+        total = len(self._version_status)
+        missing_count = sum(1 for status in self._version_status.values() if status["missing"])
+        finished_count = sum(
+            1 for status in self._version_status.values() if status["finished"]
+        )
+
+        print("Preflight version status summary")
+        print(
+            f"- Missing: {missing_count} | Not missing: {total - missing_count} | Total: {total}"
+        )
+        print(
+            f"- Finished: {finished_count} | Unfinished: {total - finished_count} | Total: {total}"
+        )
+        print("- Missing x Finished matrix (rows=missing, cols=finished)")
+        print("                 finished=False  finished=True")
+        print(
+            "missing=False"
+            f"      {matrix_counter[(False, False)]:>6}"
+            f"         {matrix_counter[(False, True)]:>6}"
+        )
+        print(
+            "missing=True "
+            f"      {matrix_counter[(True, False)]:>6}"
+            f"         {matrix_counter[(True, True)]:>6}"
+        )
+
+    def _should_skip_version(self, version):
+        status = self._version_status.get(version.exp_path.as_posix(), None)
+        if status is None:
+            return False
+        if status["skip_missing"] and status["missing"]:
+            return True
+        if status["skip_finished"] and status["finished"]:
+            return True
+        return False
 
     def _resolve_dataset_splits(self, task_params, version):
         dataset_spec = task_params["datasets"] if "datasets" in task_params.keys() else None
@@ -129,6 +311,8 @@ class EvalExperiments:
         # This is only used if the results are accumulated across multiple versions
         results_dict_task = {}
         for version in self.versions:
+            if self._should_skip_version(version):
+                continue
             dataset_splits = self._resolve_dataset_splits(task_params, version)
             for dataset_split in dataset_splits:
                 exp_dataloader = ExperimentDataloader(version, dataset_split)
@@ -146,6 +330,8 @@ class EvalExperiments:
 
     def analyse_single_version(self, task_params):
         for version in self.versions:
+            if self._should_skip_version(version):
+                continue
             dataset_splits = self._resolve_dataset_splits(task_params, version)
             for dataset_split in dataset_splits:
                 exp_dataloader = ExperimentDataloader(version, dataset_split)
@@ -168,6 +354,8 @@ class EvalExperiments:
                 self.analyse_single_version(task_params=subtask_params)
 
     def analyse(self):
+        self._classify_versions()
+        self._print_status_summary()
         for task in self.tasks:
             print(f"ANALYSING TASK: {task}")
             # Special-case cleanup task which does not require an entry in task_params

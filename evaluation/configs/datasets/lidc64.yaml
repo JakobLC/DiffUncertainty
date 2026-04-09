@@ -19,7 +19,7 @@ FIRST_SWEEP:
     eu: ["swag_diag"]
     cfg: [ "standard" ]
     data: [ "lidc64" ]
-  naming_scheme_pred_model: "lidc64"
+  exp_name: "lidc64"
   naming_scheme_version: "{pred_model}_{eu}/e1000_ema"
   aggregations: [ "all" ]
   fold: 0
@@ -40,7 +40,7 @@ OOD_AUG:
     eu: [ "dropout", "swag", "swag_diag", "ens12[1,2,3,4,5]"]
     cfg: [ "standard" ]
     data: [ "lidc64" ]
-  naming_scheme_pred_model: "ood_aug"
+  exp_name: "ood_aug"
   naming_scheme_version: "{eu}_{pred_model}_{network}_lidc_2d_small/e320_ema"
   aggregations: [ "patch_level", "threshold" ]
   fold: 0
@@ -59,7 +59,7 @@ EU_FIX:
     eu: [ "swag_diag" ]
     cfg: [ "standard" ]
     data: [ "lidc_2d_small" ] #, "gta_xsmall" ]
-  naming_scheme_pred_model: "eu_tests"
+  exp_name: "eu_tests"
   naming_scheme_version: "swag_diag_diffusion_standard_lidc_2d_small/e320_ema"
   aggregations: [ "patch_level", "threshold" ]
   fold: 0
@@ -78,7 +78,7 @@ EU_TESTS:
     eu: [ "swag_diag", "swag", "dropout" ]
     cfg: [ "standard", "sgd" ]
     data: [ "lidc_2d_small" ]
-  naming_scheme_pred_model: "eu_tests"
+  exp_name: "eu_tests"
   naming_scheme_version: "{eu}_{pred_model}_{cfg}_{data}/e320_ema"
   aggregations: [ "patch_level", "threshold" ]
   fold: 0
@@ -97,7 +97,7 @@ BIG_SSN:
     version: [ "aug0_s12[0,1,2,3,4]" ]
     epochs: [ 10, 20, 40, 80, 160, 320 ]
     ema: [ "_ema" ]
-  naming_scheme_pred_model: "lidc-small-ssn-OF"
+  exp_name: "lidc-small-ssn-OF"
   naming_scheme_version: "{version}/e{epochs}{ema}"
   aggregations: [ "patch_level", "threshold" ]
   fold: 0
@@ -116,7 +116,7 @@ AUG_SSN_ENSEMBLE:
     version: [ "aug1_s12[0,1,2,3,4]" ]
     epochs: [ 10, 20, 40, 80, 160, 320 ]
     ema: [ "_ema" ]
-  naming_scheme_pred_model: "lidc-small-ssn-OF-mini"
+  exp_name: "lidc-small-ssn-OF-mini"
   naming_scheme_version: "{version}/e{epochs}{ema}"
   aggregations: [ "patch_level", "threshold" ]
   fold: 0
@@ -135,7 +135,7 @@ SSN_ENSEMBLE:
     version: [ "aug0_s12[0,1,2,3,4]" ]
     epochs: [ 10, 13, 17, 22, 28, 37, 48, 62, 81, 105, 136, 176, 229, 297, 385, 500 ]
     ema: [ "_ema" ]
-  naming_scheme_pred_model: "lidc-small-ssn-OF-mini"
+  exp_name: "lidc-small-ssn-OF-mini"
   naming_scheme_version: "{version}/e{epochs}{ema}"
   aggregations: [ "patch_level", "threshold" ]
   fold: 0
@@ -155,7 +155,7 @@ SOFTMAX_ENSEMBLE:
     epochs: [ 11, 14, 18, 23, 29, 38, 49, 63, 82, 106, 137, 177, 230, 298, 386, 501 ] # 
     ema: [ "_ema" ]
   naming_scheme_version: "{version}/e{epochs}{ema}"
-  naming_scheme_pred_model: "lidc-small-softmax-OF-mini"
+  exp_name: "lidc-small-softmax-OF-mini"
   aggregations: [ "patch_level", "threshold" ]
   fold: 0
   rank: 5
@@ -173,7 +173,7 @@ AUG_SSN:
     version: ["aug0.0", "aug0.5",  "aug1.0" ]
     epochs: [10,12,15,19,24,30,37,46,57,71,88,109,136,169,210,261,324,402,500 ]
     ema: [ "_ema" ]
-  naming_scheme_pred_model: "lidc-small-ssn-OF"
+  exp_name: "lidc-small-ssn-OF"
   naming_scheme_version: "{version}/e{epochs}{ema}"
   aggregations: [ "patch_level", "threshold" ]
   fold: 0

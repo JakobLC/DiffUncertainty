@@ -15,14 +15,14 @@ class ExperimentVersion:
         n_reference_segs,
         second_cycle_path=None,
         n_classes=2,
-        naming_scheme_pred_model="{pred_model}",
+        exp_name="{pred_model}",
         datamodule_config=None,
         pred_seg_loading=None,
         gt_unc_map_loading=None,
         **kwargs
     ):
         self.pred_model = pred_model
-        self.naming_scheme_pred_model = naming_scheme_pred_model
+        self.exp_name = exp_name
         self.version_name = self._build_version_name(
             naming_scheme_version=naming_scheme_version, **kwargs
         )
@@ -30,7 +30,7 @@ class ExperimentVersion:
         self.base_path = base_path
         self.exp_path = (
             base_path
-            / naming_scheme_pred_model.format(pred_model=pred_model, **kwargs)
+            / exp_name.format(pred_model=pred_model, **kwargs)
             / "test_results"
             / self.version_name
         )

@@ -24,11 +24,12 @@ sys.path.append(Path(__file__).resolve().parent.parent.as_posix())
 from evaluation.metrics.dice_wrapped import dice
 from uncertainty_modeling.lightning_experiment import LightningExperiment
 from uncertainty_modeling.models.masked_subensemble import (
+    MaskedConv2d,
+    MaskedLinear,
     combined_mask_logits,
     freeze_unmasked_parameters,
     initialize_mask_logits_for_target_fraction,
     iter_masked_layers,
-    materialize_submodel,
     mean_pairwise_iou,
     replace_with_masked_layers,
     set_rows_only_mode,
@@ -261,15 +262,100 @@ def _build_model_only_state_dict(model: torch.nn.Module) -> OrderedDict[str, tor
     return state
 
 
+def _materialize_dense_base_model_from_masked(model: torch.nn.Module) -> torch.nn.Module:
+    """Convert masked wrappers back to plain Linear/Conv2d while preserving dense weights."""
+    dense_model = copy.deepcopy(model)
+
+    def _replace(module: torch.nn.Module) -> None:
+        for name, child in list(module.named_children()):
+            if isinstance(child, MaskedLinear):
+                layer = torch.nn.Linear(
+                    child.in_features,
+                    child.out_features,
+                    bias=child.bias is not None,
+                )
+                layer = layer.to(device=child.weight.device, dtype=child.weight.dtype)
+                with torch.no_grad():
+                    layer.weight.copy_(child.weight)
+                    if child.bias is not None and layer.bias is not None:
+                        layer.bias.copy_(child.bias)
+                setattr(module, name, layer)
+                continue
+            if isinstance(child, MaskedConv2d):
+                layer = torch.nn.Conv2d(
+                    in_channels=child.in_channels,
+                    out_channels=child.out_channels,
+                    kernel_size=child.kernel_size,
+                    stride=child.stride,
+                    padding=child.padding,
+                    dilation=child.dilation,
+                    groups=child.groups,
+                    bias=child.bias is not None,
+                    padding_mode=child.padding_mode,
+                )
+                layer = layer.to(device=child.weight.device, dtype=child.weight.dtype)
+                with torch.no_grad():
+                    layer.weight.copy_(child.weight)
+                    if child.bias is not None and layer.bias is not None:
+                        layer.bias.copy_(child.bias)
+                setattr(module, name, layer)
+                continue
+            _replace(child)
+
+    _replace(dense_model)
+    return dense_model
+
+
+def _build_subensemble_masks_payload(model: torch.nn.Module) -> dict[str, Any]:
+    """Serialize hard channel masks from masked layers in a compact checkpoint payload."""
+    layers: list[dict[str, Any]] = []
+    num_submodels: int | None = None
+
+    for module_name, module in model.named_modules():
+        if not isinstance(module, (MaskedLinear, MaskedConv2d)):
+            continue
+        if num_submodels is None:
+            num_submodels = int(module.num_masks)
+        elif int(module.num_masks) != num_submodels:
+            raise RuntimeError(
+                f"Inconsistent num_masks across layers ({num_submodels} vs {module.num_masks})."
+            )
+
+        input_masks = (module.mask_logits_inputs >= 0.0).to(torch.uint8).cpu()
+        output_masks = (module.mask_logits_outputs >= 0.0).to(torch.uint8).cpu()
+        layer_type = "conv2d" if isinstance(module, MaskedConv2d) else "linear"
+        layers.append(
+            {
+                "name": module_name,
+                "type": layer_type,
+                "rows_only": bool(module.rows_only),
+                "input_masks": input_masks,
+                "output_masks": output_masks,
+            }
+        )
+
+    if num_submodels is None:
+        raise RuntimeError("No masked layers found when exporting sub-ensemble masks.")
+
+    return {
+        "format": "binary_channel_masks_v1",
+        "num_submodels": int(num_submodels),
+        "layers": layers,
+    }
+
+
 def _save_checkpoint(
     dest: Path,
     base_checkpoint: dict[str, Any],
     hparams: dict[str, Any],
     model_state: OrderedDict[str, torch.Tensor],
+    subensemble_masks: dict[str, Any] | None = None,
 ) -> None:
     payload = copy.deepcopy(base_checkpoint)
     payload["hyper_parameters"] = hparams
     payload["state_dict"] = model_state
+    if subensemble_masks is not None:
+        payload["subensemble_masks"] = subensemble_masks
     dest.parent.mkdir(parents=True, exist_ok=True)
     torch.save(payload, dest)
 
@@ -476,6 +562,7 @@ def train_subensemble_masks(args: argparse.Namespace) -> None:
         "target_fraction": float(args.target_fraction),
         "source_checkpoint": str(source_ckpt),
         "dest_version": str(args.dest_version),
+        "mask_storage": "binary_channel_masks_v1",
     }
 
     new_hparams = copy.deepcopy(hparams)
@@ -484,25 +571,15 @@ def train_subensemble_masks(args: argparse.Namespace) -> None:
 
     if bool(args.save_checkpoint):
         masked_ckpt_path = dest_ckpt_dir / "last.ckpt"
+        dense_model = _materialize_dense_base_model_from_masked(experiment.model)
+        subensemble_masks = _build_subensemble_masks_payload(experiment.model)
         _save_checkpoint(
             dest=masked_ckpt_path,
             base_checkpoint=checkpoint,
             hparams=new_hparams,
-            model_state=_build_model_only_state_dict(experiment.model),
+            model_state=_build_model_only_state_dict(dense_model),
+            subensemble_masks=subensemble_masks,
         )
-
-        for mask_idx in range(int(args.num_submodels)):
-            concrete_model = materialize_submodel(experiment.model, mask_idx=mask_idx)
-            member_hparams = copy.deepcopy(new_hparams)
-            member_hparams["subensemble_extraction"]["materialized_submodel_idx"] = int(mask_idx)
-            member_hparams["is_subensemble_masked_model"] = False
-            member_hparams["is_subensemble_member"] = True
-            _save_checkpoint(
-                dest=dest_ckpt_dir / f"submodel_{mask_idx:02d}.ckpt",
-                base_checkpoint=checkpoint,
-                hparams=member_hparams,
-                model_state=_build_model_only_state_dict(concrete_model),
-            )
 
         hparams_yaml = dest_root / "hparams.yaml"
         hparams_yaml.write_text(OmegaConf.to_yaml(OmegaConf.create(new_hparams), resolve=False))
@@ -527,11 +604,15 @@ def train_subensemble_masks(args: argparse.Namespace) -> None:
                 "overlap_weight": float(args.overlap_weight),
                 "temp_start": float(args.temp_start),
                 "temp_decay": float(args.temp_decay),
+                "mask_storage": "binary_channel_masks_v1",
             },
         )
 
-        print(f"Saved masked checkpoint to {masked_ckpt_path}")
-        print(f"Saved {args.num_submodels} materialized sub-model checkpoints to {dest_ckpt_dir}")
+        print(f"Saved masked sub-ensemble checkpoint to {masked_ckpt_path}")
+        print(
+            "Saved one checkpoint with dense weights + serialized mask list "
+            f"({int(args.num_submodels)} submodels)"
+        )
     else:
         print("Skipped checkpoint/hparams/metadata save (--save_checkpoint not set).")
     print(f"Saved TensorBoard logs to {tb_dir}")
@@ -589,7 +670,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="How many submodel indices to average per optimization step. Use 0 to use all submodels each step.",
     )
     parser.add_argument(
-        "--lr",  # from the code ref
+        "--lr", 
         type=float,
         default=0.1,
         help="Learning rate for mask-logit optimization (base model weights remain frozen).",

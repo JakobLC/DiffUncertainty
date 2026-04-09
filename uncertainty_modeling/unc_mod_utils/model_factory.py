@@ -17,25 +17,53 @@ def _clone_config(cfg: DictConfig | Mapping[str, Any]) -> DictConfig:
     raise TypeError(f"Unsupported config type: {type(cfg).__name__}")
 
 
-def _normalize_dropout_cfg(dropout_cfg: DictConfig | Mapping[str, Any] | None) -> tuple[bool, float]:
+def _parse_dropout_probability(probability: Any) -> list[float]:
+    if isinstance(probability, str):
+        tokens = [tok.strip() for tok in probability.split(",") if tok.strip()]
+        if not tokens:
+            raise ValueError("dropout probability string must contain at least one numeric value.")
+        values = [float(tok) for tok in tokens]
+    elif isinstance(probability, (int, float)):
+        values = [float(probability)]
+    else:
+        raise TypeError(
+            "dropout probability must be a float/int or a comma-separated string of floats."
+        )
+    for value in values:
+        if not 0.0 <= value <= 1.0:
+            raise ValueError("dropout probability values must lie in [0, 1].")
+    return values
+
+
+def _normalize_dropout_cfg(
+    dropout_cfg: DictConfig | Mapping[str, Any] | None,
+) -> tuple[bool, list[float], dict[str, Any] | None]:
     if dropout_cfg is None:
-        return False, 0.0
+        return False, [0.0], None
     if isinstance(dropout_cfg, (DictConfig, Mapping)):
-        probability = float(dropout_cfg["probability"])
-        if not 0.0 < probability <= 1.0:
-            raise ValueError("dropout probability must lie in (0, 1].")
-        return bool(dropout_cfg.get("enabled", True)), probability
+        cfg_map = (
+            OmegaConf.to_container(dropout_cfg, resolve=True)
+            if isinstance(dropout_cfg, DictConfig)
+            else dict(dropout_cfg)
+        )
+        if "probability" not in cfg_map:
+            raise KeyError("dropout_cfg must contain a 'probability' key.")
+        values = _parse_dropout_probability(cfg_map["probability"])
+        return bool(cfg_map.get("enabled", True)), values, cfg_map
     raise TypeError(f"dropout_cfg must be a mapping, got {type(dropout_cfg).__name__}.")
 
 
 def _apply_dropout_overrides(cfg: DictConfig, dropout_cfg: DictConfig | Mapping[str, Any] | None) -> None:
-    enabled, probability = _normalize_dropout_cfg(dropout_cfg)
+    enabled, probabilities, raw_cfg = _normalize_dropout_cfg(dropout_cfg)
     if not enabled:
         return
     model_section = cfg["MODEL"]
+    base_probability = probabilities[0]
     with open_dict(model_section):
-        model_section["DROPOUT_RATE"] = probability
-        model_section["DROPOUT"] = probability
+        model_section["DROPOUT_RATE"] = base_probability
+        model_section["DROPOUT"] = base_probability
+        if raw_cfg is not None:
+            model_section["DROPOUT_CFG"] = raw_cfg
 
 
 def _infer_model_au_type(model: Any) -> str:
@@ -132,6 +160,8 @@ def instantiate_network(
     _apply_dropout_overrides(merged_cfg, dropout_cfg)
 
     instantiate_conf = {"_target_": target, "cfg": merged_cfg}
+    if dropout_cfg is not None:
+        instantiate_conf["dropout_cfg"] = dropout_cfg
     if kwargs:
         instantiate_conf.update(kwargs)
 
