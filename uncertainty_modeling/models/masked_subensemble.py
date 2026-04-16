@@ -19,6 +19,7 @@ class _MaskedLayerBase(nn.Module):
         self.active_mask_idx: int | None = 0
         self.temp: float = 1.0
         self.rows_only: bool = False
+        self.normalize: bool = False
 
     def set_mask_context(self, mask_idx: int | None, temp: float) -> None:
         self.active_mask_idx = mask_idx
@@ -26,6 +27,13 @@ class _MaskedLayerBase(nn.Module):
 
     def set_rows_only(self, rows_only: bool) -> None:
         self.rows_only = bool(rows_only)
+
+    def set_normalize(self, normalize: bool) -> None:
+        self.normalize = bool(normalize)
+
+    def _mask_rescale_factor(self, mask: torch.Tensor, eps: float = 1e-6) -> torch.Tensor:
+        keep_ratio = mask.to(torch.float32).mean().clamp_min(float(eps)).to(mask.dtype)
+        return torch.reciprocal(keep_ratio)
 
     def _sample_binary_probs(self, logits: torch.Tensor) -> torch.Tensor:
         if self.training:
@@ -106,8 +114,13 @@ class MaskedLinear(_MaskedLayerBase):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         in_mask, out_mask = self._mask_vectors(mask_idx=None)
         masked_weight = self.weight * out_mask.unsqueeze(1) * in_mask.unsqueeze(0)
+        if self.normalize:
+            scale = self._mask_rescale_factor(in_mask) * self._mask_rescale_factor(out_mask)
+            masked_weight = masked_weight * scale
         if self.bias is not None:
             masked_bias = self.bias * out_mask
+            if self.normalize:
+                masked_bias = masked_bias * self._mask_rescale_factor(out_mask)
         else:
             masked_bias = None
         return F.linear(x, masked_weight, masked_bias)
@@ -147,9 +160,17 @@ class MaskedLinear(_MaskedLayerBase):
         out_mask = (self.mask_logits_outputs[mask_idx] >= 0.0).to(self.weight.dtype)
         layer = nn.Linear(self.in_features, self.out_features, bias=self.bias is not None)
         with torch.no_grad():
-            layer.weight.copy_(self.weight * out_mask.unsqueeze(1) * in_mask.unsqueeze(0))
+            materialized_weight = self.weight * out_mask.unsqueeze(1) * in_mask.unsqueeze(0)
+            if self.normalize:
+                materialized_weight = materialized_weight * (
+                    self._mask_rescale_factor(in_mask) * self._mask_rescale_factor(out_mask)
+                )
+            layer.weight.copy_(materialized_weight)
             if self.bias is not None and layer.bias is not None:
-                layer.bias.copy_(self.bias * out_mask)
+                materialized_bias = self.bias * out_mask
+                if self.normalize:
+                    materialized_bias = materialized_bias * self._mask_rescale_factor(out_mask)
+                layer.bias.copy_(materialized_bias)
         return layer
 
 
@@ -257,8 +278,13 @@ class MaskedConv2d(_MaskedLayerBase):
         expanded_in = self._expanded_input_mask(in_mask)
         channel_mask = out_mask.unsqueeze(1) * expanded_in
         masked_weight = self.weight * channel_mask.unsqueeze(-1).unsqueeze(-1)
+        if self.normalize:
+            scale = self._mask_rescale_factor(in_mask) * self._mask_rescale_factor(out_mask)
+            masked_weight = masked_weight * scale
         if self.bias is not None:
             masked_bias = self.bias * out_mask
+            if self.normalize:
+                masked_bias = masked_bias * self._mask_rescale_factor(out_mask)
         else:
             masked_bias = None
         return F.conv2d(
@@ -337,9 +363,17 @@ class MaskedConv2d(_MaskedLayerBase):
             padding_mode=self.padding_mode,
         )
         with torch.no_grad():
-            layer.weight.copy_(self.weight * channel_mask.unsqueeze(-1).unsqueeze(-1))
+            materialized_weight = self.weight * channel_mask.unsqueeze(-1).unsqueeze(-1)
+            if self.normalize:
+                materialized_weight = materialized_weight * (
+                    self._mask_rescale_factor(in_mask) * self._mask_rescale_factor(out_mask)
+                )
+            layer.weight.copy_(materialized_weight)
             if self.bias is not None and layer.bias is not None:
-                layer.bias.copy_(self.bias * out_mask)
+                materialized_bias = self.bias * out_mask
+                if self.normalize:
+                    materialized_bias = materialized_bias * self._mask_rescale_factor(out_mask)
+                layer.bias.copy_(materialized_bias)
         return layer
 
 
@@ -411,6 +445,11 @@ def freeze_unmasked_parameters(root: nn.Module) -> None:
 def set_rows_only_mode(root: nn.Module, rows_only: bool) -> None:
     for module in iter_masked_layers(root):
         module.set_rows_only(rows_only)
+
+
+def set_normalize_mode(root: nn.Module, normalize: bool) -> None:
+    for module in iter_masked_layers(root):
+        module.set_normalize(normalize)
 
 
 def initialize_mask_logits_for_target_fraction(

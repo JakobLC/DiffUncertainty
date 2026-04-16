@@ -11,6 +11,7 @@ import hydra
 import numpy as np
 import torch
 from omegaconf import OmegaConf
+import albumentations as A
 #from torchmetrics.functional import dice
 import torch.nn.functional as F
 from PIL import Image
@@ -30,11 +31,237 @@ from uncertainty_modeling.unc_mod_utils.test_utils import (
     prepare_evaluation_jobs,
 )
 import uncertainty_modeling.data.cityscapes_labels as cs_labels
+import uncertainty_modeling.augmentations as custom_augmentations
 from global_utils.checkpoint_format import format_checkpoint_subdir
 from uncertainty_modeling.unc_mod_utils.swag import SWAG
+from uncertainty_modeling.data.torch_dataloader import apply_augment_mult
 
 LIDC_PATIENT_AUG_SCHEMA = "lidc_patient_aug_v1"
 AUGMENTED_TEST_SPLITS = {"ood_noise", "ood_blur", "ood_contrast", "ood_jpeg"}
+SUPPORTED_TTA_GEOMETRIC_TRANSFORMS = {"HorizontalFlip", "Rotate", "RandomScale", "Affine"}
+# Explicit inventory of geometric transforms that this TTA implementation does not invert yet.
+UNSUPPORTED_TTA_GEOMETRIC_TRANSFORMS = [
+    "VerticalFlip",
+    "RandomRotate90",
+    "Transpose",
+    "ShiftScaleRotate",
+    "SafeRotate",
+    "Perspective",
+    "ElasticTransform",
+    "GridDistortion",
+    "OpticalDistortion",
+    "PiecewiseAffine",
+    "GridElasticDeform",
+    "ThinPlateSpline",
+    "Morphological",
+    "D4",
+]
+
+
+class AlbumentationsTTABackend:
+    def __init__(self, augmentations_cfg):
+        transforms_cfg = self._extract_train_transforms_cfg(augmentations_cfg)
+        self._validate_geometric_support(transforms_cfg)
+        self.transform_steps = self._build_transform_steps(transforms_cfg)
+
+    @staticmethod
+    def _extract_train_transforms_cfg(augmentations_cfg):
+        train_cfg = augmentations_cfg.get("TRAIN", [])
+        if not train_cfg:
+            raise ValueError("TTA requires data.augmentations.TRAIN to be configured.")
+        compose_cfg = train_cfg[0].get("Compose", {})
+        transforms_cfg = compose_cfg.get("transforms", [])
+        if not transforms_cfg:
+            raise ValueError("TTA requires at least one transform in data.augmentations.TRAIN[0].Compose.transforms.")
+        return transforms_cfg
+
+    @staticmethod
+    def _validate_geometric_support(transforms_cfg):
+        for transform_cfg in transforms_cfg:
+            if not isinstance(transform_cfg, dict) or not transform_cfg:
+                continue
+            transform_name = next(iter(transform_cfg.keys()))
+            if (
+                transform_name in UNSUPPORTED_TTA_GEOMETRIC_TRANSFORMS
+                and transform_name not in SUPPORTED_TTA_GEOMETRIC_TRANSFORMS
+            ):
+                raise ValueError(
+                    f"TTA encountered unsupported geometric transform '{transform_name}'. "
+                    "Only HorizontalFlip, Rotate, RandomScale, and Affine currently support inversion."
+                )
+
+    @staticmethod
+    def _build_transform_steps(transforms_cfg):
+        transform_steps = []
+        for transform_cfg in transforms_cfg:
+            if not isinstance(transform_cfg, dict) or not transform_cfg:
+                continue
+            transform_name = next(iter(transform_cfg.keys()))
+            if transform_name in {"ToTensorV2"}:
+                continue
+            params = transform_cfg.get(transform_name) or {}
+            params = dict(params)
+            if "transforms" in params:
+                raise ValueError(
+                    f"Nested transform containers are not supported inside TTA transform '{transform_name}'."
+                )
+            if hasattr(A, transform_name):
+                transform_cls = getattr(A, transform_name)
+            elif hasattr(A.pytorch, transform_name):
+                transform_cls = getattr(A.pytorch, transform_name)
+            elif hasattr(custom_augmentations, transform_name):
+                transform_cls = getattr(custom_augmentations, transform_name)
+            else:
+                raise ValueError(
+                    f"TTA transform '{transform_name}' not found in albumentations, albumentations.pytorch, "
+                    "or uncertainty_modeling.augmentations."
+                )
+            transform = transform_cls(**params)
+            is_geometric = (
+                transform_name in SUPPORTED_TTA_GEOMETRIC_TRANSFORMS
+                or transform_name in UNSUPPORTED_TTA_GEOMETRIC_TRANSFORMS
+            )
+            compose = A.ReplayCompose([transform]) if is_geometric else A.Compose([transform])
+            transform_steps.append(
+                {
+                    "name": transform_name,
+                    "is_geometric": is_geometric,
+                    "compose": compose,
+                }
+            )
+        return transform_steps
+
+    def sample_batch(self, batch_images: torch.Tensor):
+        augmented_images = []
+        replays = []
+        for image in batch_images:
+            image_np = image.detach().cpu().permute(1, 2, 0).numpy().astype(np.float32)
+            image_aug = image_np
+            geometric_replay_transforms = []
+            for step in self.transform_steps:
+                augmented = step["compose"](image=image_aug)
+                image_aug = augmented["image"]
+                if step["is_geometric"]:
+                    replay = augmented.get("replay", {})
+                    replay_transforms = replay.get("transforms", []) if isinstance(replay, dict) else []
+                    geometric_replay_transforms.extend(replay_transforms)
+            if image_aug.ndim == 2:
+                image_aug = image_aug[..., None]
+            augmented_images.append(torch.from_numpy(image_aug).permute(2, 0, 1).to(image.dtype))
+            replays.append({"transforms": geometric_replay_transforms})
+        return torch.stack(augmented_images, dim=0), replays
+
+    def invert_prediction_batch(self, predictions: torch.Tensor, replays):
+        restored = []
+        for idx, replay in enumerate(replays):
+            pred_chw = predictions[idx]
+            pred_hwc = pred_chw.detach().cpu().permute(1, 2, 0).numpy().astype(np.float32)
+            inv_hwc = self._invert_replay(pred_hwc, replay)
+            restored.append(
+                torch.from_numpy(inv_hwc).permute(2, 0, 1).to(device=predictions.device, dtype=predictions.dtype)
+            )
+        restored_batch = torch.stack(restored, dim=0)
+        return self._renormalize_probabilities(restored_batch)
+
+    @staticmethod
+    def _renormalize_probabilities(probs: torch.Tensor, eps: float = 1e-12) -> torch.Tensor:
+        # INTER_LINEAR interpolation can slightly violate the class-sum-to-1 constraint.
+        normalizer = probs.sum(dim=1, keepdim=True)
+        safe_normalizer = torch.clamp(normalizer, min=eps)
+        renormalized = probs / safe_normalizer
+        return torch.where(normalizer > eps, renormalized, probs)
+
+    def _invert_replay(self, pred_hwc: np.ndarray, replay: dict) -> np.ndarray:
+        transformed = pred_hwc
+        replay_transforms = replay.get("transforms", []) if isinstance(replay, dict) else []
+        for transform in reversed(replay_transforms):
+            if not transform.get("applied", False):
+                continue
+            fullname = str(transform.get("__class_fullname__", ""))
+            transform_name = fullname.split(".")[-1]
+            params = transform.get("params", {}) or {}
+            if transform_name == "HorizontalFlip":
+                transformed = cv2.flip(transformed, 1)
+                continue
+            if transform_name == "Rotate":
+                angle = None
+                for key in ("angle", "x"):
+                    value = params.get(key)
+                    if isinstance(value, (int, float)):
+                        angle = float(value)
+                        break
+                if angle is None:
+                    raise RuntimeError(f"Rotate replay did not contain an angle: {params}")
+                transformed = self._warp_inverse_affine(transformed, angle_deg=-angle, scale=1.0)
+                continue
+            if transform_name == "RandomScale":
+                scale = None
+                for key in ("scale", "x"):
+                    value = params.get(key)
+                    if isinstance(value, (int, float)):
+                        scale = float(value)
+                        break
+                if scale is None:
+                    raise RuntimeError(f"RandomScale replay did not contain a scale value: {params}")
+                if abs(scale) < 1e-8:
+                    raise RuntimeError("RandomScale replay sampled a near-zero scale which cannot be inverted.")
+                transformed = self._warp_inverse_affine(transformed, angle_deg=0.0, scale=1.0 / scale)
+                continue
+            if transform_name == "Affine":
+                forward_matrix = self._extract_affine_matrix_from_params(params)
+                inverse_matrix = cv2.invertAffineTransform(forward_matrix)
+                transformed = cv2.warpAffine(
+                    transformed,
+                    inverse_matrix,
+                    (transformed.shape[1], transformed.shape[0]),
+                    flags=cv2.INTER_LINEAR,
+                    borderMode=cv2.BORDER_REPLICATE,
+                )
+                if transformed.ndim == 2:
+                    transformed = transformed[..., None]
+                continue
+            if transform_name in UNSUPPORTED_TTA_GEOMETRIC_TRANSFORMS:
+                raise RuntimeError(
+                    f"Unsupported geometric transform '{transform_name}' encountered at replay inversion time."
+                )
+        return transformed
+
+    @staticmethod
+    def _extract_affine_matrix_from_params(params: dict) -> np.ndarray:
+        matrix = params.get("matrix")
+        if matrix is None:
+            raise RuntimeError(
+                "Affine replay did not contain a 'matrix' entry, cannot invert this sample. "
+                f"Available params keys: {sorted(params.keys())}"
+            )
+        matrix_np = np.asarray(matrix, dtype=np.float32)
+        if matrix_np.shape == (2, 3):
+            return matrix_np
+        if matrix_np.shape == (3, 3):
+            return matrix_np[:2, :]
+        if matrix_np.size == 6:
+            return matrix_np.reshape(2, 3)
+        if matrix_np.size == 9:
+            return matrix_np.reshape(3, 3)[:2, :]
+        raise RuntimeError(
+            f"Unexpected Affine replay matrix shape {matrix_np.shape}; expected 2x3 or 3x3 compatible matrix."
+        )
+
+    @staticmethod
+    def _warp_inverse_affine(pred_hwc: np.ndarray, angle_deg: float, scale: float) -> np.ndarray:
+        height, width = pred_hwc.shape[:2]
+        center = (width / 2.0, height / 2.0)
+        matrix = cv2.getRotationMatrix2D(center, angle_deg, scale)
+        warped = cv2.warpAffine(
+            pred_hwc,
+            matrix,
+            (width, height),
+            flags=cv2.INTER_LINEAR,
+            borderMode=cv2.BORDER_REPLICATE,
+        )
+        if warped.ndim == 2:
+            warped = warped[..., None]
+        return warped
 
 
 class Tester:
@@ -64,7 +291,8 @@ class Tester:
         self._ensure_split_is_supported(args.test_split, normalized_split)
         args.test_split = normalized_split
         self.test_batch_size = args.test_batch_size
-        self.tta = args.tta
+        self.tta = bool(args.tta)
+        self.tta_augmentations_yaml = getattr(args, "tta_augmentations_yaml", None)
         self.discretize = args.discretize
         self.direct_au = bool(getattr(args, "direct_au", False))
         self.test_dataloader = self.get_test_dataloader(args, hparams)
@@ -76,6 +304,7 @@ class Tester:
             raise ValueError("direct_au cannot be combined with --ensemble_mode.")
         self.diffusion_steps_override = getattr(args, "diffusion_num_steps", None)
         self.diffusion_sampler_override = getattr(args, "diffusion_sampler_type", None)
+        self.n_pred = int(args.n_pred)
         base_models = load_models_from_checkpoint(
             self.all_checkpoints,
             device="cpu",
@@ -96,12 +325,15 @@ class Tester:
             self.all_checkpoints,
             self.checkpoint_paths,
         )
+        self.tta_backend = None
+        if self.tta:
+            self._validate_tta_model_compatibility(self.models)
+            self.tta_backend = self._build_tta_backend(hparams)
         self._maybe_override_diffusion_steps()
         if not self.models:
             raise RuntimeError(
                 "No models were instantiated; ensure checkpoints are valid and --n_models is not zero with ensemble_mode disabled."
             )
-        self.n_pred = args.n_pred
         self.results_dict = {}
         self.save_root_dir = (
             args.save_dir if args.save_dir is not None else hparams["save_dir"]
@@ -122,6 +354,44 @@ class Tester:
         self.skip_saving = bool(getattr(args, "skip_saving", False))
         self.create_save_dirs()
         self.skip_existing = bool(getattr(args, "skip_existing", False))
+
+    @staticmethod
+    def _validate_tta_model_compatibility(models):
+        for idx, model in enumerate(models):
+            au_type = str(getattr(model, "AU_type", "softmax") or "softmax").lower()
+            if au_type != "softmax":
+                raise ValueError(
+                    f"TTA currently requires AU_type='softmax'. Model #{idx} has AU_type='{au_type}'."
+                )
+
+    def _build_tta_backend(self, hparams):
+        if self.n_pred < 1:
+            raise ValueError("When TTA is enabled, --n_pred must be >= 1.")
+        aug_cfg = self._resolve_tta_augmentations_cfg(hparams)
+        return AlbumentationsTTABackend(aug_cfg)
+
+    def _resolve_tta_augmentations_cfg(self, hparams):
+        if self.tta_augmentations_yaml:
+            yaml_cfg = OmegaConf.load(self.tta_augmentations_yaml)
+            if "data" in yaml_cfg and "augmentations" in yaml_cfg["data"]:
+                source_cfg = yaml_cfg["data"]["augmentations"]
+            elif "augmentations" in yaml_cfg:
+                source_cfg = yaml_cfg["augmentations"]
+            else:
+                raise ValueError(
+                    "--tta_augmentations_yaml must contain 'data.augmentations' or top-level 'augmentations'."
+                )
+        else:
+            source_cfg = hparams["data"]["augmentations"]
+            augment_mult = source_cfg.get("augment_mult", 1)
+            if float(augment_mult) == 0.0:
+                raise ValueError(
+                    "TTA requested with default training augmentations, but augment_mult is 0. "
+                    "Either set augment_mult > 0 in the training config or provide --tta_augmentations_yaml."
+                )
+        cfg_copy = OmegaConf.create(copy.deepcopy(source_cfg))
+        cfg_copy = apply_augment_mult(cfg_copy)
+        return OmegaConf.to_container(cfg_copy, resolve=True)
 
     @staticmethod
     def get_checkpoints(checkpoint_paths):
@@ -777,23 +1047,26 @@ class Tester:
                         for sample in softmax_stack:
                             #all_preds["softmax_pred"].append(sample)
                             all_preds["softmax_pred_groups"].append(sample.unsqueeze(0))
-                elif self.tta:
-                    for index, image in enumerate(batch["data"]):
-                        output = model.forward(image.to(self.device))
-                        output_softmax = F.softmax(output, dim=1)
-                        if any(
-                            "HorizontalFlip" in sl for sl in batch["transforms"][index]
-                        ):
-                            pred_tensor = torch.flip(output_softmax, [-1])
-                        else:
-                            pred_tensor = output_softmax
-                        #all_preds["softmax_pred"].append(pred_tensor)
-                        all_preds["softmax_pred_groups"].append(pred_tensor.unsqueeze(0))
                 else:
-                    output = model.forward(batch["data"].to(self.device))
-                    output_softmax = F.softmax(output, dim=1)
-                    #all_preds["softmax_pred"].append(output_softmax)
-                    all_preds["softmax_pred_groups"].append(output_softmax.unsqueeze(0))
+                    if self.tta:
+                        input_batch = batch["data"]
+                        if isinstance(input_batch, list):
+                            input_batch = input_batch[0]
+
+                        for _ in range(self.n_pred):
+                            aug_batch, replays = self.tta_backend.sample_batch(input_batch)
+                            output = model.forward(aug_batch.to(self.device))
+                            output_softmax_pre_inv = F.softmax(output, dim=1)
+                            output_softmax_post_inv = self.tta_backend.invert_prediction_batch(
+                                output_softmax_pre_inv,
+                                replays,
+                            )
+                            all_preds["softmax_pred_groups"].append(output_softmax_post_inv.unsqueeze(0))
+                    else:
+                        output = model.forward(batch["data"].to(self.device))
+                        output_softmax = F.softmax(output, dim=1)
+                        #all_preds["softmax_pred"].append(output_softmax)
+                        all_preds["softmax_pred_groups"].append(output_softmax.unsqueeze(0))
         if self.discretize:
             def _discretize(group):
                     return F.one_hot(torch.argmax(group, dim=2), num_classes=group.shape[2]).permute(0, 1, 4, 2, 3).float()

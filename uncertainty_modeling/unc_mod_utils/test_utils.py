@@ -14,6 +14,7 @@ from evaluation.metrics.dice_wrapped import dice
 from uncertainty_modeling.models.masked_subensemble import (
     materialize_submodel,
     replace_with_masked_layers,
+    set_normalize_mode,
 )
 
 
@@ -76,7 +77,11 @@ def test_cli(
         "--n_pred",
         type=int,
         default=10,
-        help="Number of predictions to sample per model (for generative AU models).",
+        help=(
+            "Number of predictions to sample per model. "
+            "For generative AU models this is the stochastic sample count; with --test_time_augmentations "
+            "and AU_type=softmax this is the number of random TTA augmentations per image."
+        ),
     )
     parser.add_argument(
         "--n_models",
@@ -152,10 +157,18 @@ def test_cli(
         help="Comma-separated list of dataset splits to evaluate.",
     )
     parser.add_argument(
-        "--test_time_augmentations",
-        "-tta",
-        dest="tta",
+        "--tta",
         action="store_true",
+        help="Whether to apply test-time augmentations (TTA) when generating predictions"
+    )
+    parser.add_argument(
+        "--tta_augmentations_yaml",
+        type=str,
+        default="",
+        help=(
+            "Optional YAML path that overrides TTA augmentation config. "
+            "Expected structure matches dataset config and must contain data.augmentations."
+        ),
     )
     parser.add_argument(
         "--ema_mode",
@@ -493,6 +506,7 @@ def load_models_from_checkpoint(
         template_model: nn.Module,
         mask_payload: Dict[str, Any],
         mask_idx: int,
+        normalize_default: bool,
     ) -> nn.Module:
         member = copy.deepcopy(template_model)
         modules = dict(member.named_modules())
@@ -523,7 +537,12 @@ def load_models_from_checkpoint(
                     )
 
                 rows_only = bool(layer_cfg.get("rows_only", False))
+                normalize = bool(layer_cfg.get("normalize", normalize_default))
                 layer_type = str(layer_cfg.get("type", ""))
+
+                def _rescale(mask: torch.Tensor, eps: float = 1e-6) -> torch.Tensor:
+                    keep_ratio = mask.to(torch.float32).mean().clamp_min(float(eps)).to(mask.dtype)
+                    return torch.reciprocal(keep_ratio)
 
                 if isinstance(module, nn.Linear):
                     if layer_type and layer_type != "linear":
@@ -536,8 +555,12 @@ def load_models_from_checkpoint(
                     else:
                         in_mask = in_mask_tensor[mask_idx].to(device=module.weight.device, dtype=module.weight.dtype)
                     module.weight.mul_(out_mask.unsqueeze(1) * in_mask.unsqueeze(0))
+                    if normalize:
+                        module.weight.mul_(_rescale(in_mask) * _rescale(out_mask))
                     if module.bias is not None:
                         module.bias.mul_(out_mask)
+                        if normalize:
+                            module.bias.mul_(_rescale(out_mask))
                     continue
 
                 if isinstance(module, nn.Conv2d):
@@ -557,8 +580,12 @@ def load_models_from_checkpoint(
                     )
                     channel_mask = out_mask.unsqueeze(1) * expanded_in
                     module.weight.mul_(channel_mask.unsqueeze(-1).unsqueeze(-1))
+                    if normalize:
+                        module.weight.mul_(_rescale(in_mask) * _rescale(out_mask))
                     if module.bias is not None:
                         module.bias.mul_(out_mask)
+                        if normalize:
+                            module.bias.mul_(_rescale(out_mask))
                     continue
 
                 raise TypeError(
@@ -613,6 +640,7 @@ def load_models_from_checkpoint(
         extraction_cfg = extraction_cfg if isinstance(extraction_cfg, dict) else {}
         is_masked_subensemble = bool(extraction_cfg.get("enabled", False))
         num_submodels = int(extraction_cfg.get("num_submodels", 0) or 0)
+        normalize = bool(extraction_cfg.get("normalize", False))
         subensemble_masks = checkpoint.get("subensemble_masks")
         has_binary_masks = isinstance(subensemble_masks, dict) and isinstance(
             subensemble_masks.get("layers"), list
@@ -642,6 +670,7 @@ def load_models_from_checkpoint(
                     template_model=model,
                     mask_payload=subensemble_masks,
                     mask_idx=mask_idx,
+                    normalize_default=normalize,
                 )
                 all_models.append(member.to(device))
         elif is_masked_subensemble and num_submodels > 0 and not is_materialized_member:
@@ -651,6 +680,7 @@ def load_models_from_checkpoint(
                     "Sub-ensemble checkpoint requested masked loading, but no Linear/Conv2d layers were wrapped."
                 )
             model.load_state_dict(state_dict=state_dict, strict=False)
+            set_normalize_mode(model, normalize)
             model.eval()
             for mask_idx in range(num_submodels):
                 member = materialize_submodel(model, mask_idx=mask_idx)

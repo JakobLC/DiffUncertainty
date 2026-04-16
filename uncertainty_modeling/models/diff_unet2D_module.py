@@ -9,7 +9,7 @@ import torch
 import torch.distributions as td
 import torch.nn as nn
 import torch.nn.functional as F
-from omegaconf import DictConfig, OmegaConf
+from omegaconf import DictConfig, ListConfig, OmegaConf
 from torch.distributions.kl import kl_divergence
 
 from .diffusion import ContinuousGaussianDiffusion
@@ -36,6 +36,9 @@ class MC_Dropout2d(nn.Module):
         if self.p <= 0.0:
             return x
         return F.dropout2d(x, p=self.p, training=True)
+
+    def extra_repr(self) -> str:
+        return f"p={self.p:g}"
 
 def timestep_embedding(timesteps, dim, max_period=10):
     """
@@ -80,11 +83,15 @@ def _parse_dropout_probability_values(probability: Any) -> list[float]:
         if not tokens:
             raise ValueError("dropout probability string must contain at least one numeric value")
         values = [float(token) for token in tokens]
+    elif isinstance(probability, (ListConfig, list, tuple)):
+        if len(probability) == 0:
+            raise ValueError("dropout probability list must contain at least one numeric value")
+        values = [float(token) for token in probability]
     elif isinstance(probability, (int, float)):
         values = [float(probability)]
     else:
         raise TypeError(
-            "dropout probability must be a float/int or a comma-separated string of floats"
+            "dropout probability must be a float/int, a list of floats, or a comma-separated string of floats"
         )
     for value in values:
         if not 0.0 <= value <= 1.0:

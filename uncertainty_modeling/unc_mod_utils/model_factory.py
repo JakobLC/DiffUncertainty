@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any, Mapping
 
 import hydra.utils
-from omegaconf import DictConfig, OmegaConf, open_dict
+from omegaconf import DictConfig, ListConfig, OmegaConf, open_dict
 
 
 def _clone_config(cfg: DictConfig | Mapping[str, Any]) -> DictConfig:
@@ -23,11 +23,15 @@ def _parse_dropout_probability(probability: Any) -> list[float]:
         if not tokens:
             raise ValueError("dropout probability string must contain at least one numeric value.")
         values = [float(tok) for tok in tokens]
+    elif isinstance(probability, (ListConfig, list, tuple)):
+        if len(probability) == 0:
+            raise ValueError("dropout probability list must contain at least one numeric value.")
+        values = [float(tok) for tok in probability]
     elif isinstance(probability, (int, float)):
         values = [float(probability)]
     else:
         raise TypeError(
-            "dropout probability must be a float/int or a comma-separated string of floats."
+            "dropout probability must be a float/int, a list of floats, or a comma-separated string of floats."
         )
     for value in values:
         if not 0.0 <= value <= 1.0:

@@ -4,7 +4,6 @@ import fnmatch
 import random
 from typing import List
 
-import albumentations
 import numpy as np
 import torch
 
@@ -129,7 +128,11 @@ class MultiRater2DDataset(torch.utils.data.Dataset):
 
     def _load_image(self, path: str) -> np.ndarray:
         img = np.load(path)
-        img = img.astype(np.float32)
+        # divide by 255 if dtype==uint8
+        if img.dtype == np.uint8:
+            img = img.astype(np.float32) / 255.0
+        else:
+            img = img.astype(np.float32)
         if img.ndim == 2:
             if self.replicate_channels:
                 img = np.repeat(img[..., None], 3, axis=2)
@@ -156,35 +159,17 @@ class MultiRater2DDataset(torch.utils.data.Dataset):
         img = self._load_image(self.imgs[idx])
         mask = self._select_mask(idx, img.shape)
         if self.tta:
-            images: List[np.ndarray] = [img]
-            transforms_applied: List[List[str]] = [[]]
-
-            # Simple TTA variants consistent with Cityscapes implementation
-            flip_transform = albumentations.HorizontalFlip(p=1.0)
-            noise_transform = albumentations.GaussNoise(p=1.0)
-
-            flipped = flip_transform(image=img)
-            images.append(flipped["image"])
-            transforms_applied.append(["HorizontalFlip"])
-
-            noise = noise_transform(image=img)
-            images.append(noise["image"])
-            transforms_applied.append(["GaussNoise"])
-
-            flipped_noise = noise_transform(image=flipped["image"])
-            images.append(flipped_noise["image"])
-            transforms_applied.append(["HorizontalFlip", "GaussNoise"])
-
-            # Apply albumentations pipeline (normalization + tensor) to images
-            images = [self.transforms(image=image)["image"].float() for image in images]
-            transformed = self.transforms(image=img, mask=mask)
-            mask = transformed["mask"]
+            # Option A: return raw image values under 'data' and keep model-side TTA/inversion in test_2D.py.
+            if self.return_all_raters:
+                mask_t = torch.from_numpy(np.stack(mask, axis=0)).long()
+            else:
+                mask_t = torch.from_numpy(mask).long()
+            img_t = torch.from_numpy(np.moveaxis(img, -1, 0)).float()
             return {
-                "data": images,
-                "seg": mask,
+                "data": img_t,
+                "seg": mask_t,
                 "image_id": self.image_ids[idx],
                 "dataset": self.dataset_label,
-                "transforms": transforms_applied,
             }
         else:
             if self.return_all_raters:

@@ -1,0 +1,68 @@
+data:
+    name: "chaksu128"
+    nickname: "chaksu128"
+    data_input_dir: "/home/jloch/Desktop/diff/luzern/values_datasets/chaksu128"
+    num_classes: 3
+    data_fold_id: 0
+    split_name: "scanner"
+    dataset:
+        _target_: uncertainty_modeling.data.lidc2d_dataset.MultiRater2DDataset
+        splits_path: "${data.data_input_dir}/splits/${data.split_name}/firstCycle/splits.pkl"
+        dataset_label: "chaksu128"
+        num_raters: 5
+    augmentations: ${augmentations}
+
+augmentations:
+  augment_mult: 1.0
+  apply_mult_keys: ["HorizontalFlip.p", "Rotate.limit", "RandomScale.scale_limit", "GaussNoise.var_limit"]
+  TRAIN:
+    - Compose:
+        transforms:
+          - HorizontalFlip:
+              p: 0.5
+          - Rotate:
+              limit: 30
+              border_mode: 0
+              mask_value: 0
+              p: 0.5
+          - RandomScale:
+              scale_limit: [-0.3, 0.3]
+              p: 0.5
+          - Affine:
+              scale: 1.0
+              translate_percent: 0.0
+              rotate: 0.0
+              shear: {x: [-20.0, 20.0], y: [-20.0, 20.0]}
+              fit_output: false
+              mode: 0
+              cval: 0
+              cval_mask: 0
+              p: 0.5
+          - PadIfNeeded:
+              min_height: 128
+              min_width: 128
+              border_mode: 0
+              mask_value: 0
+          - CenterCrop:
+              height: 128
+              width: 128
+          - GaussNoise:
+              var_limit: [0.00, 0.02]
+              p: 0.5
+              per_channel: true
+          - ChannelShuffle:
+              p: 0.2
+          - HueSaturationValue:
+              hue_shift_limit: [-30, 30]
+              sat_shift_limit: [-0.3, 0.3]
+              val_shift_limit: [-0.3, 0.3]
+              p: 0.5
+          - MotionBlur:
+              blur_limit: [3,11]
+              p: 0.5
+          - GaussianBlur:
+              blur_limit: [3,7]
+              p: 0.5
+          - SampleNormalize:
+              eps: 1e-6
+          - ToTensorV2:

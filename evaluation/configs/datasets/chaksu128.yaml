@@ -9,7 +9,29 @@ data:
   data_input_dir: ${data_input_dir}
 base_splits_path: "/home/jloch/Desktop/diff/luzern/values_datasets/chaksu128/splits"
 experiments:
-  - ${SUBENS}
+  - ${DROPOUT_CHAKSU_SWEEP}
+
+DROPOUT_CHAKSU_SWEEP:
+  iter_params:
+    shift: [ "scanner" ]
+    pred_model: ["softmax"]
+    seed: [ "120" ]
+    #name: [ "locsweep_dec_r0.2", "ratesweep_r0.7", "locsweep_all+skip+res_r0.2", "ratesweep_r0.8", "ratesweep_r0.6", "ratesweep_r0.5", "ratesweep_r0.2", "ratesweep_r0.4", "ratesweep_r0.05", "locsweep_enc+skip_r0.2", "ratesweep_r0.1", "locsweep_enc_r0.2", "locsweep_all+res_r0.2", "ratesweep_r0.3", "locsweep_mid+skip_r0.2", "ratesweep_r0.9", "locsweep_enc+skip+res_r0.2", "locsweep_all+skip_r0.2", "locsweep_all_r0.2", "locsweep_mid_r0.2" ]
+    #name: ["locsweep_all_pb_r0.4", "locsweep_enc+skip_r0.4", "locsweep_enc_r0.4", "locsweep_encmid+skip_r0.4", "locsweep_encmid_r0.4", "locsweep_enc+skip_pb_r0.4", "locsweep_enc_pb_r0.4", "locsweep_encmid+skip_pb_r0.4", "locsweep_encmid_pb_r0.4" ]
+    name: ["subens_opt_encskip_n10s10", "subens_opt_encmid_n10s10", "subens_opt_all_n10s10"]
+    cfg: [ "standard" ]
+    data: [ "chaksu128" ]
+  skip_finished: true
+  exp_name: "dropout_chaksu_sweep"
+  naming_scheme_version: "{name}/e320_ema"
+  aggregations: [ "all" ]
+  fold: 0
+  rank: 5
+  image_ending: ".png"
+  unc_ending: ".tif"
+  n_reference_segs: 5
+  only_pu: false
+  evaluate_training_data: ${evaluate_training_data}
 
 SUBENS:
   iter_params:

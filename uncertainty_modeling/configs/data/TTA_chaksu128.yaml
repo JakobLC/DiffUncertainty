@@ -1,0 +1,44 @@
+data:
+    name: "chaksu128"
+    nickname: "chaksu128"
+    data_input_dir: "/home/jloch/Desktop/diff/luzern/values_datasets/chaksu128"
+    num_classes: 3
+    data_fold_id: 0
+    split_name: "scanner"
+    dataset:
+        _target_: uncertainty_modeling.data.lidc2d_dataset.MultiRater2DDataset
+        splits_path: "${data.data_input_dir}/splits/${data.split_name}/firstCycle/splits.pkl"
+        dataset_label: "chaksu128"
+        num_raters: 5
+    augmentations: ${augmentations}
+
+augmentations:
+  augment_mult: 1.0
+  apply_mult_keys: ["HorizontalFlip.p", "Rotate.limit", "RandomScale.scale_limit", "GaussNoise.var_limit"]
+  TRAIN:
+    - Compose:
+        transforms:
+          - HorizontalFlip:
+              p: 0.5
+          - Rotate:
+              limit: 22.5
+              border_mode: 0
+              mask_value: 0
+          - RandomScale:
+              scale_limit: [-0.2, 0.2]
+              p: 0.5
+          - PadIfNeeded:
+              min_height: 128
+              min_width: 128
+              border_mode: 0
+              mask_value: 0
+          - CenterCrop:
+              height: 128
+              width: 128
+          - GaussNoise:
+              var_limit: [0.0, 0.01]
+              p: 0.5
+              per_channel: true
+          - SampleNormalize:
+              eps: 1e-6
+          - ToTensorV2:

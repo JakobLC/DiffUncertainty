@@ -363,6 +363,11 @@ class EvalExperiments:
                 self.cleanup()
                 print(task)
                 continue
+            # Cleanup only for versions that are already finished.
+            if str(task) == "cleanup_finished":
+                self.cleanup(only_finished=True)
+                print(task)
+                continue
             task_params = self.config.task_params[task]
             if type(self.config.task_params[task]) == ListConfig:
                 self.analyse_subtasks(task_params)
@@ -379,7 +384,7 @@ class EvalExperiments:
                 print(task)
         return
 
-    def cleanup(self):
+    def cleanup(self, only_finished=False):
         """Remove large image folders under each version/dataset test folder.
 
         Deletes the following subdirectories if present under each dataset folder:
@@ -389,6 +394,10 @@ class EvalExperiments:
         - `pred_seg`
 
         JSON files and other files are left untouched.
+
+        Args:
+            only_finished: If True, only clean versions considered finished by
+                `_is_finished_version`.
         """
         folders_to_remove = [
             "AU",
@@ -401,6 +410,11 @@ class EvalExperiments:
             if not exp_path.exists():
                 print(f"Skipping missing version path: {exp_path}")
                 continue
+
+            if only_finished and not self._is_finished_version(version):
+                print(f"Skipping unfinished version: {exp_path}")
+                continue
+
             # If there are dataset split subdirectories, iterate them; otherwise treat exp_path as single dataset
             children = [p for p in exp_path.iterdir() if p.is_dir()]
             if children:
