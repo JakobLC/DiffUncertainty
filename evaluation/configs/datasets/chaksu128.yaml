@@ -9,7 +9,95 @@ data:
   data_input_dir: ${data_input_dir}
 base_splits_path: "/home/jloch/Desktop/diff/luzern/values_datasets/chaksu128/splits"
 experiments:
-  - ${DROPOUT_CHAKSU_SWEEP}
+  - ${SWEEP_ALL}
+  - ${SWEEP_NONE}
+  - ${TTA_TESTS}
+  - ${EXTRACT_SOFTMAX}
+
+DROPOUT_SSN:
+  iter_params:
+    shift: [ "scanner" ]
+    pred_model: ["ssn"]
+    seed: [ "120" ]
+    seed1: ["0"]
+    eu: ["dropout"]
+    cfg: [ "standard" ]
+    data: [ "chaksu128" ]
+  exp_name: "chaksu128"
+  naming_scheme_version: "{pred_model}_{eu}_{seed1}/e500_ema"
+  aggregations: [ "all" ]
+  fold: 0
+  rank: 5
+  image_ending: ".png"
+  unc_ending: ".tif"
+  n_reference_segs: 5
+  only_pu: false
+  evaluate_training_data: ${evaluate_training_data}
+
+EXTRACT_DROPOUT:
+  iter_params:
+    shift: [ "scanner" ]
+    pred_model: ["dropout"]
+    seed: [ "120" ]
+    cfg: [ "standard" ]
+    name: ["s0.3_mi0.1","s0.5_mi0.2","s1.0_mi0.5","s3.0_mi1.0","s5.0_mi2.0","s10.0_mi4.0"]
+    data: [ "chaksu128" ]
+  skip_finished: false
+  exp_name: "extract_chaksu"
+  naming_scheme_version: "{pred_model}10_{name}_olap/e320_ema"
+  aggregations: [ "all" ]
+  fold: 0
+  rank: 5
+  image_ending: ".png"
+  unc_ending: ".tif"
+  n_reference_segs: 5
+  only_pu: false
+  evaluate_training_data: ${evaluate_training_data}
+
+EXTRACT_SOFTMAX:
+  iter_params:
+    shift: [ "scanner" ]
+    pred_model: ["softmax"]
+    seed: [ "120" ]
+    cfg: [ "standard" ]
+    #name: ["s0.3_mi0.1","s0.5_mi0.2","s1.0_mi0.5","s3.0_mi1.0","s5.0_mi2.0","s10.0_mi4.0"]
+    #name: ['s20.0_mi4.0', 's10.0_mi8.0', 's20.0_mi8.0']
+    #name: ["0.1_s10.0_mi4.0","0.1_s10.0_mi8.0","0.1_s10.0_mi12.0","0.1_s10.0_mi16.0","0.1_s10.0_mi20.0","0.1_s10.0_mi30.0","0.1_s1.0_mi8.0","0.1_s2.0_mi8.0","0.1_s3.0_mi8.0","0.1_s5.0_mi8.0","0.1_s10.0_mi8.0","0.1_s15.0_mi8.0","0.1_s20.0_mi8.0","0.03_s10.0_mi8.0","0.04_s10.0_mi8.0","0.05_s10.0_mi8.0","0.06_s10.0_mi8.0","0.08_s10.0_mi8.0","0.1_s10.0_mi8.0","0.12_s10.0_mi8.0","0.15_s10.0_mi8.0"]
+    name: ["0.04_s10.0_mi4.0","0.04_s10.0_mi8.0","0.04_s10.0_mi12.0","0.04_s10.0_mi16.0","0.04_s10.0_mi20.0","0.04_s10.0_mi30.0","0.04_s1.0_mi8.0","0.04_s2.0_mi8.0","0.04_s3.0_mi8.0","0.04_s5.0_mi8.0","0.04_s15.0_mi8.0","0.04_s20.0_mi8.0","0.025_s10.0_mi8.0","0.03_s10.0_mi8.0","0.035_s10.0_mi8.0","0.045_s10.0_mi8.0","0.05_s10.0_mi8.0","0.055_s10.0_mi8.0"]
+    data: [ "chaksu128" ]
+  skip_finished: false
+  exp_name: "extract_chaksu"
+  naming_scheme_version: "{pred_model}10_frac{name}_olap/e500_ema"
+  aggregations: [ "all" ]
+  fold: 0
+  rank: 5
+  image_ending: ".png"
+  unc_ending: ".tif"
+  n_reference_segs: 5
+  only_pu: false
+  evaluate_training_data: ${evaluate_training_data}
+
+TTA_TESTS:
+  iter_params:
+    shift: [ "scanner" ]
+    pred_model: ["softmax"]
+    seed: [ "120" ]
+    cfg: [ "standard" ]
+    aug: [ "no_aug" , "weak_aug", "strong_aug" ]
+    aug_tta: ["strong", "weak", "strong"]
+    data: [ "chaksu128" ]
+    eu: ["dropout", "swag_diag", "swag"] 
+  skip_finished: false
+  exp_name: "tta_tests"
+  naming_scheme_version: "chaksu_{aug}_{eu}_tta_{aug_tta}/e320_ema"
+  aggregations: [ "all" ]
+  fold: 0
+  rank: 5
+  image_ending: ".png"
+  unc_ending: ".tif"
+  n_reference_segs: 5
+  only_pu: false
+  evaluate_training_data: ${evaluate_training_data}
 
 DROPOUT_CHAKSU_SWEEP:
   iter_params:
@@ -80,7 +168,7 @@ SWEEP_NONE:
     shift: [ "scanner" ]
     pred_model: ["prob_unet", "diffusion", "ssn"]
     seed: [ "120" ]
-    seed1: [ "1", "2", "3", "4" ]
+    seed1: [ "0", "1", "2", "3", "4" ]
     eu: ["none"]
     cfg: [ "standard" ]
     data: [ "chaksu128" ]
@@ -101,7 +189,7 @@ SWEEP_ALL:
     shift: [ "scanner" ]
     pred_model: ["prob_unet", "diffusion", "ssn", "softmax"]
     seed: [ "120" ]
-    seed1: [ "1", "2", "3", "4" ]
+    seed1: [ "0", "1", "2", "3", "4" ]
     eu: ["ensemble", "swag_diag", "swag", "dropout"]
     cfg: [ "standard" ]
     data: [ "chaksu128" ]

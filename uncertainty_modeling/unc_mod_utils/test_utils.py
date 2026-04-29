@@ -162,7 +162,7 @@ def test_cli(
         help="Whether to apply test-time augmentations (TTA) when generating predictions"
     )
     parser.add_argument(
-        "--tta_augmentations_yaml",
+        "--tta_yaml",
         type=str,
         default="",
         help=(

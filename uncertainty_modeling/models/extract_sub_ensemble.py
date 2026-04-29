@@ -614,7 +614,11 @@ def train_subensemble_masks(args: argparse.Namespace) -> None:
             with _autocast_ctx():
                 overlap_soft = mean_pairwise_iou(experiment.model, hard=False)
                 mask_mi = _compute_mask_mutual_information_loss(experiment.model)
-                size_pen = submodel_size_penalty(experiment.model, target_fraction=float(args.target_fraction))
+                size_pen = submodel_size_penalty(
+                    experiment.model,
+                    target_fraction=float(args.target_fraction),
+                    global_fraction_penalty=bool(args.global_fraction_penalty),
+                )
                 actual_fraction = _compute_actual_fraction(experiment.model, hard=False)
                 if bool(args.use_overlap):
                     diversity_term = float(args.overlap_weight) * overlap_soft
@@ -729,6 +733,7 @@ def train_subensemble_masks(args: argparse.Namespace) -> None:
         "temp_start": float(args.temp_start),
         "temp_decay": float(args.temp_decay),
         "target_fraction": float(args.target_fraction),
+        "global_fraction_penalty": bool(args.global_fraction_penalty),
         "source_checkpoint": str(source_ckpt),
         "dest_version": str(args.dest_version),
         "mask_storage": "binary_channel_masks_v1",
@@ -779,6 +784,7 @@ def train_subensemble_masks(args: argparse.Namespace) -> None:
                 "overlap_weight": float(args.overlap_weight),
                 "temp_start": float(args.temp_start),
                 "temp_decay": float(args.temp_decay),
+                "global_fraction_penalty": bool(args.global_fraction_penalty),
                 "mask_storage": "binary_channel_masks_v1",
             },
         )
@@ -877,6 +883,14 @@ def build_parser() -> argparse.ArgumentParser:
         type=float,
         default=0.2,
         help="Target fraction of active units/weights per extracted submodel for size regularization.",
+    )
+    parser.add_argument(
+        "--global_fraction_penalty",
+        action="store_true",
+        help=(
+            "Use one global size penalty over all masked-layer weights instead of "
+            "equal per-layer averaging."
+        ),
     )
     parser.add_argument(
         "--use_fraction_init",

@@ -10,6 +10,7 @@ import cv2
 import hydra
 import numpy as np
 import torch
+import warnings
 from omegaconf import OmegaConf
 import albumentations as A
 #from torchmetrics.functional import dice
@@ -35,6 +36,15 @@ import uncertainty_modeling.augmentations as custom_augmentations
 from global_utils.checkpoint_format import format_checkpoint_subdir
 from uncertainty_modeling.unc_mod_utils.swag import SWAG
 from uncertainty_modeling.data.torch_dataloader import apply_augment_mult
+
+# Albumentations emits this warning when Rotate is used with ReplayCompose.
+# In this script we intentionally use ReplayCompose for TTA inversion, so silence only this message.
+warnings.filterwarnings(
+    "ignore",
+    message=r".*Rotate could work incorrectly in ReplayMode.*",
+    category=UserWarning,
+    module=r"albumentations\\.core\\.transforms_interface",
+)
 
 LIDC_PATIENT_AUG_SCHEMA = "lidc_patient_aug_v1"
 AUGMENTED_TEST_SPLITS = {"ood_noise", "ood_blur", "ood_contrast", "ood_jpeg"}
@@ -157,10 +167,12 @@ class AlbumentationsTTABackend:
             pred_chw = predictions[idx]
             pred_hwc = pred_chw.detach().cpu().permute(1, 2, 0).numpy().astype(np.float32)
             inv_hwc = self._invert_replay(pred_hwc, replay)
-            restored.append(
-                torch.from_numpy(inv_hwc).permute(2, 0, 1).to(device=predictions.device, dtype=predictions.dtype)
-            )
-        restored_batch = torch.stack(restored, dim=0)
+            restored.append(torch.from_numpy(inv_hwc).permute(2, 0, 1))
+        # Keep inversion on CPU and move once to the target device to avoid many tiny transfers.
+        restored_batch = torch.stack(restored, dim=0).to(
+            device=predictions.device,
+            dtype=predictions.dtype,
+        )
         return self._renormalize_probabilities(restored_batch)
 
     @staticmethod
@@ -292,7 +304,7 @@ class Tester:
         args.test_split = normalized_split
         self.test_batch_size = args.test_batch_size
         self.tta = bool(args.tta)
-        self.tta_augmentations_yaml = getattr(args, "tta_augmentations_yaml", None)
+        self.tta_yaml = getattr(args, "tta_yaml", "") or None
         self.discretize = args.discretize
         self.direct_au = bool(getattr(args, "direct_au", False))
         self.test_dataloader = self.get_test_dataloader(args, hparams)
@@ -371,15 +383,15 @@ class Tester:
         return AlbumentationsTTABackend(aug_cfg)
 
     def _resolve_tta_augmentations_cfg(self, hparams):
-        if self.tta_augmentations_yaml:
-            yaml_cfg = OmegaConf.load(self.tta_augmentations_yaml)
+        if self.tta_yaml:
+            yaml_cfg = OmegaConf.load(self.tta_yaml)
             if "data" in yaml_cfg and "augmentations" in yaml_cfg["data"]:
                 source_cfg = yaml_cfg["data"]["augmentations"]
             elif "augmentations" in yaml_cfg:
                 source_cfg = yaml_cfg["augmentations"]
             else:
                 raise ValueError(
-                    "--tta_augmentations_yaml must contain 'data.augmentations' or top-level 'augmentations'."
+                    "--tta_yaml must contain 'data.augmentations' or top-level 'augmentations'."
                 )
         else:
             source_cfg = hparams["data"]["augmentations"]
@@ -387,7 +399,7 @@ class Tester:
             if float(augment_mult) == 0.0:
                 raise ValueError(
                     "TTA requested with default training augmentations, but augment_mult is 0. "
-                    "Either set augment_mult > 0 in the training config or provide --tta_augmentations_yaml."
+                    "Either set augment_mult > 0 in the training config or provide --tta_yaml."
                 )
         cfg_copy = OmegaConf.create(copy.deepcopy(source_cfg))
         cfg_copy = apply_augment_mult(cfg_copy)
@@ -973,6 +985,13 @@ class Tester:
             "dataset": batch["dataset"],
         }
         generative_count = sum(1 for m in self.models if getattr(m, "is_generative", False))
+        # Softmax+TTA acts as an AU sampler and should participate in generative grouping.
+        if self.tta:
+            generative_count += sum(
+                1
+                for m in self.models
+                if str(getattr(m, "AU_type", "softmax") or "softmax").lower() == "softmax"
+            )
         multiple_generative = generative_count > 1 and not self.direct_au
         for model in self.models:
             #print("allpreds groups shape:", all_preds["softmax_pred_groups"][-1].shape if all_preds["softmax_pred_groups"] else "N/A")
@@ -1053,6 +1072,7 @@ class Tester:
                         if isinstance(input_batch, list):
                             input_batch = input_batch[0]
 
+                        tta_samples = []
                         for _ in range(self.n_pred):
                             aug_batch, replays = self.tta_backend.sample_batch(input_batch)
                             output = model.forward(aug_batch.to(self.device))
@@ -1061,7 +1081,16 @@ class Tester:
                                 output_softmax_pre_inv,
                                 replays,
                             )
-                            all_preds["softmax_pred_groups"].append(output_softmax_post_inv.unsqueeze(0))
+                            tta_samples.append(output_softmax_post_inv)
+
+                        tta_stack = torch.stack(tta_samples, dim=0)
+                        if multiple_generative:
+                            # Match other generative AU branches: keep one grouped tensor per model,
+                            # so AU samples are reduced before saving model-member predictions.
+                            all_preds["softmax_pred_groups"].append(tta_stack)
+                        else:
+                            for sample in tta_stack:
+                                all_preds["softmax_pred_groups"].append(sample.unsqueeze(0))
                     else:
                         output = model.forward(batch["data"].to(self.device))
                         output_softmax = F.softmax(output, dim=1)

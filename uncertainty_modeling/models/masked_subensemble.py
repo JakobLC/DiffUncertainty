@@ -524,14 +524,33 @@ def mean_pairwise_iou(root: nn.Module, hard: bool) -> torch.Tensor:
     return pairwise.mean()
 
 
-def submodel_size_penalty(root: nn.Module, target_fraction: float) -> torch.Tensor:
+def submodel_size_penalty(
+    root: nn.Module,
+    target_fraction: float,
+    global_fraction_penalty: bool = False,
+) -> torch.Tensor:
     if target_fraction <= 0.0 or target_fraction > 1.0:
         raise ValueError("target_fraction must be in (0, 1]")
     penalties = []
+    expected_active_total: torch.Tensor | None = None
+    total_weight_count = 0.0
     for module in iter_masked_layers(root):
-        expected = module.expected_active_weights() / float(module.total_weight_count())
+        expected_active = module.expected_active_weights()
+        module_total = float(module.total_weight_count())
+        if global_fraction_penalty:
+            expected_active_total = (
+                expected_active
+                if expected_active_total is None
+                else expected_active_total + expected_active
+            )
+            total_weight_count += module_total
+            continue
+        expected = expected_active / module_total
         penalties.append(F.relu(expected - target_fraction).mean())
     if not penalties:
+        if global_fraction_penalty and expected_active_total is not None and total_weight_count > 0.0:
+            expected_global = expected_active_total / total_weight_count
+            return F.relu(expected_global - target_fraction).mean()
         device = next(root.parameters()).device
         return torch.zeros((), device=device)
     return torch.stack(penalties).mean()

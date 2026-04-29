@@ -9,10 +9,144 @@ data:
   data_input_dir: ${data_input_dir}
 base_splits_path: "/home/jloch/Desktop/diff/luzern/values_datasets/origlidc128/splits"
 experiments:
-  - ${SKIP}
+  - ${ALL_SWEEP0}
 #  - ${CALIB_WEIRD_TEST}
 #  - ${WEIRD_TEST}
 #  - ${FIRST_SWEEP}
+
+# python evaluation/eval_experiments.py --config-name eval_config_chaksu 'experiments=[${SUBENS}]'
+# python evaluation/eval_experiments.py 'experiments=[${ALL_SWEEP4}]'
+
+ALL_SWEEP4:
+  iter_params:
+    shift: [ "ood_aug" ]
+    pred_model:  ["prob_unet2", "diffusion", "softmax", "ssn" ]
+    seed: [ "120" ]
+    seed1: [ "4" ]  
+    eu: ["dropout", "swag", "swag_diag", "ensemble", "none" ]
+    cfg: [ "standard" ]
+    data: [ "origlidc128" ]
+  skip_missing: true
+  exp_name: "origlidc128"
+  naming_scheme_version: "{pred_model}_{eu}_{seed1}/e500_ema"
+  aggregations: [ "all" ]
+  fold: 0
+  rank: 5
+  image_ending: ".png"
+  unc_ending: ".tif"
+  n_reference_segs: 4
+  only_pu: false
+  evaluate_training_data: ${evaluate_training_data}
+
+
+ALL_SWEEP3:
+  iter_params:
+    shift: [ "ood_aug" ]
+    pred_model:  ["prob_unet2", "diffusion", "softmax", "ssn" ]
+    seed: [ "120" ]
+    seed1: [ "3" ]  
+    eu: ["dropout", "swag", "swag_diag", "ensemble", "none" ]
+    cfg: [ "standard" ]
+    data: [ "origlidc128" ]
+  skip_missing: true
+  exp_name: "origlidc128"
+  naming_scheme_version: "{pred_model}_{eu}_{seed1}/e500_ema"
+  aggregations: [ "all" ]
+  fold: 0
+  rank: 5
+  image_ending: ".png"
+  unc_ending: ".tif"
+  n_reference_segs: 4
+  only_pu: false
+  evaluate_training_data: ${evaluate_training_data}
+
+
+ALL_SWEEP2:
+  iter_params:
+    shift: [ "ood_aug" ]
+    pred_model:  ["prob_unet2", "diffusion", "softmax", "ssn" ]
+    seed: [ "120" ]
+    seed1: [ "2" ]  
+    eu: ["dropout", "swag", "swag_diag", "ensemble", "none" ]
+    cfg: [ "standard" ]
+    data: [ "origlidc128" ]
+  skip_missing: true
+  exp_name: "origlidc128"
+  naming_scheme_version: "{pred_model}_{eu}_{seed1}/e500_ema"
+  aggregations: [ "all" ]
+  fold: 0
+  rank: 5
+  image_ending: ".png"
+  unc_ending: ".tif"
+  n_reference_segs: 4
+  only_pu: false
+  evaluate_training_data: ${evaluate_training_data}
+
+
+ALL_SWEEP1:
+  iter_params:
+    shift: [ "ood_aug" ]
+    pred_model:  ["prob_unet2", "diffusion", "softmax", "ssn" ]
+    seed: [ "120" ]
+    seed1: [ "1" ]  
+    eu: ["dropout", "swag", "swag_diag", "ensemble", "none" ]
+    cfg: [ "standard" ]
+    data: [ "origlidc128" ]
+  skip_missing: true
+  exp_name: "origlidc128"
+  naming_scheme_version: "{pred_model}_{eu}_{seed1}/e500_ema"
+  aggregations: [ "all" ]
+  fold: 0
+  rank: 5
+  image_ending: ".png"
+  unc_ending: ".tif"
+  n_reference_segs: 4
+  only_pu: false
+  evaluate_training_data: ${evaluate_training_data}
+
+
+ALL_SWEEP0:
+  iter_params:
+    shift: [ "ood_aug" ]
+    pred_model:  ["prob_unet2", "diffusion", "softmax", "ssn" ]
+    seed: [ "120" ]
+    seed1: [ "0" ]  
+    eu: ["dropout", "swag", "swag_diag", "ensemble", "none" ]
+    cfg: [ "standard" ]
+    data: [ "origlidc128" ]
+  skip_missing: true
+  exp_name: "origlidc128"
+  naming_scheme_version: "{pred_model}_{eu}_{seed1}/e500_ema"
+  aggregations: [ "all" ]
+  fold: 0
+  rank: 5
+  image_ending: ".png"
+  unc_ending: ".tif"
+  n_reference_segs: 4
+  only_pu: false
+  evaluate_training_data: ${evaluate_training_data}
+
+EXTRACT_SOFTMAX:
+  iter_params:
+    shift: [ "ood_aug" ]
+    pred_model: ["softmax"]
+    seed: [ "120" ]
+    eu: ["subens" ]
+    cfg: [ "standard" ]
+    #name: ["0.2_s2.0_mi1.0","0.2_s2.0_mi0.5"]
+    #name: ['0.2_s2.0_mi2.0','0.2_s2.0_mi4.0','0.2_s0.5_mi2.0','0.2_s1.0_mi2.0','0.2_s4.0_mi2.0']
+    name: ["0.2_s1.0_mi0.5","0.2_s1.0_mi1.0","0.2_s1.0_mi4.0","0.2_s0.25_mi2.0","0.2_s1.5_mi2.0","0.05_s1.0_mi2.0","0.1_s1.0_mi2.0","0.15_s1.0_mi2.0","0.3_s1.0_mi2.0","0.4_s1.0_mi2.0"]
+    data: [ "origlidc128" ]
+  exp_name: "extract_lidc"
+  naming_scheme_version: "softmax5_frac{name}_olap/e1000_ema"
+  aggregations: [ "all" ]
+  fold: 0
+  rank: 5
+  image_ending: ".png"
+  unc_ending: ".tif"
+  n_reference_segs: 4
+  only_pu: false
+  evaluate_training_data: ${evaluate_training_data}
 
 SUBENS:
   iter_params:

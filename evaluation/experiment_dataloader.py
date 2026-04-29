@@ -283,4 +283,6 @@ class ExperimentDataloader:
             self.unc_path_dict[unc_type] / f"{image_id}{self.exp_version.unc_ending}"
         )
         unc_map, _ = load(unc_map_path)
-        return unc_map
+        
+        #return unc_map OLD BAD
+        return unc_map.T

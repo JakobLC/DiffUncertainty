@@ -6,7 +6,7 @@ https://github.com/MIC-DKFZ/semantic_segmentation/blob/public/datasets/DataModul
 """
 
 import hydra
-from omegaconf import DictConfig
+from omegaconf import DictConfig, OmegaConf
 import numpy as np
 
 from torch.utils.data import DataLoader, Subset
@@ -73,6 +73,18 @@ def get_max_steps(
     return max_steps, steps_per_epoch
 
 from omegaconf import ListConfig
+
+
+def _to_python_container(value):
+    """Recursively convert OmegaConf containers to native Python containers."""
+    if isinstance(value, (DictConfig, ListConfig)):
+        value = OmegaConf.to_container(value, resolve=True)
+
+    if isinstance(value, dict):
+        return {k: _to_python_container(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_to_python_container(v) for v in value]
+    return value
 
 
 def apply_augment_mult(augmentations: DictConfig) -> DictConfig:
@@ -157,20 +169,23 @@ def get_augmentations_from_config(augmentations: DictConfig) -> list:
         transforms = list(augmentation.keys())
 
         for transform in transforms:
-            parameters = getattr(augmentation, transform)
+            if isinstance(augmentation, dict):
+                parameters = augmentation.get(transform)
+            else:
+                parameters = getattr(augmentation, transform)
             if parameters is None:
                 parameters = {}
+            parameters = _to_python_container(parameters)
             if hasattr(A, transform):
                 if "transforms" in list(parameters.keys()):
                     # "transforms" indicates a transformation which takes a list of other transformations
                     # as input ,e.g. A.Compose -> recursively build these transforms
-                    transforms = get_augmentations_from_config(parameters.transforms)
+                    transforms = get_augmentations_from_config(parameters["transforms"])
                     del parameters["transforms"]
                     func = getattr(A, transform)
                     trans.append(func(transforms=transforms, **parameters))
                 else:
                     # load transformation form Albumentations
-                    parameters = {k: list(v) if isinstance(v, ListConfig) else v for k, v in parameters.items()}
                     func = getattr(A, transform)
                     trans.append(func(**parameters))
             elif hasattr(A.pytorch, transform):

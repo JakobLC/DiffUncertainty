@@ -13,6 +13,9 @@ import torch
 from matplotlib.colors import LinearSegmentedColormap
 import os
 import copy
+import re
+from collections import defaultdict
+from typing import Any, Dict, List, Literal, Union
 from PIL import Image
 from scipy import ndimage
 import csv
@@ -30,6 +33,164 @@ with patch("sys.argv", ["notebook"]):
 
 #AU, EU, TU = "aleatoric_uncertainty", "epistemic_uncertainty", "predictive_uncertainty"
 AU, EU, TU = "AU", "EU", "TU" # new
+
+
+def load_tfevents_to_dict(
+    source: Union[str, Path, List[Union[str, Path]]],
+    sibling_mode: Literal["merge", "newest", "oldest", "largest", "multiple"] = "largest",
+) -> Union[Dict[str, Any], List[Dict[str, Any]]]:
+    """
+    Load TensorBoard scalar logs into dictionaries.
+
+    Input modes:
+    A) Single filename -> returns one log dictionary.
+    B) Folder -> recursively searches for events.out.tfevents.* and returns a dict
+       keyed by the matched "**" parent folder (relative to source folder).
+    C) List of filenames -> returns a list of dictionaries, one per file.
+
+    sibling_mode applies to mode B when multiple event files are present in the same
+    sibling directory.
+    """
+
+    valid_modes = {"merge", "newest", "oldest", "largest", "multiple"}
+    if sibling_mode not in valid_modes:
+        raise ValueError(f"Invalid sibling_mode={sibling_mode}. Expected one of {sorted(valid_modes)}")
+
+    if isinstance(source, (str, Path)):
+        path = Path(source)
+        if path.is_file():
+            return _load_single_tfevents_file(path)
+        if path.is_dir():
+            return _load_tfevents_folder(path, sibling_mode=sibling_mode)
+        raise FileNotFoundError(f"Path does not exist: {path}")
+
+    if isinstance(source, list):
+        out: List[Dict[str, Any]] = []
+        for item in source:
+            file_path = Path(item)
+            if not file_path.is_file():
+                raise FileNotFoundError(f"Expected a file in list input, got: {file_path}")
+            out.append(_load_single_tfevents_file(file_path))
+        return out
+
+    raise TypeError("source must be a file path, folder path, or list of file paths")
+
+
+def _load_tfevents_folder(
+    folder: Path,
+    sibling_mode: Literal["merge", "newest", "oldest", "largest", "multiple"],
+) -> Dict[str, Any]:
+    event_files = sorted([p for p in folder.glob("**/events.out.tfevents.*") if p.is_file()])
+    grouped: Dict[Path, List[Path]] = defaultdict(list)
+    for p in event_files:
+        grouped[p.parent].append(p)
+
+    out: Dict[str, Any] = {}
+    for parent in sorted(grouped.keys()):
+        rel = parent.relative_to(folder)
+        key = "." if str(rel) == "." else str(rel)
+        files = grouped[parent]
+
+        if sibling_mode == "merge":
+            out[key] = _merge_tfevents_files(files)
+            continue
+
+        if sibling_mode == "multiple":
+            multi: Dict[str, Any] = {}
+            for idx, file_path in enumerate(sorted(files, key=_event_file_order_key)):
+                label = _event_file_discern_label(file_path)
+                if label in multi:
+                    label = f"{label}__{idx}"
+                multi[label] = _load_single_tfevents_file(file_path)
+            out[key] = multi
+            continue
+
+        selected = _select_single_file(files, sibling_mode)
+        out[key] = _load_single_tfevents_file(selected)
+
+    return out
+
+
+def _load_single_tfevents_file(file_path: Path) -> Dict[str, Any]:
+    from tensorboard.backend.event_processing.event_accumulator import EventAccumulator
+
+    acc = EventAccumulator(str(file_path), size_guidance={"scalars": 0})
+    acc.Reload()
+    tags = acc.Tags().get("scalars", [])
+
+    scalars: Dict[str, Dict[str, List[float]]] = {}
+    for tag in tags:
+        events = acc.Scalars(tag)
+        scalars[tag] = {
+            "steps": [int(ev.step) for ev in events],
+            "values": [float(ev.value) for ev in events],
+            "wall_time": [float(ev.wall_time) for ev in events],
+        }
+
+    return {
+        "files": [str(file_path)],
+        "scalars": scalars,
+    }
+
+
+def _merge_tfevents_files(files: List[Path]) -> Dict[str, Any]:
+    from tensorboard.backend.event_processing.event_accumulator import EventAccumulator
+
+    scalar_events: List[tuple] = []
+    for file_path in files:
+        acc = EventAccumulator(str(file_path), size_guidance={"scalars": 0})
+        acc.Reload()
+        for tag in acc.Tags().get("scalars", []):
+            for ev in acc.Scalars(tag):
+                scalar_events.append((float(ev.wall_time), tag, int(ev.step), float(ev.value)))
+
+    scalar_events.sort(key=lambda x: x[0])
+
+    merged: Dict[str, Dict[str, List[float]]] = {}
+    for wall_time, tag, step, value in scalar_events:
+        if tag not in merged:
+            merged[tag] = {"steps": [], "values": [], "wall_time": []}
+        merged[tag]["steps"].append(step)
+        merged[tag]["values"].append(value)
+        merged[tag]["wall_time"].append(wall_time)
+
+    return {
+        "files": [str(p) for p in sorted(files, key=_event_file_order_key)],
+        "scalars": merged,
+    }
+
+
+def _select_single_file(files: List[Path], mode: Literal["newest", "oldest", "largest"]) -> Path:
+    if not files:
+        raise ValueError("Cannot select from empty file list")
+
+    if mode == "largest":
+        return max(files, key=lambda p: p.stat().st_size)
+
+    if mode in {"newest", "oldest"}:
+        reverse = mode == "newest"
+        return sorted(files, key=lambda p: (_event_timestamp(p), p.stat().st_mtime), reverse=reverse)[0]
+
+    raise ValueError(f"Unsupported selection mode: {mode}")
+
+
+def _event_timestamp(file_path: Path) -> int:
+    m = re.search(r"events\.out\.tfevents\.(\d+)", file_path.name)
+    if m is not None:
+        return int(m.group(1))
+    return int(file_path.stat().st_mtime)
+
+
+def _event_file_order_key(file_path: Path) -> tuple:
+    return (_event_timestamp(file_path), file_path.name)
+
+
+def _event_file_discern_label(file_path: Path) -> str:
+    prefix = "events.out.tfevents."
+    name = file_path.name
+    if name.startswith(prefix):
+        return name[len(prefix):]
+    return name
 
 def to_rank(x,ascending=False):
     #takes a panda series and converts all numbers to their rank.
@@ -121,7 +282,7 @@ def load_result_table(epochs=[500,1000],
                 split_as_dict = True,
                 swap_AU_EU = False,
                 add_avg_ood = False,
-                gace_instead_of_ace = None,
+                ace_type = None,
                 add_rank=False,
                 mean_seeded_table=None,
                 std_seeded_table=None,):
@@ -141,9 +302,13 @@ def load_result_table(epochs=[500,1000],
                 mini_table["version"] = v0
             mini_tables.append(mini_table)
         return smart_mean_table(mini_tables, std_instead=not mean_seeded_table)
-    if gace_instead_of_ace is None:
-        gace_instead_of_ace = "lidc" in save_path
-    ace = "gace" if gace_instead_of_ace else "ace"
+    if ace_type is None:
+        if "lidc" in save_path:
+            ace = "gace"
+        else:
+            ace = "ace"
+    else:
+        ace = ace_type
     table = pd.DataFrame()
     first_aggr_check = True
     for values in product(*loop_params.values()):
@@ -454,6 +619,7 @@ def prepare_image_tensor(image_data) -> torch.Tensor:
     return _minmax_normalize(image[:3])
 
 def pred_grid_computation(ckpt_path = "/home/jloch/Desktop/diff/luzern/values/saves/lidc64/diffusion_swag/checkpoints/last.ckpt",
+                          dataset = None,
                           split = "id_test",
                           test_batch_size = 16,
                           special_eu = None,
@@ -463,6 +629,7 @@ def pred_grid_computation(ckpt_path = "/home/jloch/Desktop/diff/luzern/values/sa
                           discretize=False,
                           n_models=10,
                           skip_saving=True,
+                          tta_yaml = None,
                           ):
     # Validate parameters
     if random_seed is None and n_resamples_for_largest > 1:
@@ -494,15 +661,21 @@ def pred_grid_computation(ckpt_path = "/home/jloch/Desktop/diff/luzern/values/sa
     args.test_batch_size = test_batch_size
     if n_pred is not None:
         args.n_pred = n_pred
+    args.tta = bool(tta_yaml)
+    if args.tta:
+        args.tta_yaml = tta_yaml
     args.skip_saving = skip_saving
     tester = Tester(args)
     raw_batches = tester.collect_raw_predictions(max_batches=1, random_seed=random_seed, n_resamples_for_largest=n_resamples_for_largest, skip_saving=skip_saving)
 
     batch0 = raw_batches[0]
-    if isinstance(ckpt_path,list):
-        data = Path(ckpt_path[0]).parts[-4]
+    if dataset is not None:
+        data = dataset
     else:
-        data = Path(ckpt_path).parts[-4]
+        if isinstance(ckpt_path,list):
+            data = Path(ckpt_path[0]).parts[-4]
+        else:
+            data = Path(ckpt_path).parts[-4]
     p = f"/home/jloch/Desktop/diff/luzern/values_datasets/{data}/preprocessed/images/{{id}}.npy"
     images = [np.load(p.format(id=f"{batch0['image_id'][i]}")) for i in range(len(batch0["image_id"]))]
     return images, batch0
@@ -594,14 +767,13 @@ def plot_pred_grid(images, batch0, i=0, crop_unused=False, s=1.3, entropy_cmap="
     num_classes = max(int(pred_cropped.shape[2]), 1)
     entropy_vmin = 0.0
     entropy_vmax = math.log(2)
-    print(batch0["softmax_pred"].shape)
     E_y_p_full = batch0["softmax_pred"].float().cpu()[:, i, :, d1, d2].contiguous()
     image = image[:, d1, d2]
     image_display = format_image_tensor_for_display(image)
     n_EU, n_AU = pred_cropped.shape[:2]
-    if n_AU < 4:
-        n_pad_images = 4 - n_AU
-    if setup_v2:
+    # For single AU column (n_pred == 1), force the explicit computation-graph layout.
+    layout_v2 = setup_v2 or (n_AU == 1)
+    if layout_v2:
         grid_dims = (n_EU + 4, n_AU + 4)
     else:
         grid_dims = (n_EU + 2, n_AU + 4)
@@ -622,7 +794,6 @@ def plot_pred_grid(images, batch0, i=0, crop_unused=False, s=1.3, entropy_cmap="
         vmin=entropy_vmin,
         vmax=entropy_vmax,
     )
-    print(E_y_p_full.shape,n_EU,n_AU)
     grid_rows = []
     for eu_idx in range(n_EU):
         row_tiles = []
@@ -644,7 +815,7 @@ def plot_pred_grid(images, batch0, i=0, crop_unused=False, s=1.3, entropy_cmap="
     # Convert image_display to RGBA
     image_rgba = torch.cat([image_display, torch.ones((1, height, width))], dim=0)
     grid_rows.append([blank_tile.clone().detach().cpu() for _ in range(grid_dims[1])])
-    if setup_v2:
+    if layout_v2:
         # Convert to RGBA for bottom rows
         pred_rgb = prediction_to_display(E_th_E_y_p.squeeze(0))
         pred_rgba = torch.cat([pred_rgb, torch.ones((1, height, width))], dim=0)
@@ -734,17 +905,112 @@ def plot_pred_grid(images, batch0, i=0, crop_unused=False, s=1.3, entropy_cmap="
         plot_grid_arrow(ax, j, n_AU + 0, 'right', grid_w_unit, grid_h_unit, s=s, letter='E')
         # Arrow at column (n_AU + 2) pointing right with letter 'H'
         plot_grid_arrow(ax, j, n_AU + 2, 'right', grid_w_unit, grid_h_unit, s=s, letter='H')
-    if not setup_v2:
-        pos_to_title = {"top_row": {n_AU*1/6: "Varying AU \u2192", 
-                                    n_AU*1/2: "$p=p(y|x,\\theta)$", 
-                                    grid_dims[1]-2.5: "$E_y[p]$",
-                                    grid_dims[1]-0.5: "$H(E_y[p])$"},
-                        "left_col": {n_EU*1/6: "\u2190 Varying EU ($\\theta$)"},
-                        "btm_row": {grid_dims[1]-6.5: "$EU=TU-AU$\n(MI)",
-                                    grid_dims[1]-4.5: "$H(E_{\\theta}[E_y[p]])$\nTU",
-                                    grid_dims[1]-2.5: "$E_{\\theta}[E_y[p]]$",
-                                    grid_dims[1]-0.5: "$E_{\\theta}[H(E_y[p])]$\nAU"},
-                                    }
+    if layout_v2:
+        # Titles above the three key columns.
+        top_pred_col = n_AU / 2
+        top_Ey_col = (n_AU + 1) + 0.5
+        top_HEy_col = (n_AU + 3) + 0.5
+        fontsize = 10
+        ax.text(
+            x=top_pred_col * grid_w_unit,
+            y=0,
+            s="$p=p(y|x,\\theta)$",
+            color="black",
+            fontsize=fontsize * s,
+            ha="center",
+            va="bottom",
+        )
+        ax.text(
+            x=top_Ey_col * grid_w_unit,
+            y=0,
+            s="$E_y[p]$",
+            color="black",
+            fontsize=fontsize * s,
+            ha="center",
+            va="bottom",
+        )
+        ax.text(
+            x=top_HEy_col * grid_w_unit,
+            y=0,
+            s="$H(E_y[p])$",
+            color="black",
+            fontsize=fontsize * s,
+            ha="center",
+            va="bottom",
+        )
+
+        # Label for the source image tile (bottom-left).
+        ax.text(
+            x=(-0.15) * grid_w_unit,
+            y=(n_EU + 3.5) * grid_h_unit,
+            s="im",
+            color="black",
+            fontsize=fontsize * 1.6 * s,
+            ha="right",
+            va="center",
+            clip_on=False,
+        )
+
+        # Label for the TU tile (H[E_theta[E_y[p]]]) in the bottom summary row.
+        ax.text(
+            x=(n_AU + 0.85) * grid_w_unit,
+            y=(n_EU + 3.5) * grid_h_unit,
+            s="TU",
+            color="black",
+            fontsize=fontsize * 2.0 * s,
+            ha="right",
+            va="center",
+            clip_on=False,
+        )
+
+        # Labels right of the two right-side summary maps.
+        right_x = (n_AU + 4.05) * grid_w_unit
+        ax.text(
+            x=right_x,
+            y=(n_EU + 1.5) * grid_h_unit,
+            s="AU",
+            color="black",
+            fontsize=fontsize * 2.0 * s,
+            ha="left",
+            va="center",
+            clip_on=False,
+        )
+        ax.text(
+            x=right_x,
+            y=(n_EU + 3.5) * grid_h_unit,
+            s="EU",
+            color="black",
+            fontsize=fontsize * 2.0 * s,
+            ha="left",
+            va="center",
+            clip_on=False,
+        )
+    if not layout_v2:
+        top_pred_col = n_AU / 2
+        top_Ey_col = (n_AU + 1) + 0.5
+        top_HEy_col = (n_AU + 3) + 0.5
+
+        # In the compact bottom row (non-v2), these columns are offset left.
+        btm_EU_col = (n_AU - 3) + 0.5
+        btm_TU_col = (n_AU - 1) + 0.5
+        btm_Etheta_col = (n_AU + 1) + 0.5
+        btm_AU_col = (n_AU + 3) + 0.5
+
+        pos_to_title = {
+            "top_row": {
+                max(0.5, top_pred_col - 1.0): "Varying AU \u2192",
+                top_pred_col: "$p=p(y|x,\\theta)$",
+                top_Ey_col: "$E_y[p]$",
+                top_HEy_col: "$H(E_y[p])$",
+            },
+            "left_col": {max(0.5, n_EU / 2): "\u2190 Varying EU ($\\theta$)"},
+            "btm_row": {
+                btm_EU_col: "$EU=TU-AU$\n(MI)",
+                btm_TU_col: "$H(E_{\\theta}[E_y[p]])$\nTU",
+                btm_Etheta_col: "$E_{\\theta}[E_y[p]]$",
+                btm_AU_col: "$E_{\\theta}[H(E_y[p])]$\nAU",
+            },
+        }
 
         fontsize = 10
         for pos, title in pos_to_title["top_row"].items():
@@ -786,8 +1052,9 @@ def plot_pred_grid(images, batch0, i=0, crop_unused=False, s=1.3, entropy_cmap="
     plot_grid_arrow(ax, n_EU, n_AU + 3, 'down', grid_w_unit, grid_h_unit, s=s, letter='E')
     
     # Arrow pointing left with letter 'H'
-    if setup_v2:
+    if layout_v2:
         plot_grid_arrow(ax, n_EU + 2, n_AU+1, 'down', grid_w_unit, grid_h_unit, s=s, letter='H')
+        # AU contributes to EU via subtraction.
         plot_grid_arrow(ax, n_EU + 2, n_AU+3, 'down', grid_w_unit, grid_h_unit, s=s*1.3, letter='\u2212')
         plot_grid_arrow(ax, n_EU + 3, n_AU+2, 'right', grid_w_unit, grid_h_unit, s=s*1.3, letter='+')
 
@@ -1842,7 +2109,6 @@ def checkerboard_image(image):
             cb_image[:, :, 3] = 1  # Set alpha channel to fully opaque
     else:
         raise ValueError("Input image must be either 2D or 3D (grayscale or color).")
-    print(cb_image.shape)
     return cb_image
 
 def plot_chaksu(n_rows=3, n_cols=10, scanners=["Remidio","Bosch","Forus"],scanner_titles=["Remidio\n(id)","Bosch\n(ood)","Forus\n(ood)"],

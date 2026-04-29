@@ -14,7 +14,7 @@ data:
 
 augmentations:
   augment_mult: 1.0
-  apply_mult_keys: ["HorizontalFlip.p", "Rotate.limit", "RandomScale.scale_limit", "GaussNoise.var_limit"]
+  apply_mult_keys: []
   TRAIN:
     - Compose:
         transforms:

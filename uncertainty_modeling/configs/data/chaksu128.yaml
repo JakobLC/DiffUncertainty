@@ -20,38 +20,34 @@ data:
     dataset_label: "chaksu128"
     num_raters: 5
   augmentations:
-    rotation_limit: 22.5
-    scale_limit: [ -0.2, 0.2 ]
-    border_mode: 0
-    mask_value: 0
     height: 128
     width: 128
-    gauss_noise_var_limit: [0.2, 0.44]
     augment_mult: 0.0
     apply_mult_keys: ["HorizontalFlip.p", "Rotate.limit", "RandomScale.scale_limit", "GaussNoise.var_limit"]
     TRAIN:
-      - Compose:
-          transforms:
+        - Compose:
+            transforms:
             - HorizontalFlip:
                 p: 0.5
             - Rotate:
-                limit: ${data.augmentations.rotation_limit}
-                border_mode: ${data.augmentations.border_mode}
-                mask_value: ${data.augmentations.mask_value}
+                limit: 22.5
+                border_mode: 0
+                mask_value: 0
             - RandomScale:
-                scale_limit: ${data.augmentations.scale_limit}
-                p: 1.0
-            - PadIfNeeded:
-                min_height: ${data.augmentations.height}
-                min_width: ${data.augmentations.width}
-                border_mode: ${data.augmentations.border_mode}
-                mask_value: ${data.augmentations.mask_value}
-            - CenterCrop:
-                height: ${data.augmentations.height}
-                width: ${data.augmentations.width}
-            - GaussNoise:
-                var_limit: ${data.augmentations.gauss_noise_var_limit}
+                scale_limit: [-0.2, 0.2]
                 p: 0.5
+            - PadIfNeeded:
+                min_height: 128
+                min_width: 128
+                border_mode: 0
+                mask_value: 0
+            - CenterCrop:
+                height: 128
+                width: 128
+            - GaussNoise:
+                var_limit: [0.0, 0.01]
+                p: 0.5
+                per_channel: true
             - SampleNormalize:
                 eps: 1e-6
             - ToTensorV2:
