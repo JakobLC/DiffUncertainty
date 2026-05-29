@@ -103,20 +103,14 @@ class ScheduledCheckpointCallback(pl.Callback):
                 raise ValueError("exponential_start must be a positive integer when exponential saving is enabled.")
             if self.exponent_base is None or self.exponent_base <= 1.0:
                 raise ValueError("exponent_base must be greater than 1.0 when exponential saving is enabled.")
-            start = self.exponential_start
-            end_value = max(start, end_epoch)
-            if start == end_value:
-                epochs.add(start)
-            else:
-                ratio = end_value / start
-                approx_steps = max(2, int(math.ceil(math.log(ratio, self.exponent_base))) + 1)
-                log_start = math.log(start)
-                log_end = math.log(end_value)
-                step = (log_end - log_start) / (approx_steps - 1)
-                for idx in range(approx_steps):
-                    epoch = int(round(math.exp(log_start + idx * step)))
-                    if epoch >= start:
-                        epochs.add(epoch)
+            start = float(self.exponential_start)
+            end_value = max(float(start), float(end_epoch))
+            current = start
+            while current <= end_value + 1e-9:
+                epoch = int(round(current))
+                if epoch >= 1:
+                    epochs.add(epoch)
+                current *= float(self.exponent_base)
         epochs = sorted(epoch for epoch in epochs if epoch >= 1)
         return epochs
 
@@ -160,7 +154,7 @@ class ScheduledCheckpointCallback(pl.Callback):
                     ckpt = {
                         "hyper_parameters": pl_module.hparams,
                         "ema_state_dict": ema_state,
-                        "epoch": epoch_idx,
+                        "epoch": epoch_idx - 1,
                     }
                     torch.save(ckpt, filepath)
                     rank_zero_info(f"Saved EMA-only scheduled checkpoint: {filepath}")

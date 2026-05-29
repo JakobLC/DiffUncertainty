@@ -208,6 +208,20 @@ def test_cli(
         ),
     )
     parser.add_argument(
+        "--save_likelihood",
+        action="store_true",
+        default=True,
+        help=(
+            "Save per-image Monte Carlo log-likelihoods to likelihood.json alongside metrics.json."
+        ),
+    )
+    parser.add_argument(
+        "--no-save-likelihood",
+        dest="save_likelihood",
+        action="store_false",
+        help="Disable saving likelihood.json.",
+    )
+    parser.add_argument(
         "--skip_existing",
         action="store_true",
         default=False,
@@ -220,6 +234,17 @@ def test_cli(
         action="store_true",
         default=False,
         help="Discretize predictions to hard labels before computing metrics.",
+    )
+
+    parser.add_argument(
+        "--same_dropout",
+        action="store_true",
+        default=False,
+        help=(
+            "When evaluating EU_type=dropout models, treat dropout masks as fixed per ensemble member: "
+            "sample n_models deterministic dropout seeds and reuse the corresponding masks across all n_pred draws. "
+            "Ignored (with a warning) for non-dropout EU types."
+        ),
     )
 
     if extra_args_fn is not None:

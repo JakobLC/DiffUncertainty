@@ -107,6 +107,9 @@ class LightningExperiment(pl.LightningModule):
                 getattr(hparams, "evaluate_all_raters", True),
             )
         )
+        self.single_rater = bool(
+            _get_value(active_data_cfg, "single_rater", getattr(hparams, "single_rater", False))
+        )
         self._train_batch_size = _get_value(
             active_data_cfg, "batch_size", getattr(hparams, "batch_size", None)
         )
@@ -709,6 +712,7 @@ class LightningExperiment(pl.LightningModule):
         inputs = inputs.float()
 
         softmax_stack: Optional[torch.Tensor] = None
+        pred_probs_for_metrics: Optional[torch.Tensor] = None
         if self.AU_type == "ssn":
             eval_loss, output, softmax_stack = self.forward_ssn(
                 batch, target, val=True
@@ -727,6 +731,7 @@ class LightningExperiment(pl.LightningModule):
                 )
                 per_sample_dice.append(d if isinstance(d, torch.Tensor) else torch.tensor(float(d), device=inputs.device))
             eval_dice = torch.stack(per_sample_dice).mean()
+            pred_probs_for_metrics = softmax_stack.mean(dim=0)
         elif self.AU_type == "diffusion":
             diffusion_target, diffusion_mask = self._prepare_diffusion_target(target, inputs.device)
             if not hasattr(self.model, "diffusion_train_loss_step"):
@@ -756,6 +761,7 @@ class LightningExperiment(pl.LightningModule):
                 )
             eval_dice = torch.stack(per_sample_dice).mean()
             output = softmax_stack.mean(dim=0)
+            pred_probs_for_metrics = output
         elif self.AU_type == "prob_unet":
             prob_target_full = target_full.to(inputs.device)
             target_labels, mask_one_hot = self._prepare_prob_unet_targets(
@@ -787,6 +793,7 @@ class LightningExperiment(pl.LightningModule):
                 )
             eval_dice = torch.stack(per_sample_dice).mean()
             output = softmax_stack.mean(dim=0)
+            pred_probs_for_metrics = output
         elif self.aleatoric_loss:
             mu, s = self.forward(inputs)
             sigma = torch.exp(s / 2)
@@ -822,6 +829,7 @@ class LightningExperiment(pl.LightningModule):
             eval_dice = torch.stack(per_sample_dice).mean()
             output = log_sample_avg
             softmax_stack = sample_probs
+            pred_probs_for_metrics = sample_probs.mean(dim=0)
         else:
             output = self.forward(inputs)
             output_softmax = F.softmax(output, dim=1)
@@ -842,6 +850,7 @@ class LightningExperiment(pl.LightningModule):
                 binary_dice=self.model.num_classes == 2,
             )
             softmax_stack = output_softmax.unsqueeze(0) if multi_rater_available else None
+            pred_probs_for_metrics = output_softmax
 
         ged_results: List[dict] = []
         if multi_rater_available and softmax_stack is not None:
@@ -880,6 +889,69 @@ class LightningExperiment(pl.LightningModule):
             ged_dices = [float(r.get("dice")) for r in ged_results if "dice" in r]
             if ged_dices:
                 eval_dice = torch.tensor(sum(ged_dices) / len(ged_dices), device=inputs.device, dtype=torch.float32)
+
+        if (
+            split == "train"
+            and self.single_rater
+            and pred_probs_for_metrics is not None
+            and target_full.ndim == 4
+            and "selected_rater_idx" in batch
+        ):
+            selected_indices = batch["selected_rater_idx"].to(target_full.device).long()
+            num_raters = target_full.shape[1]
+            selected_dices = []
+            off_dices = []
+            for b in range(batch_size):
+                pred_b = pred_probs_for_metrics[b]
+                selected_idx = int(selected_indices[b])
+                selected_target = target_full[b, selected_idx]
+                d_sel = dice(
+                    pred_b.unsqueeze(0),
+                    selected_target.unsqueeze(0),
+                    num_classes=self.model.num_classes,
+                    ignore_index=self.ignore_index if self.ignore_index != 0 else None,
+                    binary_dice=self.model.num_classes == 2,
+                    is_softmax=True,
+                )
+                selected_dices.append(float(d_sel) if isinstance(d_sel, torch.Tensor) else float(d_sel))
+                if num_raters > 1:
+                    per_off = []
+                    for r in range(num_raters):
+                        if r == selected_idx:
+                            continue
+                        off_target = target_full[b, r]
+                        d_off = dice(
+                            pred_b.unsqueeze(0),
+                            off_target.unsqueeze(0),
+                            num_classes=self.model.num_classes,
+                            ignore_index=self.ignore_index if self.ignore_index != 0 else None,
+                            binary_dice=self.model.num_classes == 2,
+                            is_softmax=True,
+                        )
+                        per_off.append(float(d_off) if isinstance(d_off, torch.Tensor) else float(d_off))
+                    if per_off:
+                        off_dices.append(sum(per_off) / len(per_off))
+            if selected_dices:
+                eval_dice = torch.tensor(
+                    sum(selected_dices) / len(selected_dices),
+                    device=inputs.device,
+                    dtype=torch.float32,
+                )
+            if off_dices:
+                if split not in self._val_metric_accumulators:
+                    ged_keys = ["ged", *self._validation_additional_metrics] if self.evaluate_all_raters else []
+                    self._val_metric_accumulators[split] = {
+                        "loss_sum": 0.0,
+                        "dice_sum": 0.0,
+                        "count": 0,
+                        "ged_sums": {key: 0.0 for key in ged_keys},
+                        "ged_count": 0,
+                    }
+                metrics = self._val_metric_accumulators[split]
+                metrics.setdefault("offrater_dice_sum", 0.0)
+                metrics.setdefault("offrater_dice_count", 0)
+                metrics["offrater_dice_sum"] += sum(off_dices)
+                metrics["offrater_dice_count"] += len(off_dices)
 
         # Visualization of Segmentations
         if batch_idx == 0 and target.ndim == 3:
@@ -999,6 +1071,20 @@ class LightningExperiment(pl.LightningModule):
                 add_dataloader_idx=False,
                 sync_dist=True,
             )
+
+            offrater_count = metrics.get("offrater_dice_count", 0)
+            if offrater_count > 0:
+                offrater_avg = metrics["offrater_dice_sum"] / offrater_count
+                offrater_tensor = torch.tensor(offrater_avg, device=device)
+                self.log(
+                    f"generation/{split}_dice_offrater",
+                    offrater_tensor,
+                    prog_bar=False,
+                    logger=True,
+                    on_epoch=True,
+                    add_dataloader_idx=False,
+                    sync_dist=True,
+                )
 
             ged_count = metrics.get("ged_count", 0)
             if ged_count > 0:

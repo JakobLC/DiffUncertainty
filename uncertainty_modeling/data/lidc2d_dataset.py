@@ -2,6 +2,7 @@ import os
 import pickle
 import fnmatch
 import random
+import hashlib
 from typing import List
 
 import numpy as np
@@ -33,6 +34,7 @@ class MultiRater2DDataset(torch.utils.data.Dataset):
         tta: bool = False,
         replicate_channels: bool = True,
         return_all_raters: bool = True,
+        single_rater: bool = False,
         num_raters: int = None,
         rater_pattern: str = None,
         dataset_label: str = None,
@@ -44,6 +46,8 @@ class MultiRater2DDataset(torch.utils.data.Dataset):
         self.tta = tta
         self.replicate_channels = replicate_channels
         self.return_all_raters = return_all_raters
+        self.single_rater = bool(single_rater)
+        self._single_rater_seed = 13
         self.dataset_label = dataset_label
         self.num_raters = num_raters
         self.rater_pattern = rater_pattern
@@ -83,6 +87,11 @@ class MultiRater2DDataset(torch.utils.data.Dataset):
         self.imgs = [sample["image_path"] for sample in self.samples]
         self.mask_paths = [sample["label_paths"] for sample in self.samples]
         self.image_ids = [sample["image_id"] for sample in self.samples]
+        self._fixed_rater_indices = None
+        if self.single_rater and self.num_raters > 0:
+            self._fixed_rater_indices = [
+                self._stable_rater_index(image_id) for image_id in self.image_ids
+            ]
 
         print(
             f"Dataset: {self.dataset_label} {split} - {len(self.imgs)} images",
@@ -146,18 +155,34 @@ class MultiRater2DDataset(torch.utils.data.Dataset):
     def _load_masks(self, paths: List[str]) -> List[np.ndarray]:
         return [self._load_mask(p) for p in paths]
 
+    def _stable_rater_index(self, image_id: str) -> int:
+        seed_key = f"{self._single_rater_seed}:{self.dataset_label}:{self.split}:{image_id}"
+        digest = hashlib.sha256(seed_key.encode("utf-8")).digest()
+        value = int.from_bytes(digest[:4], byteorder="big", signed=False)
+        return value % self.num_raters
+
+    def _get_selected_rater_index(self, idx: int) -> int:
+        if self._fixed_rater_indices is not None:
+            return int(self._fixed_rater_indices[idx])
+        return self._stable_rater_index(self.image_ids[idx])
+
     def _select_mask(self, idx: int, image_shape: tuple) -> np.ndarray:
         mask_paths: List[str] = self.mask_paths[idx]
         if self.return_all_raters:
             # Evaluation requires all raters for metrics like GED.
             masks = self._load_masks(mask_paths)
             return masks
-        chosen_path = random.choice(mask_paths)
+        if self.single_rater:
+            selected_idx = self._get_selected_rater_index(idx)
+            chosen_path = mask_paths[selected_idx]
+        else:
+            chosen_path = random.choice(mask_paths)
         return self._load_mask(chosen_path)
 
     def __getitem__(self, idx: int):
         img = self._load_image(self.imgs[idx])
         mask = self._select_mask(idx, img.shape)
+        selected_rater_idx = self._get_selected_rater_index(idx) if self.single_rater else None
         if self.tta:
             # Option A: return raw image values under 'data' and keep model-side TTA/inversion in test_2D.py.
             if self.return_all_raters:
@@ -165,12 +190,15 @@ class MultiRater2DDataset(torch.utils.data.Dataset):
             else:
                 mask_t = torch.from_numpy(mask).long()
             img_t = torch.from_numpy(np.moveaxis(img, -1, 0)).float()
-            return {
+            sample = {
                 "data": img_t,
                 "seg": mask_t,
                 "image_id": self.image_ids[idx],
                 "dataset": self.dataset_label,
             }
+            if selected_rater_idx is not None:
+                sample["selected_rater_idx"] = selected_rater_idx
+            return sample
         else:
             if self.return_all_raters:
                 transformed = self.transforms(image=img, masks=mask)
@@ -179,12 +207,15 @@ class MultiRater2DDataset(torch.utils.data.Dataset):
                 transformed = self.transforms(image=img, mask=mask)
                 mask_t = transformed["mask"]
             img_t = transformed["image"].float()
-            return {
+            sample = {
                 "data": img_t,
                 "seg": mask_t,
                 "image_id": self.image_ids[idx],
                 "dataset": self.dataset_label,
             }
+            if selected_rater_idx is not None:
+                sample["selected_rater_idx"] = selected_rater_idx
+            return sample
 
 LIDC2DDataset = MultiRater2DDataset  # Backward compatibility alias
 

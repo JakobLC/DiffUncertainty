@@ -9,7 +9,7 @@ data:
   data_input_dir: ${data_input_dir}
 base_splits_path: "/home/jloch/Desktop/diff/luzern/values_datasets/origlidc128/splits"
 experiments:
-  - ${ALL_SWEEP0}
+  - ${N_PRED_SWEEP_ALL}
 #  - ${CALIB_WEIRD_TEST}
 #  - ${WEIRD_TEST}
 #  - ${FIRST_SWEEP}
@@ -17,18 +17,64 @@ experiments:
 # python evaluation/eval_experiments.py --config-name eval_config_chaksu 'experiments=[${SUBENS}]'
 # python evaluation/eval_experiments.py 'experiments=[${ALL_SWEEP4}]'
 
+N_PRED_SWEEP_ALL:
+  iter_params:
+    shift: [ "ood_aug" ]
+    pred_model: ["prob_unet2", "diffusion", "ssn", "softmax"]
+    seed: [ "120" ]
+    seed1: [ "0" ]
+    eu: ["ensemble", "swag_diag", "swag", "dropout", "none"]
+    cfg: [ "standard" ]
+    data: [ "origlidc128" ]
+    n2_pred: ["1", "2", "3", "6", "18", "32", "56"]
+    epochs: ["500", "1000"]
+  skip_missing: true
+  exp_name: "origlidc128"
+  naming_scheme_version: "{pred_model}_{eu}_{seed1}_n{n2_pred}/e{epochs}_ema"
+  aggregations: [ "all" ]
+  fold: 0
+  rank: 5
+  image_ending: ".png"
+  unc_ending: ".tif"
+  n_reference_segs: 4
+  only_pu: false
+  evaluate_training_data: ${evaluate_training_data}
+
+SAME_DROPOUT:
+  iter_params:
+    shift: [ "ood_aug" ]
+    pred_model: ["prob_unet2", "diffusion", "ssn"]
+    seed: [ "120" ]
+    seed1: [ "0" ]
+    eu: [ "dropout" ]
+    cfg: [ "standard" ]
+    data: [ "origlidc128" ]
+    epochs: [ "500", "1000" ]
+  skip_missing: true
+  exp_name: "origlidc128"
+  naming_scheme_version: "{pred_model}_{eu}_{seed1}_sd/e{epochs}_ema"
+  aggregations: [ "all" ]
+  fold: 0
+  rank: 5
+  image_ending: ".png"
+  unc_ending: ".tif"
+  n_reference_segs: 4
+  only_pu: false
+  evaluate_training_data: ${evaluate_training_data}
+
 ALL_SWEEP4:
   iter_params:
     shift: [ "ood_aug" ]
-    pred_model:  ["prob_unet2", "diffusion", "softmax", "ssn" ]
+    pred_model:  ["ssn"] # ["prob_unet2", "diffusion", "softmax", "ssn" ]
     seed: [ "120" ]
     seed1: [ "4" ]  
-    eu: ["dropout", "swag", "swag_diag", "ensemble", "none" ]
+    eu: ["ensemble"] # ["dropout", "swag", "swag_diag", "ensemble", "none" ]
     cfg: [ "standard" ]
     data: [ "origlidc128" ]
+    epochs: [ "500", "1000" ]
   skip_missing: true
   exp_name: "origlidc128"
-  naming_scheme_version: "{pred_model}_{eu}_{seed1}/e500_ema"
+  naming_scheme_version: "{pred_model}_{eu}_{seed1}/e{epochs}_ema"
   aggregations: [ "all" ]
   fold: 0
   rank: 5
@@ -48,9 +94,10 @@ ALL_SWEEP3:
     eu: ["dropout", "swag", "swag_diag", "ensemble", "none" ]
     cfg: [ "standard" ]
     data: [ "origlidc128" ]
+    epochs: [ "500", "1000" ]
   skip_missing: true
   exp_name: "origlidc128"
-  naming_scheme_version: "{pred_model}_{eu}_{seed1}/e500_ema"
+  naming_scheme_version: "{pred_model}_{eu}_{seed1}/e{epochs}_ema"
   aggregations: [ "all" ]
   fold: 0
   rank: 5
@@ -70,9 +117,10 @@ ALL_SWEEP2:
     eu: ["dropout", "swag", "swag_diag", "ensemble", "none" ]
     cfg: [ "standard" ]
     data: [ "origlidc128" ]
+    epochs: [ "500", "1000" ]
   skip_missing: true
   exp_name: "origlidc128"
-  naming_scheme_version: "{pred_model}_{eu}_{seed1}/e500_ema"
+  naming_scheme_version: "{pred_model}_{eu}_{seed1}/e{epochs}_ema"
   aggregations: [ "all" ]
   fold: 0
   rank: 5
@@ -92,9 +140,10 @@ ALL_SWEEP1:
     eu: ["dropout", "swag", "swag_diag", "ensemble", "none" ]
     cfg: [ "standard" ]
     data: [ "origlidc128" ]
+    epochs: [ "500", "1000" ]
   skip_missing: true
   exp_name: "origlidc128"
-  naming_scheme_version: "{pred_model}_{eu}_{seed1}/e500_ema"
+  naming_scheme_version: "{pred_model}_{eu}_{seed1}/e{epochs}_ema"
   aggregations: [ "all" ]
   fold: 0
   rank: 5
@@ -114,9 +163,10 @@ ALL_SWEEP0:
     eu: ["dropout", "swag", "swag_diag", "ensemble", "none" ]
     cfg: [ "standard" ]
     data: [ "origlidc128" ]
+    epochs: [ "500", "1000" ]
   skip_missing: true
   exp_name: "origlidc128"
-  naming_scheme_version: "{pred_model}_{eu}_{seed1}/e500_ema"
+  naming_scheme_version: "{pred_model}_{eu}_{seed1}/e{epochs}_ema"
   aggregations: [ "all" ]
   fold: 0
   rank: 5

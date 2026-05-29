@@ -23,6 +23,7 @@ class ExperimentVersion:
     ):
         self.pred_model = pred_model
         self.exp_name = exp_name
+        self.results_dir = self._resolve_results_dir(kwargs.get("n_pred"))
         self.version_name = self._build_version_name(
             naming_scheme_version=naming_scheme_version, **kwargs
         )
@@ -31,7 +32,7 @@ class ExperimentVersion:
         self.exp_path = (
             base_path
             / exp_name.format(pred_model=pred_model, **kwargs)
-            / "test_results"
+            / self.results_dir
             / self.version_name
         )
         self.second_cycle_path = (
@@ -50,3 +51,13 @@ class ExperimentVersion:
 
     def _build_version_name(self, naming_scheme_version: str, **kwargs):
         return naming_scheme_version.format(pred_model=self.pred_model, **kwargs)
+
+    @staticmethod
+    def _resolve_results_dir(n_pred):
+        if n_pred is None:
+            return "test_results"
+        try:
+            n_pred_int = int(n_pred)
+        except (TypeError, ValueError):
+            return f"test_results{n_pred}"
+        return "test_results" if n_pred_int == 10 else f"test_results{n_pred_int}"

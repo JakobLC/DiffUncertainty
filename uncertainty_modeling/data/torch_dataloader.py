@@ -213,6 +213,7 @@ class BaseDataModule(LightningDataModule):
         data_fold_id: int = 0,
         evaluate_training_data: bool = False,
         evaluate_all_raters: bool = True,
+        single_rater: bool = False,
         tta: bool = False,
         validation_ratio: float = 1.0,
         **kwargs,
@@ -252,6 +253,7 @@ class BaseDataModule(LightningDataModule):
         # whether to return an additional validation dataloader sampling from training set
         self.evaluate_training_data = evaluate_training_data
         self.evaluate_all_raters = evaluate_all_raters
+        self.single_rater = bool(single_rater)
         # placeholder for optional evaluation dataset based on training data
         self.DS_train_eval = None
         self.validation_ratio = float(validation_ratio)
@@ -303,6 +305,7 @@ class BaseDataModule(LightningDataModule):
             train_kwargs["data_fold_id"] = self.data_fold_id
             if is_multirater:
                 train_kwargs["return_all_raters"] = False
+                train_kwargs["single_rater"] = self.single_rater
             self.DS_train = hydra.utils.instantiate(self.dataset, **train_kwargs)
         if stage in (None, "fit", "validate"):
             transforms_val = get_augmentations_from_config(self.augmentations.VALIDATION)[0]
@@ -315,6 +318,7 @@ class BaseDataModule(LightningDataModule):
             val_kwargs["data_fold_id"] = self.data_fold_id
             if is_multirater:
                 val_kwargs["return_all_raters"] = self.evaluate_all_raters
+                val_kwargs["single_rater"] = self.single_rater
             self.DS_val = hydra.utils.instantiate(self.dataset, **val_kwargs)
             self.DS_val = self._maybe_subset_dataset(
                 self.DS_val, self.validation_ratio, "validation"
@@ -331,6 +335,7 @@ class BaseDataModule(LightningDataModule):
                 train_eval_kwargs["data_fold_id"] = self.data_fold_id
                 if is_multirater:
                     train_eval_kwargs["return_all_raters"] = self.evaluate_all_raters
+                    train_eval_kwargs["single_rater"] = self.single_rater
                 DS_train_full_for_eval = hydra.utils.instantiate(
                     self.dataset,
                     **train_eval_kwargs,
@@ -359,6 +364,7 @@ class BaseDataModule(LightningDataModule):
             test_kwargs["data_fold_id"] = self.data_fold_id
             if is_multirater:
                 test_kwargs["return_all_raters"] = True
+                test_kwargs["single_rater"] = self.single_rater
             self.DS_test = hydra.utils.instantiate(self.dataset, **test_kwargs)
 
     def max_steps(self) -> int:

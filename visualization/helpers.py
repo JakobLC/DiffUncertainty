@@ -268,6 +268,62 @@ def pretty_pivot(table, key, T=True):
     return rank_table
 
 
+"""import json
+from pathlib import Path
+import pandas as pd
+import numpy as np
+from helpers import names_to_pretty, model_scatter, GRID_ORDER_AU, GRID_ORDER_EU
+import matplotlib.pyplot as plt
+
+import seaborn as sns
+loop_params = {
+    "AU": ["softmax", "ssn", "prob_unet", "diffusion"],
+    "EU": ["none", "dropout", "swag", "swag_diag", "ensemble"],
+    "dataset": ["origlidc128", "chaksu128"],
+    "seed": [0,1,2,3,4]
+}
+path_fmt = "/home/jloch/Desktop/diff/luzern/values/saves/{dataset}/test_results10/{AU}_{EU}_{seed}/"
+table = pd.DataFrame(columns=["AU","EU","dataset","seed","value"])
+for seed in loop_params["seed"]:
+    for data in loop_params["dataset"]:
+        for au in loop_params["AU"]:
+            for eu in loop_params["EU"]:
+                if au=="softmax" and eu=="none":
+                    continue
+                #load each json aggregated_[AU,EU,TU]. and save as value where each value has a dict of
+                # {"AU": {"aggr1", "aggr2", ...}, "EU": {...}, "TU": {...}}}
+                if data=="origlidc128" and seed>0:
+                    continue
+                pu2 = "2" if data=="origlidc128" and au=="prob_unet" else ""
+                aggr_files = list(Path(path_fmt.format(dataset=data, AU=au+pu2, EU=eu, seed=seed)).glob("*/ood*/aggregated_*.json"))
+                assert len(list(aggr_files)) > 0, f"No aggregated files found for {path_fmt.format(dataset=data, AU=au+pu2, EU=eu, seed=seed)}"
+                value = {}
+                for file in aggr_files:
+                    with open(file, "r") as f:
+                        aggr_data = json.load(f)
+                    aggrs = aggr_data[list(aggr_data.keys())[0]].keys()
+                    aggr_data2 = {}
+                    for aggr in aggrs:
+                        aggr_data2[aggr] = np.mean([item[aggr]["max_score"] for item in aggr_data.values()])
+                    unc = file.stem.split("aggregated_")[1]
+                    value[unc] = aggr_data2
+                row = {"AU": au, "EU": eu, "dataset": data, "seed": seed, "value": value}
+                table = pd.concat([table, pd.DataFrame([row])], ignore_index=True)
+group_cols = ["AU", "EU", "dataset"]
+
+def mean_value_dict(values):  # values: Series of nested dicts
+    keys1 = values.iloc[0].keys()                       # TU/AU/EU
+    keys2 = values.iloc[0][next(iter(keys1))].keys()    # aggr keys
+    return {
+        k1: {k2: float(np.mean([v[k1][k2] for v in values])) for k2 in keys2}
+        for k1 in keys1
+    }
+
+table = (
+    table.groupby(group_cols, as_index=False)
+         .agg(value=("value", mean_value_dict))
+)"""
+
 def load_result_table(epochs=[500,1000],
                       ema = "_ema",
                 loop_params = {
@@ -285,9 +341,20 @@ def load_result_table(epochs=[500,1000],
                 ace_type = None,
                 add_rank=False,
                 mean_seeded_table=None,
-                std_seeded_table=None,):
+                std_seeded_table=None,
+                amb_cal_2 = False,
+                load_all_epochs: bool = False,):
+    def _mean_agg_max_score(aggr_data, aggr_type):
+        sample = next(iter(aggr_data.values()))
+        if aggr_type not in sample:
+            raise ValueError(
+                f"Aggregation type '{aggr_type}' missing in aggregated data. Available: {list(sample.keys())}"
+            )
+        return float(np.mean([item[aggr_type]["max_score"] for item in aggr_data.values()]))
+
     if mean_seeded_table or std_seeded_table:
         kwargs = copy.deepcopy(locals())
+        kwargs.pop("_mean_agg_max_score", None)
         kwargs["mean_seeded_table"] = None
         kwargs["std_seeded_table"] = None
         mini_tables = []
@@ -302,6 +369,8 @@ def load_result_table(epochs=[500,1000],
                 mini_table["version"] = v0
             mini_tables.append(mini_table)
         return smart_mean_table(mini_tables, std_instead=not mean_seeded_table)
+    amb = "ambiguity_modeling2.json" if amb_cal_2 else "ambiguity_modeling.json"
+    cal = "calibration2.json" if amb_cal_2 else "calibration.json"
     if ace_type is None:
         if "lidc" in save_path:
             ace = "gace"
@@ -311,108 +380,200 @@ def load_result_table(epochs=[500,1000],
         ace = ace_type
     table = pd.DataFrame()
     first_aggr_check = True
+    save_path_orig = save_path
+    def _find_available_epochs(version_dir: Path, ema_suffix: str) -> List[int]:
+        if not version_dir.exists():
+            return []
+        suffix = re.escape(ema_suffix)
+        pattern = re.compile(rf"^e(\d+){suffix}$")
+        epochs_found: List[int] = []
+        for child in version_dir.iterdir():
+            if not child.is_dir():
+                continue
+            match = pattern.match(child.name)
+            if match:
+                epochs_found.append(int(match.group(1)))
+        return sorted(set(epochs_found))
+
+    def _resolve_epochs_to_load(version_dir: Path, epochs_arg, ema_suffix: str) -> List[int]:
+        available = _find_available_epochs(version_dir, ema_suffix)
+        epochs_empty = epochs_arg is None or (isinstance(epochs_arg, list) and len(epochs_arg) == 0)
+        if epochs_empty:
+            return available
+        if load_all_epochs:
+            if isinstance(epochs_arg, int):
+                return [epochs_arg] if epochs_arg in available else []
+            if not isinstance(epochs_arg, list):
+                raise AssertionError("Epoch must be an int, a list of ints, or None")
+            return [e for e in epochs_arg if e in available]
+        if isinstance(epochs_arg, int):
+            if epochs_arg not in available:
+                raise ValueError(
+                    f"Epoch {epochs_arg} not found for version: {version_dir.name} in {version_dir.parent}"
+                )
+            return [epochs_arg]
+        assert isinstance(epochs_arg, list), "Epoch must be an int or a list of ints"
+        existing_epochs = [e for e in epochs_arg if e in available]
+        if len(existing_epochs) == 0:
+            raise ValueError(
+                f"No existing epochs found for version: {version_dir.name} in {version_dir.parent}. "
+                f"Checked epochs: {epochs_arg}"
+            )
+        if len(existing_epochs) > 1:
+            raise ValueError(
+                f"Multiple existing epochs found for version: {version_dir.name} in {version_dir.parent}. "
+                f"Found epochs: {existing_epochs}. Please specify a single epoch."
+            )
+        return existing_epochs
+
     for values in product(*loop_params.values()):
         add_dict = dict(zip(loop_params.keys(),values))
         version = formatter.format(**add_dict)
-        if not (Path(f"{save_path}")/version).exists():
+        version_dir = Path(f"{save_path}") / version
+        if not version_dir.exists():
             print("Skipping missing version:", version)
             continue
-        add_dict["version"] = version
-        #if epoch is a list use whichever one exists, if there are multiples, raise error
-
-        if isinstance(epochs,int):
-            epoch = epochs
-        else:
-            assert isinstance(epochs,list), "Epoch must be an int or a list of ints"
-            existing_epochs = []
-            for e in epochs:
-                if (Path(f"{save_path}")/version/f"e{e}{ema}").exists():
-                    existing_epochs.append(e)
-            if len(existing_epochs) == 0:
-                raise ValueError(f"No existing epochs found for version: {version} in {save_path}. Checked epochs: {epochs}")
-            elif len(existing_epochs) > 1:
-                raise ValueError(f"Multiple existing epochs found for version: {version} in {save_path}. Found epochs: {existing_epochs}. Please specify a single epoch.")
-            epoch = existing_epochs[0]
-        p = f"{save_path}{version}/e{epoch}{ema}/val/metrics.json"
-
-        with open(p, "r") as f:
-            loaded = json.load(f)
-        add_dict["val_dice"] = loaded["mean"]["metrics"]["dice"]
-        if add_dict["EU"] == "none":# swap
-            add_dict["val_ged"] = loaded["mean"]["metrics"]["ged_bma"]
-            add_dict["val_ged_bma"] = loaded["mean"]["metrics"]["ged"]
-        else:
-            add_dict["val_ged"] = loaded["mean"]["metrics"]["ged"]
-            add_dict["val_ged_bma"] = loaded["mean"]["metrics"]["ged_bma"]
-        
-        p = f"{save_path}{version}/e{epoch}{ema}/id/metrics.json"
-        with open(p, "r") as f:
-            loaded = json.load(f)
-        add_dict["id_dice"] = loaded["mean"]["metrics"]["dice"]
-        if add_dict["EU"] == "none":# swap
-            add_dict["id_ged"] = loaded["mean"]["metrics"]["ged_bma"]
-            add_dict["id_ged_bma"] = loaded["mean"]["metrics"]["ged"]
-        else:
-            add_dict["id_ged"] = loaded["mean"]["metrics"]["ged"]
-            add_dict["id_ged_bma"] = loaded["mean"]["metrics"]["ged_bma"]
-        
-        p = f"{save_path}{version}/e{epoch}{ema}/id/ambiguity_modeling.json"
-        with open(p, "r") as f:
-            loaded = json.load(f)
-        add_dict["EU_ncc_id"] = loaded["mean"][EU]["metrics"]["ncc"]
-        add_dict["AU_ncc_id"] = loaded["mean"][AU]["metrics"]["ncc"]
-        add_dict["TU_ncc_id"] = loaded["mean"][TU]["metrics"]["ncc"]
-        p = f"{save_path}{version}/e{epoch}{ema}/id/calibration.json"
-        with open(p, "r") as f:
-            loaded = json.load(f)
-        add_dict["EU_ace_id"] = loaded["mean"][EU]["metrics"][ace]
-        add_dict["AU_ace_id"] = loaded["mean"][AU]["metrics"][ace]
-        add_dict["TU_ace_id"] = loaded["mean"][TU]["metrics"][ace]
-        p = f"{save_path}{version}/e{epoch}{ema}/ood_detection.json"
-        with open(p, "r") as f:
-            loaded = json.load(f)
-        if is_ood_aug:
-            for k in loaded.keys():
-                k2 = k.replace("id&","")
-                if first_aggr_check:
-                    avail_aggr_types = loaded[k]["mean"][EU].keys()
-                    assert aggregation_type in avail_aggr_types, f"{aggregation_type} Invalid aggregation type, available: {avail_aggr_types}"
-                    first_aggr_check = False
-                add_dict[f"EU_auc_{k2}"] = loaded[k]["mean"][EU][aggregation_type]["metrics"]["auroc"]
-                add_dict[f"AU_auc_{k2}"] = loaded[k]["mean"][AU][aggregation_type]["metrics"]["auroc"]
-                add_dict[f"TU_auc_{k2}"] = loaded[k]["mean"][TU][aggregation_type]["metrics"]["auroc"]
-
-            for p in Path(f"{save_path}{version}/e{epoch}{ema}").glob("ood*/ambiguity_modeling.json"):
-                k2 = p.parts[-2]
-                with open(p, "r") as f:
-                    loaded = json.load(f)
-                add_dict[f"EU_ncc_{k2}"] = loaded["mean"][EU]["metrics"]["ncc"]
-                add_dict[f"AU_ncc_{k2}"] = loaded["mean"][AU]["metrics"]["ncc"]
-                add_dict[f"TU_ncc_{k2}"] = loaded["mean"][TU]["metrics"]["ncc"]
-            for p in Path(f"{save_path}{version}/e{epoch}{ema}").glob("ood*/calibration.json"):
-                k2 = p.parts[-2]
-                with open(p, "r") as f:
-                    loaded = json.load(f)
-                add_dict[f"EU_ace_{k2}"] = loaded["mean"][EU]["metrics"][ace]
-                add_dict[f"AU_ace_{k2}"] = loaded["mean"][AU]["metrics"][ace]
-                add_dict[f"TU_ace_{k2}"] = loaded["mean"][TU]["metrics"][ace]
-        else:
-            add_dict["EU_auc"] = loaded["mean"][EU][aggregation_type]["metrics"]["auroc"]
-            add_dict["AU_auc"] = loaded["mean"][AU][aggregation_type]["metrics"]["auroc"]
-            add_dict["TU_auc"] = loaded["mean"][TU][aggregation_type]["metrics"]["auroc"]
-            p = f"{save_path}{version}/e{epoch}{ema}/ood/ambiguity_modeling.json"
+        epochs_to_load = _resolve_epochs_to_load(version_dir, epochs, ema)
+        if not epochs_to_load:
+            print("Skipping version with no matching epochs:", version)
+            continue
+        for epoch in epochs_to_load:
+            row = add_dict.copy()
+            row["version"] = version
+            row["epoch"] = int(epoch)
+            p = f"{save_path}{version}/e{epoch}{ema}/val/metrics.json"
             with open(p, "r") as f:
                 loaded = json.load(f)
-            add_dict["EU_ncc_ood"] = loaded["mean"][EU]["metrics"]["ncc"]
-            add_dict["AU_ncc_ood"] = loaded["mean"][AU]["metrics"]["ncc"]
-            add_dict["TU_ncc_ood"] = loaded["mean"][TU]["metrics"]["ncc"]
-            p = f"{save_path}{version}/e{epoch}{ema}/ood/calibration.json"
+            row["DICE_val"] = loaded["mean"]["metrics"]["dice"]
+            if row["EU"] == "none":# swap
+                row["GED_val"] = loaded["mean"]["metrics"]["ged_bma"]
+                row["GED_BMA_val"] = loaded["mean"]["metrics"]["ged"]
+            else:
+                row["GED_val"] = loaded["mean"]["metrics"]["ged"]
+                row["GED_BMA_val"] = loaded["mean"]["metrics"]["ged_bma"]
+
+            p = f"{save_path}{version}/e{epoch}{ema}/id/metrics.json"
             with open(p, "r") as f:
                 loaded = json.load(f)
-            add_dict["EU_ace_ood"] = loaded["mean"][EU]["metrics"][ace]
-            add_dict["AU_ace_ood"] = loaded["mean"][AU]["metrics"][ace]
-            add_dict["TU_ace_ood"] = loaded["mean"][TU]["metrics"][ace]
-        table = pd.concat([table, pd.DataFrame([add_dict])], ignore_index=True)
+            row["DICE_id"] = loaded["mean"]["metrics"]["dice"]
+            if row["EU"] == "none":# swap
+                row["GED_id"] = loaded["mean"]["metrics"]["ged_bma"]
+                row["GED_BMA_id"] = loaded["mean"]["metrics"]["ged"]
+            else:
+                row["GED_id"] = loaded["mean"]["metrics"]["ged"]
+                row["GED_BMA_id"] = loaded["mean"]["metrics"]["ged_bma"]
+
+            p = f"{save_path}{version}/e{epoch}{ema}/id/{amb}"
+            with open(p, "r") as f:
+                loaded = json.load(f)
+            row["EU_ncc_id"] = loaded["mean"][EU]["metrics"]["ncc"]
+            row["AU_ncc_id"] = loaded["mean"][AU]["metrics"]["ncc"]
+            row["TU_ncc_id"] = loaded["mean"][TU]["metrics"]["ncc"]
+            p = f"{save_path}{version}/e{epoch}{ema}/id/{cal}"
+            with open(p, "r") as f:
+                loaded = json.load(f)
+            row["EU_ace_id"] = loaded["mean"][EU]["metrics"][ace]
+            row["AU_ace_id"] = loaded["mean"][AU]["metrics"][ace]
+            row["TU_ace_id"] = loaded["mean"][TU]["metrics"][ace]
+            p = f"{save_path}{version}/e{epoch}{ema}/ood_detection.json"
+            with open(p, "r") as f:
+                loaded = json.load(f)
+            if is_ood_aug:
+                for k in loaded.keys():
+                    k2 = k.replace("id&","")
+                    if first_aggr_check:
+                        avail_aggr_types = loaded[k]["mean"][EU].keys()
+                        assert aggregation_type in avail_aggr_types, f"{aggregation_type} Invalid aggregation type, available: {avail_aggr_types}"
+                        first_aggr_check = False
+                    row[f"EU_auc_{k2}"] = loaded[k]["mean"][EU][aggregation_type]["metrics"]["auroc"]
+                    row[f"AU_auc_{k2}"] = loaded[k]["mean"][AU][aggregation_type]["metrics"]["auroc"]
+                    row[f"TU_auc_{k2}"] = loaded[k]["mean"][TU][aggregation_type]["metrics"]["auroc"]
+
+                for p in Path(f"{save_path}{version}/e{epoch}{ema}").glob("ood*/metrics.json"):
+                    k2 = p.parts[-2]
+                    with open(p, "r") as f:
+                        loaded = json.load(f)
+                    row[f"DICE_{k2}"] = loaded["mean"]["metrics"]["dice"]
+                    if row["EU"] == "none":
+                        row[f"GED_{k2}"] = loaded["mean"]["metrics"]["ged_bma"]
+                        row[f"GED_BMA_{k2}"] = loaded["mean"]["metrics"]["ged"]
+                    else:
+                        row[f"GED_{k2}"] = loaded["mean"]["metrics"]["ged"]
+                        row[f"GED_BMA_{k2}"] = loaded["mean"]["metrics"]["ged_bma"]
+
+                aggr_means = defaultdict(dict)
+                for p in Path(f"{save_path}{version}/e{epoch}{ema}").glob("ood*/aggregated_*.json"):
+                    k2 = p.parts[-2]
+                    with open(p, "r") as f:
+                        aggr_data = json.load(f)
+                    unc_key = p.stem.split("aggregated_")[-1]
+                    aggr_means[k2][unc_key] = _mean_agg_max_score(aggr_data, aggregation_type)
+                for p in Path(f"{save_path}{version}/e{epoch}{ema}/id").glob("aggregated_*.json"):
+                    with open(p, "r") as f:
+                        aggr_data = json.load(f)
+                    unc_key = p.stem.split("aggregated_")[-1]
+                    aggr_means["id"][unc_key] = _mean_agg_max_score(aggr_data, aggregation_type)
+                for k2, unc_map in aggr_means.items():
+                    if AU in unc_map:
+                        row[f"AU_mean_{k2}"] = unc_map[AU]
+                    if EU in unc_map:
+                        row[f"EU_mean_{k2}"] = unc_map[EU]
+                    if TU in unc_map:
+                        row[f"TU_mean_{k2}"] = unc_map[TU]
+                    if AU in unc_map and EU in unc_map:
+                        row[f"EU/AU_mean_{k2}"] = unc_map[EU] / unc_map[AU]
+
+                for p in Path(f"{save_path}{version}/e{epoch}{ema}").glob("ood*/" + amb):
+                    k2 = p.parts[-2]
+                    with open(p, "r") as f:
+                        loaded = json.load(f)
+                    row[f"EU_ncc_{k2}"] = loaded["mean"][EU]["metrics"]["ncc"]
+                    row[f"AU_ncc_{k2}"] = loaded["mean"][AU]["metrics"]["ncc"]
+                    row[f"TU_ncc_{k2}"] = loaded["mean"][TU]["metrics"]["ncc"]
+                for p in Path(f"{save_path}{version}/e{epoch}{ema}").glob("ood*/" + cal):
+                    k2 = p.parts[-2]
+                    with open(p, "r") as f:
+                        loaded = json.load(f)
+                    row[f"EU_ace_{k2}"] = loaded["mean"][EU]["metrics"][ace]
+                    row[f"AU_ace_{k2}"] = loaded["mean"][AU]["metrics"][ace]
+                    row[f"TU_ace_{k2}"] = loaded["mean"][TU]["metrics"][ace]
+            else:
+                row["EU_auc"] = loaded["mean"][EU][aggregation_type]["metrics"]["auroc"]
+                row["AU_auc"] = loaded["mean"][AU][aggregation_type]["metrics"]["auroc"]
+                row["TU_auc"] = loaded["mean"][TU][aggregation_type]["metrics"]["auroc"]
+                p = f"{save_path}{version}/e{epoch}{ema}/ood/metrics.json"
+                with open(p, "r") as f:
+                    loaded = json.load(f)
+                row["DICE_ood"] = loaded["mean"]["metrics"]["dice"]
+                if row["EU"] == "none":
+                    row["GED_ood"] = loaded["mean"]["metrics"]["ged_bma"]
+                    row["GED_BMA_ood"] = loaded["mean"]["metrics"]["ged"]
+                else:
+                    row["GED_ood"] = loaded["mean"]["metrics"]["ged"]
+                    row["GED_BMA_ood"] = loaded["mean"]["metrics"]["ged_bma"]
+                p = f"{save_path}{version}/e{epoch}{ema}/ood/{amb}"
+                with open(p, "r") as f:
+                    loaded = json.load(f)
+                row["EU_ncc_ood"] = loaded["mean"][EU]["metrics"]["ncc"]
+                row["AU_ncc_ood"] = loaded["mean"][AU]["metrics"]["ncc"]
+                row["TU_ncc_ood"] = loaded["mean"][TU]["metrics"]["ncc"]
+                p = f"{save_path}{version}/e{epoch}{ema}/ood/{cal}"
+                with open(p, "r") as f:
+                    loaded = json.load(f)
+                row["EU_ace_ood"] = loaded["mean"][EU]["metrics"][ace]
+                row["AU_ace_ood"] = loaded["mean"][AU]["metrics"][ace]
+                row["TU_ace_ood"] = loaded["mean"][TU]["metrics"][ace]
+                aggr_means = {}
+                for p in Path(f"{save_path}{version}/e{epoch}{ema}/ood").glob("aggregated_*.json"):
+                    with open(p, "r") as f:
+                        aggr_data = json.load(f)
+                    unc_key = p.stem.split("aggregated_")[-1]
+                    aggr_means[unc_key] = _mean_agg_max_score(aggr_data, aggregation_type)
+                row["AU_mean"] = aggr_means[AU]
+                row["EU_mean"] = aggr_means[EU]
+                row["TU_mean"] = aggr_means[TU]
+                row["EU/AU_mean"] = aggr_means[EU] / aggr_means[AU]
+            table = pd.concat([table, pd.DataFrame([row])], ignore_index=True)
     #raise error incase table is empty
     if table.empty:
         raise ValueError(f"Result table is empty. Check if the specified epoch and save_path are correct. Current save_path: {save_path}")
@@ -420,6 +581,8 @@ def load_result_table(epochs=[500,1000],
     for k in table.columns:
         if k.startswith("EU_auc_ood"):
             valid_ood_keys.append(k.replace("EU_auc_",""))
+    if not is_ood_aug:
+        valid_ood_keys = ["ood"]
     if swap_AU_EU:
         # swap AU and EU columns
         mapper = {}
@@ -1095,8 +1258,8 @@ GRID_ORDER_EU = ["none", "dropout", "swag_diag", "swag", "ensemble"]
 
 def plot_metric_matrix(table,
             ax = None,
-            metric = "val_ged",
-            subkey = "id",
+            metric = "GED",
+            subkey = "val",
             index = "AU",
             columns = "EU",
             figsize_per_cell=(2,1.7),
@@ -1182,13 +1345,14 @@ def plot_metric_matrix(table,
 
 def get_mm_colormap(name):
     cmap = "viridis" if name.startswith("(") else "magma"
-    if ("_ged" in name) or ("_ace" in name):
+    name_lower = name.lower()
+    if ("ged" in name_lower) or ("ace" in name_lower):
         cmap += "_r"
     return cmap
 
 def plot_mm_grid(table,
-                 kwarg_grid=[[{"metric": "val_dice"},{"metric": "id_dice"}],
-                              [{"metric": "val_ged"},{"metric": "id_ged"}]],
+                 kwarg_grid=[[{"metric": "DICE", "subkey": "val"},{"metric": "DICE", "subkey": "id"}],
+                              [{"metric": "GED", "subkey": "val"},{"metric": "GED", "subkey": "id"}]],
                               same_cbar = True,
                               same_cbar_vals = None,):
     n_rows = len(kwarg_grid)

@@ -35,6 +35,11 @@ import uncertainty_modeling.data.cityscapes_labels as cs_labels
 import uncertainty_modeling.augmentations as custom_augmentations
 from global_utils.checkpoint_format import format_checkpoint_subdir
 from uncertainty_modeling.unc_mod_utils.swag import SWAG
+from uncertainty_modeling.unc_mod_utils.seeded_dropout import (
+    SeededDropoutConfig,
+    enable_seeded_dropout,
+    set_seeded_dropout_seed,
+)
 from uncertainty_modeling.data.torch_dataloader import apply_augment_mult
 
 # Albumentations emits this warning when Rotate is used with ReplayCompose.
@@ -312,8 +317,14 @@ class Tester:
         self.swag_blockwise = bool(getattr(args, "swag_blockwise", False))
         self.swag_low_rank_cov = bool(getattr(args, "swag_low_rank_cov", True))
         self.ensemble_mode = bool(getattr(args, "ensemble_mode", False))
+        self.same_dropout = bool(getattr(args, "same_dropout", False))
         if self.direct_au and self.ensemble_mode:
             raise ValueError("direct_au cannot be combined with --ensemble_mode.")
+        if self.same_dropout and self.ensemble_mode:
+            print(
+                "[same_dropout] Warning: --same_dropout is ignored when --ensemble_mode is enabled (n_models is disabled)."
+            )
+            self.same_dropout = False
         self.diffusion_steps_override = getattr(args, "diffusion_num_steps", None)
         self.diffusion_sampler_override = getattr(args, "diffusion_sampler_type", None)
         self.n_pred = int(args.n_pred)
@@ -337,6 +348,8 @@ class Tester:
             self.all_checkpoints,
             self.checkpoint_paths,
         )
+        self.same_dropout_member_seeds = None
+        self._configure_same_dropout(hparams)
         self.tta_backend = None
         if self.tta:
             self._validate_tta_model_compatibility(self.models)
@@ -364,8 +377,60 @@ class Tester:
         )
         self.metrics_only = bool(getattr(args, "metrics_only", False))
         self.skip_saving = bool(getattr(args, "skip_saving", False))
+        self.save_likelihood = bool(getattr(args, "save_likelihood", False))
         self.create_save_dirs()
         self.skip_existing = bool(getattr(args, "skip_existing", False))
+        self.likelihood_dict = {} if self.save_likelihood else None
+
+    def _configure_same_dropout(self, hparams: dict) -> None:
+        if not self.same_dropout:
+            return
+        if self.n_models <= 0:
+            print(
+                "[same_dropout] Warning: --same_dropout requested but n_models<=0; nothing to do."
+            )
+            self.same_dropout = False
+            return
+
+        dropout_models = [
+            m for m in self.models if str(getattr(m, "EU_type", "none") or "none").lower() == "dropout"
+        ]
+        if not dropout_models:
+            print(
+                "[same_dropout] Warning: --same_dropout only applies to EU_type='dropout' models; no such models found."
+            )
+            self.same_dropout = False
+            return
+
+        non_dropout = [
+            str(getattr(m, "EU_type", "none") or "none")
+            for m in self.models
+            if str(getattr(m, "EU_type", "none") or "none").lower() != "dropout"
+        ]
+        if non_dropout:
+            uniq = ",".join(sorted(set(non_dropout)))
+            print(
+                f"[same_dropout] Note: ignoring --same_dropout for non-dropout EU types: {uniq}"
+            )
+
+        base_seed = int(hparams.get("seed", 0) or 0)
+        rng = np.random.default_rng(base_seed + 1337)
+        seeds = rng.integers(0, 2**31 - 1, size=int(self.n_models), dtype=np.int64)
+        self.same_dropout_member_seeds = [int(s) for s in seeds.tolist()]
+        print(
+            f"[same_dropout] Enabled fixed-dropout mode with n_models={self.n_models} deterministic seed(s) (seed_base={base_seed})."
+        )
+
+        cfg = SeededDropoutConfig(share_across_batch=False)
+        for idx, model in enumerate(dropout_models):
+            replaced = enable_seeded_dropout(model, base_seed=self.same_dropout_member_seeds[0], config=cfg)
+            if replaced == 0:
+                print(
+                    f"[same_dropout] Warning: EU_type='dropout' model #{idx} had no MC_Dropout/MC_Dropout2d modules to wrap; outputs may remain stochastic."
+                )
+            else:
+                # Initialize to the first seed.
+                set_seeded_dropout_seed(model, self.same_dropout_member_seeds[0])
 
     @staticmethod
     def _validate_tta_model_compatibility(models):
@@ -606,8 +671,14 @@ class Tester:
                     expanded_models.extend(swag_models)
                     expanded = bool(swag_models)
                 elif model.EU_type == "dropout":
-                    expanded_models.extend([model] * self.n_models)
-                    expanded = self.n_models > 0
+                    if self.same_dropout:
+                        # In same-dropout mode we do not materialize n_models copies; we loop over
+                        # deterministic dropout seeds at inference time to avoid duplicating weights.
+                        expanded_models.append(model)
+                        expanded = True
+                    else:
+                        expanded_models.extend([model] * self.n_models)
+                        expanded = self.n_models > 0
                 else:
                     print(
                         f"[n_models={self.n_models}] EU sampling is not implemented for EU_type='{model.EU_type}'. Using base model instead."
@@ -688,10 +759,11 @@ class Tester:
             self._deactivate_model_after_inference(model)
 
     def create_save_dirs(self):
+        results_dir = "test_results" if self.n_pred == 10 else f"test_results{self.n_pred}"
         path_parts = [
             self.save_root_dir,
             self.exp_name,
-            "test_results",
+            results_dir,
             self.version,
         ]
         if self.checkpoint_subdir:
@@ -964,6 +1036,17 @@ class Tester:
                 uncertainty_dict = calculate_uncertainty(image_preds)
             else:
                 uncertainty_dict = calculate_one_minus_msr(image_preds.squeeze(0))
+            if self.save_likelihood:
+                gt_model_nll, gt_nll, mean_nll = self._compute_likelihood_stats(
+                    image_preds,
+                    gt_tensor,
+                )
+                self.likelihood_dict[image_id] = {
+                    "dataset": all_preds["dataset"][image_idx],
+                    "gt_model_NLL": gt_model_nll,
+                    "gt_NLL": gt_nll,
+                    "mean_NLL": mean_nll,
+                }
             if not self.metrics_only:
                 ignore_index_map_image = ignore_index_map[image_idx][0]
                 self.save_prediction(
@@ -973,6 +1056,48 @@ class Tester:
                     ignore_index_map_image.detach().long().cpu().numpy().astype(np.uint8),
                 )
                 self.save_uncertainty(image_id, uncertainty_dict)
+
+    def _compute_likelihood_stats(self, image_preds, gt_tensor, eps: float = 1e-12):
+        if gt_tensor.ndim == 2:
+            gt_tensor = gt_tensor.unsqueeze(0)
+        gt_tensor = gt_tensor.to(image_preds.device).long()
+
+        log_probs = torch.log(torch.clamp(image_preds, min=eps))
+        n_models = image_preds.shape[0]
+        gt_model_nll = []
+        gt_nll = []
+
+        for gt_map in gt_tensor:
+            if self.ignore_index >= 0:
+                valid_mask = gt_map != self.ignore_index
+                valid_count = int(valid_mask.sum().item())
+            else:
+                valid_mask = None
+                valid_count = int(gt_map.numel())
+
+            if valid_count == 0:
+                nll_per_model = torch.zeros(n_models, device=image_preds.device)
+            else:
+                gt_idx = gt_map.unsqueeze(0).unsqueeze(0).expand(
+                    n_models, 1, gt_map.shape[0], gt_map.shape[1]
+                )
+                logp = log_probs.gather(1, gt_idx).squeeze(1)
+                if valid_mask is not None:
+                    mask = valid_mask.unsqueeze(0)
+                    logp = logp * mask
+                    nll_per_model = -(logp.sum(dim=(1, 2)) / valid_count)
+                else:
+                    nll_per_model = -(logp.mean(dim=(1, 2)))
+
+            gt_model_nll.append([float(v) for v in nll_per_model.tolist()])
+            gt_nll.append(float(nll_per_model.mean().item()))
+
+        if gt_model_nll:
+            flat_values = [value for row in gt_model_nll for value in row]
+            mean_nll = float(np.mean(np.array(flat_values)))
+        else:
+            mean_nll = 0.0
+        return gt_model_nll, gt_nll, mean_nll
     def _build_batch_predictions(self, batch):
         gt = batch["seg"]
         if isinstance(gt, torch.Tensor) and gt.ndim == 3:
@@ -984,118 +1109,137 @@ class Tester:
             "gt": gt,
             "dataset": batch["dataset"],
         }
-        generative_count = sum(1 for m in self.models if getattr(m, "is_generative", False))
+
+        def _effective_member_count(m) -> int:
+            if (
+                self.same_dropout
+                and self.same_dropout_member_seeds is not None
+                and str(getattr(m, "EU_type", "none") or "none").lower() == "dropout"
+                and int(self.n_models) > 0
+            ):
+                return int(self.n_models)
+            return 1
+
+        generative_count = sum(
+            _effective_member_count(m)
+            for m in self.models
+            if getattr(m, "is_generative", False)
+        )
         # Softmax+TTA acts as an AU sampler and should participate in generative grouping.
         if self.tta:
             generative_count += sum(
-                1
+                _effective_member_count(m)
                 for m in self.models
                 if str(getattr(m, "AU_type", "softmax") or "softmax").lower() == "softmax"
             )
         multiple_generative = generative_count > 1 and not self.direct_au
+
+        def _run_model_and_append(model) -> None:
+            au_type = getattr(model, "AU_type", "softmax")
+            if au_type == "ssn":
+                distribution, cov_failed_flag = model.forward(batch["data"].to(self.device))
+                assert not cov_failed_flag, "Covariance matrix was not positive definite"
+                output_samples = distribution.sample([self.n_pred])
+                output_samples = output_samples.view(
+                    [
+                        self.n_pred,
+                        batch["data"].size()[0],
+                        model.num_classes,
+                        *batch["data"].size()[2:],
+                    ]
+                )
+                if multiple_generative:
+                    softmax_samples = F.softmax(output_samples, dim=2)
+                    all_preds["softmax_pred_groups"].append(softmax_samples)
+                else:
+                    for output_sample in output_samples:
+                        output_softmax = F.softmax(output_sample, dim=1)
+                        all_preds["softmax_pred_groups"].append(output_softmax.unsqueeze(0))
+            elif au_type == "diffusion":
+                inputs = batch["data"]
+                if isinstance(inputs, list):
+                    inputs = inputs[0]
+                inputs = inputs.to(self.device).float()
+                sample_list = []
+                num_steps = int(getattr(model, "diffusion_num_steps", 10))
+                sampler_type = getattr(model, "diffusion_sampler_type", "ddpm") or "ddpm"
+                for _ in range(self.n_pred):
+                    x_init = torch.randn(
+                        (inputs.shape[0], model.num_classes, *inputs.shape[2:]),
+                        device=self.device,
+                        dtype=inputs.dtype,
+                    )
+                    sample_output = model.diffusion_sample_loop(
+                        x_init=x_init,
+                        im=inputs,
+                        num_steps=num_steps,
+                        sampler_type=sampler_type,
+                        clip_x=False,
+                        guidance_weight=0.0,
+                        progress_bar=False,
+                        self_cond=False,
+                    )
+                    sample_list.append(sample_output)
+                sample_stack = torch.stack(sample_list)
+                if multiple_generative:
+                    all_preds["softmax_pred_groups"].append(sample_stack)
+                else:
+                    for sample in sample_stack:
+                        all_preds["softmax_pred_groups"].append(sample.unsqueeze(0))
+            elif au_type == "prob_unet" or getattr(model, "prob_unet_enabled", False):
+                inputs = batch["data"]
+                if isinstance(inputs, list):
+                    inputs = inputs[0]
+                tensor_inputs = inputs.to(self.device).float()
+                model.forward(tensor_inputs, segm=None, training=False)
+                logits_stack = model.sample_multiple(self.n_pred, from_prior=True, testing=True)
+                softmax_stack = torch.softmax(logits_stack, dim=2)
+                if multiple_generative:
+                    all_preds["softmax_pred_groups"].append(softmax_stack)
+                else:
+                    for sample in softmax_stack:
+                        all_preds["softmax_pred_groups"].append(sample.unsqueeze(0))
+            else:
+                if self.tta:
+                    input_batch = batch["data"]
+                    if isinstance(input_batch, list):
+                        input_batch = input_batch[0]
+
+                    tta_samples = []
+                    for _ in range(self.n_pred):
+                        aug_batch, replays = self.tta_backend.sample_batch(input_batch)
+                        output = model.forward(aug_batch.to(self.device))
+                        output_softmax_pre_inv = F.softmax(output, dim=1)
+                        output_softmax_post_inv = self.tta_backend.invert_prediction_batch(
+                            output_softmax_pre_inv,
+                            replays,
+                        )
+                        tta_samples.append(output_softmax_post_inv)
+
+                    tta_stack = torch.stack(tta_samples, dim=0)
+                    if multiple_generative:
+                        all_preds["softmax_pred_groups"].append(tta_stack)
+                    else:
+                        for sample in tta_stack:
+                            all_preds["softmax_pred_groups"].append(sample.unsqueeze(0))
+                else:
+                    output = model.forward(batch["data"].to(self.device))
+                    output_softmax = F.softmax(output, dim=1)
+                    all_preds["softmax_pred_groups"].append(output_softmax.unsqueeze(0))
+
         for model in self.models:
             #print("allpreds groups shape:", all_preds["softmax_pred_groups"][-1].shape if all_preds["softmax_pred_groups"] else "N/A")
             with self._model_device_scope(model):
-                au_type = getattr(model, "AU_type", "softmax")
-                if au_type == "ssn":
-                    distribution, cov_failed_flag = model.forward(batch["data"].to(self.device))
-                    assert not cov_failed_flag, "Covariance matrix was not positive definite"
-                    output_samples = distribution.sample([self.n_pred])
-                    output_samples = output_samples.view(
-                        [
-                            self.n_pred,
-                            batch["data"].size()[0],
-                            model.num_classes,
-                            *batch["data"].size()[2:],
-                        ]
-                    )
-                    if multiple_generative:
-                        softmax_samples = F.softmax(output_samples, dim=2)
-                        all_preds["softmax_pred_groups"].append(softmax_samples)
-                        #all_preds["softmax_pred"].append(softmax_samples.mean(dim=0))
-                    else:
-                        for output_sample in output_samples:
-                            output_softmax = F.softmax(output_sample, dim=1)
-                            #all_preds["softmax_pred"].append(output_softmax)
-                            all_preds["softmax_pred_groups"].append(output_softmax.unsqueeze(0))
-                elif au_type == "diffusion":
-                    inputs = batch["data"]
-                    if isinstance(inputs, list):
-                        inputs = inputs[0]
-                    inputs = inputs.to(self.device).float()
-                    sample_list = []
-                    num_steps = int(getattr(model, "diffusion_num_steps", 10))
-                    sampler_type = getattr(model, "diffusion_sampler_type", "ddpm") or "ddpm"
-                    for _ in range(self.n_pred):
-                        x_init = torch.randn(
-                            (inputs.shape[0], model.num_classes, *inputs.shape[2:]),
-                            device=self.device,
-                            dtype=inputs.dtype,
-                        )
-                        sample_output = model.diffusion_sample_loop(
-                            x_init=x_init,
-                            im=inputs,
-                            num_steps=num_steps,
-                            sampler_type=sampler_type,
-                            clip_x=False,
-                            guidance_weight=0.0,
-                            progress_bar=False,
-                            self_cond=False,
-                        )
-                        sample_list.append(sample_output)
-                    sample_stack = torch.stack(sample_list)
-                    if multiple_generative:
-                        all_preds["softmax_pred_groups"].append(sample_stack)
-                        #all_preds["softmax_pred"].append(sample_stack.mean(dim=0))
-                    else:
-                        for sample in sample_stack:
-                            #all_preds["softmax_pred"].append(sample)
-                            all_preds["softmax_pred_groups"].append(sample.unsqueeze(0))
-                elif au_type == "prob_unet" or getattr(model, "prob_unet_enabled", False):
-                    inputs = batch["data"]
-                    if isinstance(inputs, list):
-                        inputs = inputs[0]
-                    tensor_inputs = inputs.to(self.device).float()
-                    model.forward(tensor_inputs, segm=None, training=False)
-                    logits_stack = model.sample_multiple(self.n_pred, from_prior=True, testing=True)
-                    softmax_stack = torch.softmax(logits_stack, dim=2)
-                    if multiple_generative:
-                        all_preds["softmax_pred_groups"].append(softmax_stack)
-                        #all_preds["softmax_pred"].append(softmax_stack.mean(dim=0))
-                    else:
-                        for sample in softmax_stack:
-                            #all_preds["softmax_pred"].append(sample)
-                            all_preds["softmax_pred_groups"].append(sample.unsqueeze(0))
+                if (
+                    self.same_dropout
+                    and self.same_dropout_member_seeds is not None
+                    and str(getattr(model, "EU_type", "none") or "none").lower() == "dropout"
+                ):
+                    for seed in self.same_dropout_member_seeds:
+                        set_seeded_dropout_seed(model, int(seed))
+                        _run_model_and_append(model)
                 else:
-                    if self.tta:
-                        input_batch = batch["data"]
-                        if isinstance(input_batch, list):
-                            input_batch = input_batch[0]
-
-                        tta_samples = []
-                        for _ in range(self.n_pred):
-                            aug_batch, replays = self.tta_backend.sample_batch(input_batch)
-                            output = model.forward(aug_batch.to(self.device))
-                            output_softmax_pre_inv = F.softmax(output, dim=1)
-                            output_softmax_post_inv = self.tta_backend.invert_prediction_batch(
-                                output_softmax_pre_inv,
-                                replays,
-                            )
-                            tta_samples.append(output_softmax_post_inv)
-
-                        tta_stack = torch.stack(tta_samples, dim=0)
-                        if multiple_generative:
-                            # Match other generative AU branches: keep one grouped tensor per model,
-                            # so AU samples are reduced before saving model-member predictions.
-                            all_preds["softmax_pred_groups"].append(tta_stack)
-                        else:
-                            for sample in tta_stack:
-                                all_preds["softmax_pred_groups"].append(sample.unsqueeze(0))
-                    else:
-                        output = model.forward(batch["data"].to(self.device))
-                        output_softmax = F.softmax(output, dim=1)
-                        #all_preds["softmax_pred"].append(output_softmax)
-                        all_preds["softmax_pred_groups"].append(output_softmax.unsqueeze(0))
+                    _run_model_and_append(model)
         if self.discretize:
             def _discretize(group):
                     return F.one_hot(torch.argmax(group, dim=2), num_classes=group.shape[2]).permute(0, 1, 4, 2, 3).float()
@@ -1271,11 +1415,19 @@ class Tester:
         with open(filename, "w") as f:
             json.dump(self.results_dict, f, indent=2)
 
+    def save_likelihood_dict(self):
+        if not self.save_likelihood:
+            return
+        filename = os.path.join(self.save_dir, "likelihood.json")
+        with open(filename, "w") as f:
+            json.dump(self.likelihood_dict, f, indent=2)
+
     def predict_cases(self):
         for batch in tqdm(self.test_dataloader):
             all_preds = self._build_batch_predictions(batch)
             self.process_output(all_preds)
         self.save_results_dict()
+        self.save_likelihood_dict()
 
 
 def run_test(args: Namespace) -> None:
