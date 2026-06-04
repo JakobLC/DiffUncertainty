@@ -74,9 +74,10 @@ UNSUPPORTED_TTA_GEOMETRIC_TRANSFORMS = [
 
 
 class AlbumentationsTTABackend:
-    def __init__(self, augmentations_cfg):
+    def __init__(self, augmentations_cfg, warn_only_unsupported: bool = False):
+        self.warn_only_unsupported = bool(warn_only_unsupported)
         transforms_cfg = self._extract_train_transforms_cfg(augmentations_cfg)
-        self._validate_geometric_support(transforms_cfg)
+        self._validate_geometric_support(transforms_cfg, self.warn_only_unsupported)
         self.transform_steps = self._build_transform_steps(transforms_cfg)
 
     @staticmethod
@@ -91,7 +92,7 @@ class AlbumentationsTTABackend:
         return transforms_cfg
 
     @staticmethod
-    def _validate_geometric_support(transforms_cfg):
+    def _validate_geometric_support(transforms_cfg, warn_only_unsupported: bool = False):
         for transform_cfg in transforms_cfg:
             if not isinstance(transform_cfg, dict) or not transform_cfg:
                 continue
@@ -100,10 +101,14 @@ class AlbumentationsTTABackend:
                 transform_name in UNSUPPORTED_TTA_GEOMETRIC_TRANSFORMS
                 and transform_name not in SUPPORTED_TTA_GEOMETRIC_TRANSFORMS
             ):
-                raise ValueError(
+                message = (
                     f"TTA encountered unsupported geometric transform '{transform_name}'. "
                     "Only HorizontalFlip, Rotate, RandomScale, and Affine currently support inversion."
                 )
+                if warn_only_unsupported:
+                    warnings.warn(message, category=UserWarning, stacklevel=2)
+                else:
+                    raise ValueError(message)
 
     @staticmethod
     def _build_transform_steps(transforms_cfg):
@@ -238,6 +243,8 @@ class AlbumentationsTTABackend:
                     transformed = transformed[..., None]
                 continue
             if transform_name in UNSUPPORTED_TTA_GEOMETRIC_TRANSFORMS:
+                if self.warn_only_unsupported:
+                    continue
                 raise RuntimeError(
                     f"Unsupported geometric transform '{transform_name}' encountered at replay inversion time."
                 )
@@ -995,6 +1002,7 @@ class Tester:
         )
         n_batch = all_preds["softmax_pred"].shape[1]
         raw_pred_groups = all_preds.get("softmax_pred_groups", [])
+        raw_pred_group_is_generative = all_preds.get("softmax_pred_group_is_generative", [])
         is_lidc_dataset = "lidc" in self.dataset_name.lower()
         for image_idx in range(n_batch):
             image_preds = all_preds["softmax_pred"][:, image_idx]  # (P,C,H,W)
@@ -1041,11 +1049,25 @@ class Tester:
                     image_preds,
                     gt_tensor,
                 )
+                gen_nll = None
+                if raw_pred_groups and raw_pred_group_is_generative:
+                    per_image_groups = [group[:, image_idx] for group in raw_pred_groups]
+                    generative_groups = [
+                        group
+                        for group, is_generative in zip(
+                            per_image_groups, raw_pred_group_is_generative
+                        )
+                        if is_generative
+                    ]
+                    if generative_groups:
+                        gen_samples = torch.cat(generative_groups, dim=0)
+                        gen_nll = self._compute_expected_nll(gen_samples, gt_tensor)
                 self.likelihood_dict[image_id] = {
                     "dataset": all_preds["dataset"][image_idx],
                     "gt_model_NLL": gt_model_nll,
                     "gt_NLL": gt_nll,
                     "mean_NLL": mean_nll,
+                    "gen_NLL": gen_nll,
                 }
             if not self.metrics_only:
                 ignore_index_map_image = ignore_index_map[image_idx][0]
@@ -1098,6 +1120,43 @@ class Tester:
         else:
             mean_nll = 0.0
         return gt_model_nll, gt_nll, mean_nll
+
+    def _compute_expected_nll(self, pred_samples, gt_tensor, eps: float = 1e-12) -> float:
+        if gt_tensor.ndim == 2:
+            gt_tensor = gt_tensor.unsqueeze(0)
+        gt_tensor = gt_tensor.to(pred_samples.device).long()
+
+        log_probs = torch.log(torch.clamp(pred_samples, min=eps))
+        n_samples = pred_samples.shape[0]
+        nll_chunks = []
+
+        for gt_map in gt_tensor:
+            if self.ignore_index >= 0:
+                valid_mask = gt_map != self.ignore_index
+                valid_count = int(valid_mask.sum().item())
+            else:
+                valid_mask = None
+                valid_count = int(gt_map.numel())
+
+            if valid_count == 0:
+                nll_per_sample = torch.zeros(n_samples, device=pred_samples.device)
+            else:
+                gt_idx = gt_map.unsqueeze(0).unsqueeze(0).expand(
+                    n_samples, 1, gt_map.shape[0], gt_map.shape[1]
+                )
+                logp = log_probs.gather(1, gt_idx).squeeze(1)
+                if valid_mask is not None:
+                    mask = valid_mask.unsqueeze(0)
+                    logp = logp * mask
+                    nll_per_sample = -(logp.sum(dim=(1, 2)) / valid_count)
+                else:
+                    nll_per_sample = -(logp.mean(dim=(1, 2)))
+            nll_chunks.append(nll_per_sample)
+
+        if not nll_chunks:
+            return 0.0
+        flat = torch.cat(nll_chunks, dim=0)
+        return float(flat.mean().item())
     def _build_batch_predictions(self, batch):
         gt = batch["seg"]
         if isinstance(gt, torch.Tensor) and gt.ndim == 3:
@@ -1105,10 +1164,15 @@ class Tester:
         all_preds = {
             "softmax_pred": [],
             "softmax_pred_groups": [],
+            "softmax_pred_group_is_generative": [],
             "image_id": batch["image_id"],
             "gt": gt,
             "dataset": batch["dataset"],
         }
+
+        def _append_group(group: torch.Tensor, is_generative: bool) -> None:
+            all_preds["softmax_pred_groups"].append(group)
+            all_preds["softmax_pred_group_is_generative"].append(bool(is_generative))
 
         def _effective_member_count(m) -> int:
             if (
@@ -1150,11 +1214,11 @@ class Tester:
                 )
                 if multiple_generative:
                     softmax_samples = F.softmax(output_samples, dim=2)
-                    all_preds["softmax_pred_groups"].append(softmax_samples)
+                    _append_group(softmax_samples, True)
                 else:
                     for output_sample in output_samples:
                         output_softmax = F.softmax(output_sample, dim=1)
-                        all_preds["softmax_pred_groups"].append(output_softmax.unsqueeze(0))
+                        _append_group(output_softmax.unsqueeze(0), True)
             elif au_type == "diffusion":
                 inputs = batch["data"]
                 if isinstance(inputs, list):
@@ -1182,10 +1246,10 @@ class Tester:
                     sample_list.append(sample_output)
                 sample_stack = torch.stack(sample_list)
                 if multiple_generative:
-                    all_preds["softmax_pred_groups"].append(sample_stack)
+                    _append_group(sample_stack, True)
                 else:
                     for sample in sample_stack:
-                        all_preds["softmax_pred_groups"].append(sample.unsqueeze(0))
+                        _append_group(sample.unsqueeze(0), True)
             elif au_type == "prob_unet" or getattr(model, "prob_unet_enabled", False):
                 inputs = batch["data"]
                 if isinstance(inputs, list):
@@ -1195,10 +1259,10 @@ class Tester:
                 logits_stack = model.sample_multiple(self.n_pred, from_prior=True, testing=True)
                 softmax_stack = torch.softmax(logits_stack, dim=2)
                 if multiple_generative:
-                    all_preds["softmax_pred_groups"].append(softmax_stack)
+                    _append_group(softmax_stack, True)
                 else:
                     for sample in softmax_stack:
-                        all_preds["softmax_pred_groups"].append(sample.unsqueeze(0))
+                        _append_group(sample.unsqueeze(0), True)
             else:
                 if self.tta:
                     input_batch = batch["data"]
@@ -1218,14 +1282,14 @@ class Tester:
 
                     tta_stack = torch.stack(tta_samples, dim=0)
                     if multiple_generative:
-                        all_preds["softmax_pred_groups"].append(tta_stack)
+                        _append_group(tta_stack, False)
                     else:
                         for sample in tta_stack:
-                            all_preds["softmax_pred_groups"].append(sample.unsqueeze(0))
+                            _append_group(sample.unsqueeze(0), False)
                 else:
                     output = model.forward(batch["data"].to(self.device))
                     output_softmax = F.softmax(output, dim=1)
-                    all_preds["softmax_pred_groups"].append(output_softmax.unsqueeze(0))
+                    _append_group(output_softmax.unsqueeze(0), False)
 
         for model in self.models:
             #print("allpreds groups shape:", all_preds["softmax_pred_groups"][-1].shape if all_preds["softmax_pred_groups"] else "N/A")

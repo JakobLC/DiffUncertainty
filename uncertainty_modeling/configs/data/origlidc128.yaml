@@ -19,15 +19,8 @@ data:
     _target_: uncertainty_modeling.data.lidc2d_dataset.MultiRater2DDataset
     splits_path: "${data.data_input_dir}/splits/${data.split_name}/firstCycle/splits.pkl"
   augmentations:
-    rotation_limit: 22.5
-    scale_limit: [ -0.2, 0.2 ]
-    mean: [ 0.485, 0.456, 0.406 ]
-    std: [ 0.229, 0.224, 0.225 ]
-    border_mode: 0
-    mask_value: 0
     height: 128
     width: 128
-    gauss_noise_var_limit: [0.2, 0.44]
     augment_mult: 0.0
     apply_mult_keys: ["HorizontalFlip.p", "Rotate.limit", "RandomScale.scale_limit", "GaussNoise.var_limit"]
     TRAIN:
@@ -36,34 +29,31 @@ data:
             - HorizontalFlip:
                 p: 0.5
             - Rotate:
-                limit: ${data.augmentations.rotation_limit}
-                border_mode: ${data.augmentations.border_mode}
-                mask_value: ${data.augmentations.mask_value}
+                limit: 22.5
+                border_mode: 0
+                mask_value: 0
             - RandomScale:
-                scale_limit: ${data.augmentations.scale_limit}
+                scale_limit: [ -0.2, 0.2 ]
                 p: 1.0
             - PadIfNeeded:
-                min_height: ${data.augmentations.height}
-                min_width: ${data.augmentations.width}
-                border_mode: ${data.augmentations.border_mode}
-                mask_value: ${data.augmentations.mask_value}
+                min_height: 128
+                min_width: 128
+                border_mode: 0
+                mask_value: 0
             - CenterCrop:
-                height: ${data.augmentations.height}
-                width: ${data.augmentations.width}
+                height: 128
+                width: 128
             - GaussNoise:
-                var_limit: ${data.augmentations.gauss_noise_var_limit}
+                var_limit: [0.0, 0.03]
                 p: 0.5
-            - Normalize:
-                mean: ${data.augmentations.mean}
-                std: ${data.augmentations.std}
-                max_pixel_value: 1.0
+                per_channel: false
+            - SampleNormalize:
+                eps: 1e-6
             - ToTensorV2:
     VALIDATION:
       - Compose:
           transforms:
-            - Normalize:
-                mean: ${data.augmentations.mean}
-                std: ${data.augmentations.std}
-                max_pixel_value: 1.0
+            - SampleNormalize:
+                eps: 1e-6
             - ToTensorV2:
     TEST: ${data.augmentations.VALIDATION}

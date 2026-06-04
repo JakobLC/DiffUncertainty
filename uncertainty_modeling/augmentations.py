@@ -218,7 +218,12 @@ class MaskOnlyElasticTransform(A.DualTransform):
         return self._elastic.apply_to_mask(mask, **params)
 
     def get_params_dependent_on_targets(self, params: Dict[str, Any]) -> Dict[str, Any]:
-        return self._elastic.get_params_dependent_on_targets(params)
+        if hasattr(self._elastic, "get_params_dependent_on_targets"):
+            try:
+                return self._elastic.get_params_dependent_on_targets(params)
+            except NotImplementedError:
+                pass
+        return self._elastic.get_params()
 
     def get_transform_init_args_names(self):
         return self._elastic.get_transform_init_args_names()

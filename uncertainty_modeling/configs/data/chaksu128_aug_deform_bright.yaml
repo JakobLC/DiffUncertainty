@@ -29,6 +29,7 @@ data:
         - Compose:
             transforms:
             - IntensityGuidedSDFDeform:
+                p: 0.8
             - SampleNormalize:
                 eps: 1e-6
             - ToTensorV2:

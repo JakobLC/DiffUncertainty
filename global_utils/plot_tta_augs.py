@@ -25,7 +25,8 @@ def _parse_args():
         )
     )
     parser.add_argument("--tta_yaml", 
-                        default="/home/jloch/Desktop/diff/luzern/values/uncertainty_modeling/configs/data/TTA_chaksu128_strong.yaml",
+                        #default="/home/jloch/Desktop/diff/luzern/values/uncertainty_modeling/configs/data/TTA_chaksu128_strong.yaml",
+                        default = "/home/jloch/Desktop/diff/luzern/values/uncertainty_modeling/configs/data/chaksu128_aug_weak.yaml",
                         type=str, help="Path to TTA YAML config.")
     parser.add_argument(
         "--split",
@@ -59,16 +60,30 @@ def _load_yaml_cfg(path: str):
     data_cfg = OmegaConf.to_container(cfg.data, resolve=True)
 
     aug_cfg = None
+    aug_path = None
     if "data" in cfg and "augmentations" in cfg.data:
         aug_cfg = cfg.data.augmentations
+        aug_path = ("data", "augmentations")
     elif "augmentations" in cfg:
         aug_cfg = cfg.augmentations
+        aug_path = ("augmentations",)
     else:
         raise ValueError("Expected TTA YAML to include either data.augmentations or augmentations.")
 
     aug_cfg_copy = OmegaConf.create(copy.deepcopy(aug_cfg))
     aug_cfg_copy = apply_augment_mult(aug_cfg_copy)
-    aug_cfg_resolved = OmegaConf.to_container(aug_cfg_copy, resolve=True)
+
+    cfg_copy = OmegaConf.create(copy.deepcopy(cfg))
+    if aug_path == ("data", "augmentations"):
+        cfg_copy.data.augmentations = aug_cfg_copy
+    else:
+        cfg_copy.augmentations = aug_cfg_copy
+
+    cfg_resolved = OmegaConf.to_container(cfg_copy, resolve=True)
+    if aug_path == ("data", "augmentations"):
+        aug_cfg_resolved = cfg_resolved["data"]["augmentations"]
+    else:
+        aug_cfg_resolved = cfg_resolved["augmentations"]
     return data_cfg, aug_cfg_resolved
 
 
@@ -213,7 +228,7 @@ def main():
         raise RuntimeError(f"Dataset split '{args.split}' is empty.")
 
     num_classes = int(data_cfg.get("num_classes", 2))
-    tta_backend = AlbumentationsTTABackend(augmentations_cfg)
+    tta_backend = AlbumentationsTTABackend(augmentations_cfg, warn_only_unsupported=True)
 
     indices = _sample_indices(len(dataset), args.batch_size, args.seed)
 

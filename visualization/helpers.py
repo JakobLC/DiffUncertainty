@@ -343,7 +343,8 @@ def load_result_table(epochs=[500,1000],
                 mean_seeded_table=None,
                 std_seeded_table=None,
                 amb_cal_2 = False,
-                load_all_epochs: bool = False,):
+                load_all_epochs: bool = False,
+                raise_error_on_missing = False):
     def _mean_agg_max_score(aggr_data, aggr_type):
         sample = next(iter(aggr_data.values()))
         if aggr_type not in sample:
@@ -351,6 +352,18 @@ def load_result_table(epochs=[500,1000],
                 f"Aggregation type '{aggr_type}' missing in aggregated data. Available: {list(sample.keys())}"
             )
         return float(np.mean([item[aggr_type]["max_score"] for item in aggr_data.values()]))
+
+    def _mean_likelihood_nll(likelihood_path: Path, ignore_nan : bool = True) -> float:
+        if not likelihood_path.exists():
+            return float("nan")
+        with open(likelihood_path, "r") as f:
+            likelihood = json.load(f)
+        if not likelihood:
+            return float("nan")
+        nll_values = [item["mean_NLL"] for item in likelihood.values()]
+        if ignore_nan:
+            nll_values = [x for x in nll_values if not np.isnan(x)]
+        return float(np.mean(nll_values))
 
     if mean_seeded_table or std_seeded_table:
         kwargs = copy.deepcopy(locals())
@@ -380,7 +393,6 @@ def load_result_table(epochs=[500,1000],
         ace = ace_type
     table = pd.DataFrame()
     first_aggr_check = True
-    save_path_orig = save_path
     def _find_available_epochs(version_dir: Path, ema_suffix: str) -> List[int]:
         if not version_dir.exists():
             return []
@@ -438,142 +450,158 @@ def load_result_table(epochs=[500,1000],
             print("Skipping version with no matching epochs:", version)
             continue
         for epoch in epochs_to_load:
-            row = add_dict.copy()
-            row["version"] = version
-            row["epoch"] = int(epoch)
-            p = f"{save_path}{version}/e{epoch}{ema}/val/metrics.json"
-            with open(p, "r") as f:
-                loaded = json.load(f)
-            row["DICE_val"] = loaded["mean"]["metrics"]["dice"]
-            if row["EU"] == "none":# swap
-                row["GED_val"] = loaded["mean"]["metrics"]["ged_bma"]
-                row["GED_BMA_val"] = loaded["mean"]["metrics"]["ged"]
-            else:
-                row["GED_val"] = loaded["mean"]["metrics"]["ged"]
-                row["GED_BMA_val"] = loaded["mean"]["metrics"]["ged_bma"]
+            try:
 
-            p = f"{save_path}{version}/e{epoch}{ema}/id/metrics.json"
-            with open(p, "r") as f:
-                loaded = json.load(f)
-            row["DICE_id"] = loaded["mean"]["metrics"]["dice"]
-            if row["EU"] == "none":# swap
-                row["GED_id"] = loaded["mean"]["metrics"]["ged_bma"]
-                row["GED_BMA_id"] = loaded["mean"]["metrics"]["ged"]
-            else:
-                row["GED_id"] = loaded["mean"]["metrics"]["ged"]
-                row["GED_BMA_id"] = loaded["mean"]["metrics"]["ged_bma"]
-
-            p = f"{save_path}{version}/e{epoch}{ema}/id/{amb}"
-            with open(p, "r") as f:
-                loaded = json.load(f)
-            row["EU_ncc_id"] = loaded["mean"][EU]["metrics"]["ncc"]
-            row["AU_ncc_id"] = loaded["mean"][AU]["metrics"]["ncc"]
-            row["TU_ncc_id"] = loaded["mean"][TU]["metrics"]["ncc"]
-            p = f"{save_path}{version}/e{epoch}{ema}/id/{cal}"
-            with open(p, "r") as f:
-                loaded = json.load(f)
-            row["EU_ace_id"] = loaded["mean"][EU]["metrics"][ace]
-            row["AU_ace_id"] = loaded["mean"][AU]["metrics"][ace]
-            row["TU_ace_id"] = loaded["mean"][TU]["metrics"][ace]
-            p = f"{save_path}{version}/e{epoch}{ema}/ood_detection.json"
-            with open(p, "r") as f:
-                loaded = json.load(f)
-            if is_ood_aug:
-                for k in loaded.keys():
-                    k2 = k.replace("id&","")
-                    if first_aggr_check:
-                        avail_aggr_types = loaded[k]["mean"][EU].keys()
-                        assert aggregation_type in avail_aggr_types, f"{aggregation_type} Invalid aggregation type, available: {avail_aggr_types}"
-                        first_aggr_check = False
-                    row[f"EU_auc_{k2}"] = loaded[k]["mean"][EU][aggregation_type]["metrics"]["auroc"]
-                    row[f"AU_auc_{k2}"] = loaded[k]["mean"][AU][aggregation_type]["metrics"]["auroc"]
-                    row[f"TU_auc_{k2}"] = loaded[k]["mean"][TU][aggregation_type]["metrics"]["auroc"]
-
-                for p in Path(f"{save_path}{version}/e{epoch}{ema}").glob("ood*/metrics.json"):
-                    k2 = p.parts[-2]
-                    with open(p, "r") as f:
-                        loaded = json.load(f)
-                    row[f"DICE_{k2}"] = loaded["mean"]["metrics"]["dice"]
-                    if row["EU"] == "none":
-                        row[f"GED_{k2}"] = loaded["mean"]["metrics"]["ged_bma"]
-                        row[f"GED_BMA_{k2}"] = loaded["mean"]["metrics"]["ged"]
-                    else:
-                        row[f"GED_{k2}"] = loaded["mean"]["metrics"]["ged"]
-                        row[f"GED_BMA_{k2}"] = loaded["mean"]["metrics"]["ged_bma"]
-
-                aggr_means = defaultdict(dict)
-                for p in Path(f"{save_path}{version}/e{epoch}{ema}").glob("ood*/aggregated_*.json"):
-                    k2 = p.parts[-2]
-                    with open(p, "r") as f:
-                        aggr_data = json.load(f)
-                    unc_key = p.stem.split("aggregated_")[-1]
-                    aggr_means[k2][unc_key] = _mean_agg_max_score(aggr_data, aggregation_type)
-                for p in Path(f"{save_path}{version}/e{epoch}{ema}/id").glob("aggregated_*.json"):
-                    with open(p, "r") as f:
-                        aggr_data = json.load(f)
-                    unc_key = p.stem.split("aggregated_")[-1]
-                    aggr_means["id"][unc_key] = _mean_agg_max_score(aggr_data, aggregation_type)
-                for k2, unc_map in aggr_means.items():
-                    if AU in unc_map:
-                        row[f"AU_mean_{k2}"] = unc_map[AU]
-                    if EU in unc_map:
-                        row[f"EU_mean_{k2}"] = unc_map[EU]
-                    if TU in unc_map:
-                        row[f"TU_mean_{k2}"] = unc_map[TU]
-                    if AU in unc_map and EU in unc_map:
-                        row[f"EU/AU_mean_{k2}"] = unc_map[EU] / unc_map[AU]
-
-                for p in Path(f"{save_path}{version}/e{epoch}{ema}").glob("ood*/" + amb):
-                    k2 = p.parts[-2]
-                    with open(p, "r") as f:
-                        loaded = json.load(f)
-                    row[f"EU_ncc_{k2}"] = loaded["mean"][EU]["metrics"]["ncc"]
-                    row[f"AU_ncc_{k2}"] = loaded["mean"][AU]["metrics"]["ncc"]
-                    row[f"TU_ncc_{k2}"] = loaded["mean"][TU]["metrics"]["ncc"]
-                for p in Path(f"{save_path}{version}/e{epoch}{ema}").glob("ood*/" + cal):
-                    k2 = p.parts[-2]
-                    with open(p, "r") as f:
-                        loaded = json.load(f)
-                    row[f"EU_ace_{k2}"] = loaded["mean"][EU]["metrics"][ace]
-                    row[f"AU_ace_{k2}"] = loaded["mean"][AU]["metrics"][ace]
-                    row[f"TU_ace_{k2}"] = loaded["mean"][TU]["metrics"][ace]
-            else:
-                row["EU_auc"] = loaded["mean"][EU][aggregation_type]["metrics"]["auroc"]
-                row["AU_auc"] = loaded["mean"][AU][aggregation_type]["metrics"]["auroc"]
-                row["TU_auc"] = loaded["mean"][TU][aggregation_type]["metrics"]["auroc"]
-                p = f"{save_path}{version}/e{epoch}{ema}/ood/metrics.json"
-                with open(p, "r") as f:
-                    loaded = json.load(f)
-                row["DICE_ood"] = loaded["mean"]["metrics"]["dice"]
-                if row["EU"] == "none":
-                    row["GED_ood"] = loaded["mean"]["metrics"]["ged_bma"]
-                    row["GED_BMA_ood"] = loaded["mean"]["metrics"]["ged"]
+                row = add_dict.copy()
+                if "EU" in row:
+                    swap_criteria = row["EU"] == "none"
                 else:
-                    row["GED_ood"] = loaded["mean"]["metrics"]["ged"]
-                    row["GED_BMA_ood"] = loaded["mean"]["metrics"]["ged_bma"]
-                p = f"{save_path}{version}/e{epoch}{ema}/ood/{amb}"
+                    swap_criteria = False
+                row["version"] = version
+                row["epoch"] = int(epoch)
+                p = f"{save_path}{version}/e{epoch}{ema}/val/metrics.json"
                 with open(p, "r") as f:
                     loaded = json.load(f)
-                row["EU_ncc_ood"] = loaded["mean"][EU]["metrics"]["ncc"]
-                row["AU_ncc_ood"] = loaded["mean"][AU]["metrics"]["ncc"]
-                row["TU_ncc_ood"] = loaded["mean"][TU]["metrics"]["ncc"]
-                p = f"{save_path}{version}/e{epoch}{ema}/ood/{cal}"
+                row["DICE_val"] = loaded["mean"]["metrics"]["dice"]
+                row["NLL_val"] = _mean_likelihood_nll(Path(p).with_name("likelihood.json"))
+                if swap_criteria:# swap
+                    row["GED_val"] = loaded["mean"]["metrics"]["ged_bma"]
+                    row["GED_BMA_val"] = loaded["mean"]["metrics"]["ged"]
+                else:
+                    row["GED_val"] = loaded["mean"]["metrics"]["ged"]
+                    row["GED_BMA_val"] = loaded["mean"]["metrics"]["ged_bma"]
+
+                p = f"{save_path}{version}/e{epoch}{ema}/id/metrics.json"
                 with open(p, "r") as f:
                     loaded = json.load(f)
-                row["EU_ace_ood"] = loaded["mean"][EU]["metrics"][ace]
-                row["AU_ace_ood"] = loaded["mean"][AU]["metrics"][ace]
-                row["TU_ace_ood"] = loaded["mean"][TU]["metrics"][ace]
-                aggr_means = {}
-                for p in Path(f"{save_path}{version}/e{epoch}{ema}/ood").glob("aggregated_*.json"):
+                row["DICE_id"] = loaded["mean"]["metrics"]["dice"]
+                row["NLL_id"] = _mean_likelihood_nll(Path(p).with_name("likelihood.json"))
+                if swap_criteria:# swap
+                    row["GED_id"] = loaded["mean"]["metrics"]["ged_bma"]
+                    row["GED_BMA_id"] = loaded["mean"]["metrics"]["ged"]
+                else:
+                    row["GED_id"] = loaded["mean"]["metrics"]["ged"]
+                    row["GED_BMA_id"] = loaded["mean"]["metrics"]["ged_bma"]
+
+                p = f"{save_path}{version}/e{epoch}{ema}/id/{amb}"
+                with open(p, "r") as f:
+                    loaded = json.load(f)
+                row["EU_ncc_id"] = loaded["mean"][EU]["metrics"]["ncc"]
+                row["AU_ncc_id"] = loaded["mean"][AU]["metrics"]["ncc"]
+                row["TU_ncc_id"] = loaded["mean"][TU]["metrics"]["ncc"]
+                p = f"{save_path}{version}/e{epoch}{ema}/id/{cal}"
+                with open(p, "r") as f:
+                    loaded = json.load(f)
+                row["EU_ace_id"] = loaded["mean"][EU]["metrics"][ace]
+                row["AU_ace_id"] = loaded["mean"][AU]["metrics"][ace]
+                row["TU_ace_id"] = loaded["mean"][TU]["metrics"][ace]
+                p = f"{save_path}{version}/e{epoch}{ema}/ood_detection.json"
+                with open(p, "r") as f:
+                    loaded = json.load(f)
+                if is_ood_aug:
+                    for k in loaded.keys():
+                        k2 = k.replace("id&","")
+                        if first_aggr_check:
+                            avail_aggr_types = loaded[k]["mean"][EU].keys()
+                            assert aggregation_type in avail_aggr_types, f"{aggregation_type} Invalid aggregation type, available: {avail_aggr_types}"
+                            first_aggr_check = False
+                        row[f"EU_auc_{k2}"] = loaded[k]["mean"][EU][aggregation_type]["metrics"]["auroc"]
+                        row[f"AU_auc_{k2}"] = loaded[k]["mean"][AU][aggregation_type]["metrics"]["auroc"]
+                        row[f"TU_auc_{k2}"] = loaded[k]["mean"][TU][aggregation_type]["metrics"]["auroc"]
+
+                    for p in Path(f"{save_path}{version}/e{epoch}{ema}").glob("ood*/metrics.json"):
+                        k2 = p.parts[-2]
+                        with open(p, "r") as f:
+                            loaded = json.load(f)
+                        row[f"DICE_{k2}"] = loaded["mean"]["metrics"]["dice"]
+                        row[f"NLL_{k2}"] = _mean_likelihood_nll(p.with_name("likelihood.json"))
+                        if swap_criteria:
+                            row[f"GED_{k2}"] = loaded["mean"]["metrics"]["ged_bma"]
+                            row[f"GED_BMA_{k2}"] = loaded["mean"]["metrics"]["ged"]
+                        else:
+                            row[f"GED_{k2}"] = loaded["mean"]["metrics"]["ged"]
+                            row[f"GED_BMA_{k2}"] = loaded["mean"]["metrics"]["ged_bma"]
+
+                    aggr_means = defaultdict(dict)
+                    for p in Path(f"{save_path}{version}/e{epoch}{ema}").glob("ood*/aggregated_*.json"):
+                        k2 = p.parts[-2]
+                        with open(p, "r") as f:
+                            aggr_data = json.load(f)
+                        unc_key = p.stem.split("aggregated_")[-1]
+                        aggr_means[k2][unc_key] = _mean_agg_max_score(aggr_data, aggregation_type)
+                    for p in Path(f"{save_path}{version}/e{epoch}{ema}/id").glob("aggregated_*.json"):
+                        with open(p, "r") as f:
+                            aggr_data = json.load(f)
+                        unc_key = p.stem.split("aggregated_")[-1]
+                        aggr_means["id"][unc_key] = _mean_agg_max_score(aggr_data, aggregation_type)
+                    for k2, unc_map in aggr_means.items():
+                        if AU in unc_map:
+                            row[f"AU_mean_{k2}"] = unc_map[AU]
+                        if EU in unc_map:
+                            row[f"EU_mean_{k2}"] = unc_map[EU]
+                        if TU in unc_map:
+                            row[f"TU_mean_{k2}"] = unc_map[TU]
+                        if AU in unc_map and EU in unc_map:
+                            row[f"EU/AU_mean_{k2}"] = unc_map[EU] / unc_map[AU]
+
+                    for p in Path(f"{save_path}{version}/e{epoch}{ema}").glob("ood*/" + amb):
+                        k2 = p.parts[-2]
+                        with open(p, "r") as f:
+                            loaded = json.load(f)
+                        row[f"EU_ncc_{k2}"] = loaded["mean"][EU]["metrics"]["ncc"]
+                        row[f"AU_ncc_{k2}"] = loaded["mean"][AU]["metrics"]["ncc"]
+                        row[f"TU_ncc_{k2}"] = loaded["mean"][TU]["metrics"]["ncc"]
+                    for p in Path(f"{save_path}{version}/e{epoch}{ema}").glob("ood*/" + cal):
+                        k2 = p.parts[-2]
+                        with open(p, "r") as f:
+                            loaded = json.load(f)
+                        row[f"EU_ace_{k2}"] = loaded["mean"][EU]["metrics"][ace]
+                        row[f"AU_ace_{k2}"] = loaded["mean"][AU]["metrics"][ace]
+                        row[f"TU_ace_{k2}"] = loaded["mean"][TU]["metrics"][ace]
+                else:
+                    row["EU_auc"] = loaded["mean"][EU][aggregation_type]["metrics"]["auroc"]
+                    row["AU_auc"] = loaded["mean"][AU][aggregation_type]["metrics"]["auroc"]
+                    row["TU_auc"] = loaded["mean"][TU][aggregation_type]["metrics"]["auroc"]
+                    p = f"{save_path}{version}/e{epoch}{ema}/ood/metrics.json"
                     with open(p, "r") as f:
-                        aggr_data = json.load(f)
-                    unc_key = p.stem.split("aggregated_")[-1]
-                    aggr_means[unc_key] = _mean_agg_max_score(aggr_data, aggregation_type)
-                row["AU_mean"] = aggr_means[AU]
-                row["EU_mean"] = aggr_means[EU]
-                row["TU_mean"] = aggr_means[TU]
-                row["EU/AU_mean"] = aggr_means[EU] / aggr_means[AU]
-            table = pd.concat([table, pd.DataFrame([row])], ignore_index=True)
+                        loaded = json.load(f)
+                    row["DICE_ood"] = loaded["mean"]["metrics"]["dice"]
+                    row["NLL_ood"] = _mean_likelihood_nll(Path(p).with_name("likelihood.json"))
+                    if swap_criteria:
+                        row["GED_ood"] = loaded["mean"]["metrics"]["ged_bma"]
+                        row["GED_BMA_ood"] = loaded["mean"]["metrics"]["ged"]
+                    else:
+                        row["GED_ood"] = loaded["mean"]["metrics"]["ged"]
+                        row["GED_BMA_ood"] = loaded["mean"]["metrics"]["ged_bma"]
+                    p = f"{save_path}{version}/e{epoch}{ema}/ood/{amb}"
+                    with open(p, "r") as f:
+                        loaded = json.load(f)
+                    row["EU_ncc_ood"] = loaded["mean"][EU]["metrics"]["ncc"]
+                    row["AU_ncc_ood"] = loaded["mean"][AU]["metrics"]["ncc"]
+                    row["TU_ncc_ood"] = loaded["mean"][TU]["metrics"]["ncc"]
+                    p = f"{save_path}{version}/e{epoch}{ema}/ood/{cal}"
+                    with open(p, "r") as f:
+                        loaded = json.load(f)
+                    row["EU_ace_ood"] = loaded["mean"][EU]["metrics"][ace]
+                    row["AU_ace_ood"] = loaded["mean"][AU]["metrics"][ace]
+                    row["TU_ace_ood"] = loaded["mean"][TU]["metrics"][ace]
+                    aggr_means = {}
+                    for p in Path(f"{save_path}{version}/e{epoch}{ema}/ood").glob("aggregated_*.json"):
+                        with open(p, "r") as f:
+                            aggr_data = json.load(f)
+                        unc_key = p.stem.split("aggregated_")[-1]
+                        aggr_means[unc_key] = _mean_agg_max_score(aggr_data, aggregation_type)
+                    row["AU_mean"] = aggr_means[AU]
+                    row["EU_mean"] = aggr_means[EU]
+                    row["TU_mean"] = aggr_means[TU]
+                    row["EU/AU_mean"] = aggr_means[EU] / aggr_means[AU]
+                table = pd.concat([table, pd.DataFrame([row])], ignore_index=True)
+            except (FileNotFoundError, json.JSONDecodeError, KeyError) as exc:
+                if raise_error_on_missing:
+                    raise RuntimeError(f"Error loading results for {version} e{epoch}{ema}: {exc}") from exc
+                else:
+                    print(f"Skipping missing/incomplete results for {version} e{epoch}{ema}: {exc}")
+                    continue
     #raise error incase table is empty
     if table.empty:
         raise ValueError(f"Result table is empty. Check if the specified epoch and save_path are correct. Current save_path: {save_path}")
@@ -658,7 +686,8 @@ def load_result_table(epochs=[500,1000],
         table["PERFRANK_ace"] = to_rank(table["TU_ace"],ascending=True).apply(lambda x: x["ood"]*0.5+x["id"]*0.5)
         table["PERFRANK_avg"] = (table["PERFRANK_auc"] + table["PERFRANK_ncc"] + table["PERFRANK_ace"]) / 3
     #replace all AU prob_unet2 -> prob_unet
-    table["AU"] = table["AU"].apply(lambda x: x.replace("prob_unet2", "prob_unet"))
+    if "AU" in table.columns:
+        table["AU"] = table["AU"].apply(lambda x: x.replace("prob_unet2", "prob_unet"))
     return table
 
 def entangle_metric(Uc,Uw,lower_is_better=False):

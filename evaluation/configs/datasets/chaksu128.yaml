@@ -9,13 +9,35 @@ data:
   data_input_dir: ${data_input_dir}
 base_splits_path: "/home/jloch/Desktop/diff/luzern/values_datasets/chaksu128/splits"
 experiments:
-  - ${SINGLE_RATER_DROPOUT_AUG}
+  - ${SINGLE_RATER_AUG_SWEEP}
 
+SINGLE_RATER_AUG_SWEEP:
+  iter_params:
+    shift: [ "scanner" ]
+    pred_model: [ "softmax", "diffusion", "ssn", "prob_unet" ]
+    aug: [ "strong", "deform_both", "deform_mask", "deform_bright", "strong_geo", "strong_pixel" ]
+    eu_method: ["dropout"]
+    seed: [ "120" ]
+    seed1: [ "0" ]
+    cfg: [ "standard" ]
+    data: [ "chaksu128" ]
+    epochs: [ "10", "20", "40", "80", "160", "320" ]
+  skip_missing: true
+  exp_name: "single_rater_chaksu"
+  naming_scheme_version: "aug:{aug}_{pred_model}_{eu_method}_{seed1}/e{epochs}_ema"
+  aggregations: [ "all" ]
+  fold: 0
+  rank: 5
+  image_ending: ".png"
+  unc_ending: ".tif"
+  n_reference_segs: 5
+  only_pu: false
+  evaluate_training_data: ${evaluate_training_data}
 
 SINGLE_RATER_DROPOUT_AUG:
   iter_params:
     shift: [ "scanner" ]
-    pred_model: ["diffusion"] # "ssn", "prob_unet", "softmax"
+    pred_model: ["prob_unet"] # "ssn", "prob_unet", "softmax", "diffusion"
     aug: [ "0.1", "0.2", "0.4", "0.6", "0.8", "1.0" ]
     eu_method: ["dropout"]
     seed: [ "120" ]
@@ -103,13 +125,13 @@ SINGLE_RATER_DROPOUT:
 EPOCHS:
   iter_params:
     shift: [ "scanner" ]
-    pred_model: ["softmax"]
+    pred_model: ["ssn", "diffusion", "prob_unet"] # "softmax"
     seed: [ "120" ]
     seed1: [ "0" ]
     eu: ["dropout"]
     cfg: [ "standard" ]
     data: [ "chaksu128" ]
-    epochs: [ "10", "20", "40", "80", "160", "320", "500" ]
+    epochs: [ "10", "20", "40", "80", "160", "320" ]
   skip_missing: true
   exp_name: "chaksu128"
   naming_scheme_version: "epochs_{pred_model}_{eu}_{seed1}/e{epochs}_ema"
