@@ -99,7 +99,7 @@ def parse_args() -> argparse.Namespace:
 	parser.add_argument(
 		"--disc-crop-dia",
 		type=float,
-		default=0.0,
+		default=2.0,
 		help=(
 			"If >0, override --rel-sidelength and crop using disc_crop_dia * MEAN_DISC_DIAM[machine]. "
 			"For example, disc_crop_dia=2 uses a side length equal to twice the mean disc diameter (four times the mean radius)."

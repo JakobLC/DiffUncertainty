@@ -22,10 +22,6 @@ FIRST_SWEEP:
   exp_name: "chaksu64"
   naming_scheme_version: "{pred_model}_{eu}/e640_ema"
   aggregations: [ "all" ]
-  fold: 0
-  rank: 5
-  image_ending: ".png"
-  unc_ending: ".tif"
-  n_reference_segs: 5
+  n_reference_segs: null
   only_pu: false
   evaluate_training_data: ${evaluate_training_data}

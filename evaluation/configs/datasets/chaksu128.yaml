@@ -14,15 +14,16 @@ experiments:
 SINGLE_RATER_AUG_SWEEP:
   iter_params:
     shift: [ "scanner" ]
-    pred_model: [ "softmax", "diffusion", "ssn", "prob_unet" ]
-    aug: [ "strong", "deform_both", "deform_mask", "deform_bright", "strong_geo", "strong_pixel" ]
+    pred_model: [ "softmax", "diffusion", "prob_unet" ] #SSN MISSING§!
+    aug: ["_aug_bonkers"] #[ "strong", "deform_both", "deform_mask", "deform_bright", "strong_geo", "strong_pixel" ]
     eu_method: ["dropout"]
     seed: [ "120" ]
     seed1: [ "0" ]
     cfg: [ "standard" ]
     data: [ "chaksu128" ]
     epochs: [ "10", "20", "40", "80", "160", "320" ]
-  skip_missing: true
+  skip_missing: False
+  skip_finished: true
   exp_name: "single_rater_chaksu"
   naming_scheme_version: "aug:{aug}_{pred_model}_{eu_method}_{seed1}/e{epochs}_ema"
   aggregations: [ "all" ]
@@ -30,7 +31,7 @@ SINGLE_RATER_AUG_SWEEP:
   rank: 5
   image_ending: ".png"
   unc_ending: ".tif"
-  n_reference_segs: 5
+  n_reference_segs: null
   only_pu: false
   evaluate_training_data: ${evaluate_training_data}
 
@@ -53,7 +54,7 @@ SINGLE_RATER_DROPOUT_AUG:
   rank: 5
   image_ending: ".png"
   unc_ending: ".tif"
-  n_reference_segs: 5
+  n_reference_segs: null
   only_pu: false
   evaluate_training_data: ${evaluate_training_data}
 
@@ -74,7 +75,7 @@ SINGLE_RATER_ENSEMBLE:
   rank: 5
   image_ending: ".png"
   unc_ending: ".tif"
-  n_reference_segs: 5
+  n_reference_segs: null
   only_pu: false
   evaluate_training_data: ${evaluate_training_data}
 
@@ -95,7 +96,7 @@ CLEANUP_ALL:
   rank: 5
   image_ending: ".png"
   unc_ending: ".tif"
-  n_reference_segs: 5
+  n_reference_segs: null
   only_pu: false
   evaluate_training_data: ${evaluate_training_data}
 
@@ -118,7 +119,7 @@ SINGLE_RATER_DROPOUT:
   rank: 5
   image_ending: ".png"
   unc_ending: ".tif"
-  n_reference_segs: 5
+  n_reference_segs: null
   only_pu: false
   evaluate_training_data: ${evaluate_training_data}
 
@@ -140,7 +141,7 @@ EPOCHS:
   rank: 5
   image_ending: ".png"
   unc_ending: ".tif"
-  n_reference_segs: 5
+  n_reference_segs: null
   only_pu: false
   evaluate_training_data: ${evaluate_training_data}
 
@@ -162,7 +163,7 @@ SAME_DROPOUT:
   rank: 5
   image_ending: ".png"
   unc_ending: ".tif"
-  n_reference_segs: 5
+  n_reference_segs: null
   only_pu: false
   evaluate_training_data: ${evaluate_training_data}
 
@@ -184,7 +185,7 @@ N_PRED_SWEEP_ALL:
   rank: 5
   image_ending: ".png"
   unc_ending: ".tif"
-  n_reference_segs: 5
+  n_reference_segs: null
   only_pu: false
   evaluate_training_data: ${evaluate_training_data}
 
@@ -205,7 +206,7 @@ DROPOUT_SSN:
   rank: 5
   image_ending: ".png"
   unc_ending: ".tif"
-  n_reference_segs: 5
+  n_reference_segs: null
   only_pu: false
   evaluate_training_data: ${evaluate_training_data}
 
@@ -225,7 +226,7 @@ EXTRACT_DROPOUT:
   rank: 5
   image_ending: ".png"
   unc_ending: ".tif"
-  n_reference_segs: 5
+  n_reference_segs: null
   only_pu: false
   evaluate_training_data: ${evaluate_training_data}
 
@@ -248,7 +249,7 @@ EXTRACT_SOFTMAX:
   rank: 5
   image_ending: ".png"
   unc_ending: ".tif"
-  n_reference_segs: 5
+  n_reference_segs: null
   only_pu: false
   evaluate_training_data: ${evaluate_training_data}
 
@@ -270,7 +271,7 @@ TTA_TESTS:
   rank: 5
   image_ending: ".png"
   unc_ending: ".tif"
-  n_reference_segs: 5
+  n_reference_segs: null
   only_pu: false
   evaluate_training_data: ${evaluate_training_data}
 
@@ -292,7 +293,7 @@ DROPOUT_CHAKSU_SWEEP:
   rank: 5
   image_ending: ".png"
   unc_ending: ".tif"
-  n_reference_segs: 5
+  n_reference_segs: null
   only_pu: false
   evaluate_training_data: ${evaluate_training_data}
 
@@ -312,7 +313,7 @@ SUBENS:
   rank: 5
   image_ending: ".png"
   unc_ending: ".tif"
-  n_reference_segs: 5
+  n_reference_segs: null
   only_pu: false
   evaluate_training_data: ${evaluate_training_data}
 
@@ -333,7 +334,7 @@ DROPOUT_SWEEP:
   rank: 5
   image_ending: ".png"
   unc_ending: ".tif"
-  n_reference_segs: 5
+  n_reference_segs: null
   only_pu: false
   evaluate_training_data: ${evaluate_training_data}
 
@@ -354,7 +355,7 @@ SWEEP_NONE:
   rank: 5
   image_ending: ".png"
   unc_ending: ".tif"
-  n_reference_segs: 5
+  n_reference_segs: null
   only_pu: false
   evaluate_training_data: ${evaluate_training_data}
 
@@ -375,6 +376,6 @@ SWEEP_ALL:
   rank: 5
   image_ending: ".png"
   unc_ending: ".tif"
-  n_reference_segs: 5
+  n_reference_segs: null
   only_pu: false
   evaluate_training_data: ${evaluate_training_data}

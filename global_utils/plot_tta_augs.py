@@ -26,7 +26,7 @@ def _parse_args():
     )
     parser.add_argument("--tta_yaml", 
                         #default="/home/jloch/Desktop/diff/luzern/values/uncertainty_modeling/configs/data/TTA_chaksu128_strong.yaml",
-                        default = "/home/jloch/Desktop/diff/luzern/values/uncertainty_modeling/configs/data/chaksu128_aug_weak.yaml",
+                        default = "/home/jloch/Desktop/diff/luzern/values/uncertainty_modeling/configs/data/chaksu128_aug_strong_pixel.yaml",
                         type=str, help="Path to TTA YAML config.")
     parser.add_argument(
         "--split",

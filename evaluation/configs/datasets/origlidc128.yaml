@@ -36,7 +36,7 @@ N_PRED_SWEEP_ALL:
   rank: 5
   image_ending: ".png"
   unc_ending: ".tif"
-  n_reference_segs: 4
+  n_reference_segs: null
   only_pu: false
   evaluate_training_data: ${evaluate_training_data}
 
@@ -58,7 +58,7 @@ SAME_DROPOUT:
   rank: 5
   image_ending: ".png"
   unc_ending: ".tif"
-  n_reference_segs: 4
+  n_reference_segs: null
   only_pu: false
   evaluate_training_data: ${evaluate_training_data}
 
@@ -80,7 +80,7 @@ ALL_SWEEP4:
   rank: 5
   image_ending: ".png"
   unc_ending: ".tif"
-  n_reference_segs: 4
+  n_reference_segs: null
   only_pu: false
   evaluate_training_data: ${evaluate_training_data}
 
@@ -103,7 +103,7 @@ ALL_SWEEP3:
   rank: 5
   image_ending: ".png"
   unc_ending: ".tif"
-  n_reference_segs: 4
+  n_reference_segs: null
   only_pu: false
   evaluate_training_data: ${evaluate_training_data}
 
@@ -126,7 +126,7 @@ ALL_SWEEP2:
   rank: 5
   image_ending: ".png"
   unc_ending: ".tif"
-  n_reference_segs: 4
+  n_reference_segs: null
   only_pu: false
   evaluate_training_data: ${evaluate_training_data}
 
@@ -149,7 +149,7 @@ ALL_SWEEP1:
   rank: 5
   image_ending: ".png"
   unc_ending: ".tif"
-  n_reference_segs: 4
+  n_reference_segs: null
   only_pu: false
   evaluate_training_data: ${evaluate_training_data}
 
@@ -172,7 +172,7 @@ ALL_SWEEP0:
   rank: 5
   image_ending: ".png"
   unc_ending: ".tif"
-  n_reference_segs: 4
+  n_reference_segs: null
   only_pu: false
   evaluate_training_data: ${evaluate_training_data}
 
@@ -194,7 +194,7 @@ EXTRACT_SOFTMAX:
   rank: 5
   image_ending: ".png"
   unc_ending: ".tif"
-  n_reference_segs: 4
+  n_reference_segs: null
   only_pu: false
   evaluate_training_data: ${evaluate_training_data}
 
@@ -214,7 +214,7 @@ SUBENS:
   rank: 5
   image_ending: ".png"
   unc_ending: ".tif"
-  n_reference_segs: 4
+  n_reference_segs: null
   only_pu: false
   evaluate_training_data: ${evaluate_training_data}
 
@@ -238,7 +238,7 @@ SKIP:
   rank: 5
   image_ending: ".png"
   unc_ending: ".tif"
-  n_reference_segs: 4
+  n_reference_segs: null
   only_pu: false
   evaluate_training_data: ${evaluate_training_data}
 
@@ -254,11 +254,7 @@ PROB_UNET2:
   exp_name: "origlidc128"
   naming_scheme_version: "{pred_model}_{eu}_{seed1}/e500_ema"
   aggregations: [ "all" ]
-  fold: 0
-  rank: 5
-  image_ending: ".png"
-  unc_ending: ".tif"
-  n_reference_segs: 4
+  n_reference_segs: null
   only_pu: false
   evaluate_training_data: ${evaluate_training_data}
 
@@ -278,7 +274,7 @@ ENS_SWEEP:
   rank: 5
   image_ending: ".png"
   unc_ending: ".tif"
-  n_reference_segs: 4
+  n_reference_segs: null
   only_pu: false
   evaluate_training_data: ${evaluate_training_data}
 
@@ -298,7 +294,7 @@ NONE_SWEEP:
   rank: 5
   image_ending: ".png"
   unc_ending: ".tif"
-  n_reference_segs: 4
+  n_reference_segs: null
   only_pu: false
   evaluate_training_data: ${evaluate_training_data}
 
@@ -318,6 +314,6 @@ ALL_SWEEP:
   rank: 5
   image_ending: ".png"
   unc_ending: ".tif"
-  n_reference_segs: 4
+  n_reference_segs: null
   only_pu: false
   evaluate_training_data: ${evaluate_training_data}

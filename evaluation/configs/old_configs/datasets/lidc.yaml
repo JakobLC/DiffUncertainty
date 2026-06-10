@@ -18,5 +18,5 @@ LIDC:
   unc_ending: ".nii.gz"
   naming_scheme_pred_model: "NOT_YET_DEFINED"
   naming_scheme_version: "{shift}_fold{fold}_rank{rank}_seed{seed}"
-  n_reference_segs: 4
+  n_reference_segs: null
   aggregations: [ "patch_level", "threshold" ]

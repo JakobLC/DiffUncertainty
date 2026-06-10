@@ -8,11 +8,11 @@ class ExperimentVersion:
         base_path,
         naming_scheme_version,
         pred_model,
-        image_ending,
-        unc_ending,
-        unc_types,
-        aggregations,
-        n_reference_segs,
+        image_ending=".png",
+        unc_ending=".tif",
+        unc_types=None,
+        aggregations=None,
+        n_reference_segs=None,
         second_cycle_path=None,
         n_classes=2,
         exp_name="{pred_model}",
@@ -21,6 +21,13 @@ class ExperimentVersion:
         gt_unc_map_loading=None,
         **kwargs
     ):
+        kwargs = dict(kwargs)
+        kwargs.setdefault("fold", 0)
+        kwargs.setdefault("rank", 0)
+        if unc_types is None:
+            raise ValueError("unc_types must be provided.")
+        if aggregations is None:
+            raise ValueError("aggregations must be provided.")
         self.pred_model = pred_model
         self.exp_name = exp_name
         self.results_dir = self._resolve_results_dir(kwargs.get("n_pred"))

@@ -26,7 +26,7 @@ AUG_SSN:
   rank: 5
   image_ending: ".png"
   unc_ending: ".tif"
-  n_reference_segs: 4
+  n_reference_segs: null
   only_pu: false
   evaluate_training_data: ${evaluate_training_data}
   datamodule_config:

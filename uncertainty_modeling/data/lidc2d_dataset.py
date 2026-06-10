@@ -10,6 +10,25 @@ import torch
 
 AUGMENTED_SPLITS = {"ood_noise", "ood_blur", "ood_contrast", "ood_jpeg"}
 
+NUM_RATERS_TO_DATASET = {
+    4: ["lidc64", "lidc128", "origlidc64", "origlidc128"],
+    5: ["chaksu64", "chaksu128"],
+    7: ["refuge64", "refuge128"],
+}
+DATASET_TO_NUM_RATERS = {ds: num for num, dss in NUM_RATERS_TO_DATASET.items() for ds in dss}
+
+
+def infer_num_raters_from_dataset_name(dataset_name: str) -> int:
+    dataset_key = str(dataset_name).strip().lower()
+    try:
+        return DATASET_TO_NUM_RATERS[dataset_key]
+    except KeyError as exc:
+        available = ", ".join(sorted(DATASET_TO_NUM_RATERS))
+        raise ValueError(
+            f"Unknown dataset '{dataset_name}'. Cannot infer num_raters. Known datasets: {available}"
+        ) from exc
+
+
 
 class MultiRater2DDataset(torch.utils.data.Dataset):
     """Multi-rater 2D segmentation dataset (supports LIDC & Chaksu).
@@ -61,12 +80,15 @@ class MultiRater2DDataset(torch.utils.data.Dataset):
             raise ValueError("Each fold entry inside splits.pkl must be a dictionary.")
         self.split_metadata = fold_entry.get("_meta", {})
         self.split_schema = self.split_metadata.get("schema")
-        self.dataset_label = self.dataset_label or self.split_metadata.get("dataset_name", "lidc2d") #TODO: instead of this, use the last part of base_dir as the name
-        meta_num_raters = self.split_metadata.get("num_raters")
-        if self.num_raters is None:
-            self.num_raters = int(meta_num_raters) if meta_num_raters is not None else 4
-        if self.num_raters <= 0:
-            raise ValueError("num_raters must be a positive integer.")
+        inferred_dataset_label = self.dataset_label or self.split_metadata.get("dataset_name")
+        if inferred_dataset_label is None:
+            inferred_dataset_label = os.path.basename(os.path.normpath(base_dir))
+        self.dataset_label = str(inferred_dataset_label)
+        self.num_raters = infer_num_raters_from_dataset_name(self.dataset_label)
+        if num_raters is not None and int(num_raters) != self.num_raters:
+            raise ValueError(
+                f"num_raters={num_raters} does not match the inferred value {self.num_raters} for dataset '{self.dataset_label}'."
+            )
         meta_pattern = self.split_metadata.get("rater_pattern")
         self.rater_pattern = self.rater_pattern or meta_pattern or "{base_id}_{rater:02d}_mask.npy"
         subject_ids = self._resolve_subject_ids(fold_entry, split)

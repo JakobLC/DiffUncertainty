@@ -6,6 +6,7 @@ from PIL import Image
 from pathlib import Path
 
 from evaluation.utils.set_seed import set_seed
+from uncertainty_modeling.data.lidc2d_dataset import infer_num_raters_from_dataset_name
 from experiment_version import ExperimentVersion
 from medpy.io import load, save
 
@@ -64,6 +65,23 @@ class ExperimentDataloader:
         else:
             self.dataloader = None
             self.ref_seg_dir = self.dataset_path / "gt_seg"
+
+    def _dataset_name(self):
+        for key in ("data", "dataset_label", "naming_scheme_pred_model"):
+            value = self.exp_version.version_params.get(key)
+            if value:
+                return str(value).lower()
+        return str(getattr(self.exp_version, "exp_name", "")).lower()
+
+    def _reference_seg_count(self):
+        dataset_name = self._dataset_name()
+        if any(token in dataset_name for token in ("gta", "cityscapes")):
+            if self.exp_version.n_reference_segs is None:
+                raise ValueError(
+                    f"n_reference_segs must be set for GTA/cityscapes dataset '{dataset_name}'."
+                )
+            return int(self.exp_version.n_reference_segs)
+        return infer_num_raters_from_dataset_name(dataset_name)
 
     def get_max_softmax_pred(self, image_id: str):
         probs = []
@@ -179,7 +197,7 @@ class ExperimentDataloader:
             data = self.dataloader.dataset.__getitem__(idx)
             return data["seg"].squeeze().numpy()
         else:
-            n_reference_segs = self.exp_version.n_reference_segs
+            n_reference_segs = self._reference_seg_count()
             reference_segs_paths = [
                 self.ref_seg_dir / f"{image_id}_{i:02d}{self.exp_version.image_ending}"
                 for i in range(n_reference_segs)
@@ -201,7 +219,7 @@ class ExperimentDataloader:
                 # MultiRater2DDataset exposes per-image rater mask paths as `mask_paths[idx]`.
                 # Fall back to the legacy `masks[idx]` path format if present.
                 reference_segs = []
-                n_reference_segs = self.exp_version.n_reference_segs
+                n_reference_segs = self._reference_seg_count()
                 if hasattr(dataset, "mask_paths"):
                     rater_paths = list(dataset.mask_paths[idx])
                     if len(rater_paths) == 0:
@@ -246,7 +264,7 @@ class ExperimentDataloader:
                         "Dataset does not expose `mask_paths` or `masks`; cannot derive rater-specific GT paths."
                     )
             else:
-                n_reference_segs = self.exp_version.n_reference_segs
+                n_reference_segs = self._reference_seg_count()
                 reference_segs_paths = [
                     self.ref_seg_dir / f"{image_id}_{i:02d}{self.exp_version.image_ending}"
                     for i in range(n_reference_segs)

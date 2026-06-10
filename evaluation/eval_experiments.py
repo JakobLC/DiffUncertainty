@@ -9,6 +9,7 @@ import sys
 
 sys.path.append(Path(__file__).parent.parent.as_posix())
 
+from uncertainty_modeling.data.lidc2d_dataset import infer_num_raters_from_dataset_name
 from experiment_version import ExperimentVersion
 from experiment_dataloader import ExperimentDataloader
 from pydantic.utils import deep_update
@@ -17,6 +18,18 @@ from pydantic.utils import deep_update
 class EvalExperiments:
     LIDC_SPLITS = ["id", "val", "ood_noise", "ood_blur", "ood_jpeg", "ood_contrast"]
     CHAKSU_SPLITS = ["id", "val", "ood"]
+
+    @staticmethod
+    def _dataset_name_for_version(version_params):
+        for key in ("data", "dataset_label", "naming_scheme_pred_model"):
+            value = version_params.get(key)
+            if value:
+                return str(value).lower()
+        return ""
+
+    @staticmethod
+    def _requires_reference_count(dataset_name: str) -> bool:
+        return any(token in dataset_name for token in ("gta", "cityscapes"))
 
     def __init__(self, config):
         # base path is the path to the first experiment cycle
@@ -53,6 +66,19 @@ class EvalExperiments:
                 # import for every experiment mapping.
                 if "datamodule_config" not in version_params and "datamodule_config" in config:
                     version_params["datamodule_config"] = config.datamodule_config
+                dataset_name = self._dataset_name_for_version(version_params)
+                if dataset_name:
+                    if self._requires_reference_count(dataset_name):
+                        if version_params.get("n_reference_segs") is None:
+                            raise ValueError(
+                                f"n_reference_segs must be set for GTA/cityscapes dataset '{dataset_name}'."
+                            )
+                    elif version_params.get("n_reference_segs") is not None:
+                        raise ValueError(
+                            f"n_reference_segs must be None for non-GTA evaluation dataset '{dataset_name}'."
+                        )
+                    else:
+                        infer_num_raters_from_dataset_name(dataset_name)
                 # Merge model-dependent settings from config if present (naming schemes, aggregations)
                 # but DO NOT trust unc_types from config; we derive it from only_pu below.
                 if "prediction_models" in experiment and version_params.get("pred_model") in experiment.prediction_models:
