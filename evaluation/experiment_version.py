@@ -7,7 +7,7 @@ class ExperimentVersion:
         self,
         base_path,
         naming_scheme_version,
-        pred_model,
+        pred_model="none",
         image_ending=".png",
         unc_ending=".tif",
         unc_types=None,

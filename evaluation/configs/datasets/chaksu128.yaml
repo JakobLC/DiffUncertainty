@@ -9,12 +9,45 @@ data:
   data_input_dir: ${data_input_dir}
 base_splits_path: "/home/jloch/Desktop/diff/luzern/values_datasets/chaksu128/splits"
 experiments:
-  - ${SINGLE_RATER_AUG_SWEEP}
+  - ${CLEAN_ALL_CHAKSU}
+
+CLEAN_ALL_CHAKSU:
+  iter_params:
+    shift: [ "scanner" ]
+    name: [ "aug:4GT_aug_strong_prob_unet_dropout_0", "aug0.8_diffusion_dropout_0", "aug:4GT_aug_bonkers_prob_unet_dropout_0", "aug0.4_softmax_dropout_0", "aug0.1_diffusion_dropout_0", "aug0.8_prob_unet_dropout_0", "aug0.4_prob_unet_dropout_0", "aug:4GT_aug_weak_ssn_dropout_0", "aug:deform_mask_ssn_dropout_0", "aug:4GT_aug_strong_diffusion_dropout_0", "diffusion_dropout_0", "aug:_aug_bonkers_ssn_dropout_0", "aug:strong_geo_ssn_dropout_0", "aug:4GT_aug_weak_softmax_dropout_0", "aug:strong_prob_unet_dropout_0", "aug:deform_mask_prob_unet_dropout_0", "aug0.8_ssn_dropout_0", "aug0.4_diffusion_dropout_0", "aug:4GT_aug_weak_prob_unet_dropout_0", "softmax_dropout_0", "aug0.1_prob_unet_dropout_0", "aug:_aug_bonkers_prob_unet_dropout_0", "aug:deform_both_diffusion_dropout_0", "aug:4GT_aug_bonkers_diffusion_dropout_0", "aug0.2_softmax_dropout_0", "diffusion_ens_0[0,1,2,3,4]", "aug:4GT_aug_bonkers_ssn_dropout_0", "prob_unet_ens_0[0,1,2,3,4]", "aug0.1_ssn_dropout_0", "aug:4GT_aug_strong_softmax_dropout_0", "aug:deform_mask_diffusion_dropout_0", "aug:strong_geo_prob_unet_dropout_0", "aug:4GT_aug_weak_diffusion_dropout_0", "aug1.0_softmax_dropout_0", "aug:strong_ssn_dropout_0", "aug:_aug_bonkers_diffusion_dropout_0", "aug:deform_bright_ssn_dropout_0", "aug:strong_geo_softmax_dropout_0", "ssn_dropout_0", "aug:strong_pixel_softmax_dropout_0", "aug:_aug_bonkers_softmax_dropout_0", "aug0.4_ssn_dropout_0", "aug:deform_both_prob_unet_dropout_0", "aug:deform_bright_softmax_dropout_0", "aug:deform_both_ssn_dropout_0", "aug:strong_diffusion_dropout_0", "aug:strong_pixel_prob_unet_dropout_0", "aug0.6_softmax_dropout_0", "aug0.1_softmax_dropout_0", "aug0.6_prob_unet_dropout_0", "prob_unet_dropout_0", "aug:4GT_aug_bonkers_softmax_dropout_0", "aug:deform_mask_softmax_dropout_0", "ssn_ens_0[0,1,2,3,4]", "aug:strong_softmax_dropout_0", "aug1.0_ssn_dropout_0", "aug:strong_pixel_diffusion_dropout_0", "aug1.0_prob_unet_dropout_0", "aug0.2_prob_unet_dropout_0", "aug:deform_both_softmax_dropout_0", "aug:strong_geo_diffusion_dropout_0", "aug1.0_diffusion_dropout_0", "aug0.2_ssn_dropout_0", "softmax_ens_0[0,1,2,3,4]", "aug0.6_diffusion_dropout_0", "aug0.8_softmax_dropout_0", "aug0.6_ssn_dropout_0", "aug:deform_bright_prob_unet_dropout_0", "aug:deform_bright_diffusion_dropout_0", "aug0.2_diffusion_dropout_0", "aug:4GT_aug_strong_ssn_dropout_0", "aug:strong_pixel_ssn_dropout_0" ]
+    seed: [ "120" ]
+    cfg: [ "standard" ]
+    data: [ "chaksu128" ]
+    epochs: [ "10", "20", "40", "80", "160", "320" ]
+  skip_missing: true
+  skip_finished: false
+  exp_name: "single_rater_chaksu"
+  naming_scheme_version: "{name}/e{epochs}_ema"
+  aggregations: [ "all" ]
+  n_reference_segs: null
+
+FOUR_GT_SWEEP:
+  iter_params:
+    shift: [ "scanner" ]
+    pred_model: ["softmax","diffusion","prob_unet"]
+    aug: ["aug_weak","aug_strong", "aug_bonkers"]
+    eu_method: ["dropout"]
+    seed: [ "120" ]
+    seed1: [ "0" ]
+    cfg: [ "standard" ]
+    data: [ "chaksu128" ]
+    epochs: [ "10", "20", "40", "80", "160", "320" ]
+  skip_missing: False
+  skip_finished: true
+  exp_name: "single_rater_chaksu"
+  naming_scheme_version: "aug:4GT_{aug}_{pred_model}_{eu_method}_{seed1}/e{epochs}_ema"
+  aggregations: [ "all" ]
+  n_reference_segs: null
 
 SINGLE_RATER_AUG_SWEEP:
   iter_params:
     shift: [ "scanner" ]
-    pred_model: [ "softmax", "diffusion", "prob_unet" ] #SSN MISSING§!
+    pred_model: [ "ssn" ] #, "diffusion", "prob_unet", "softmax" ]
     aug: ["_aug_bonkers"] #[ "strong", "deform_both", "deform_mask", "deform_bright", "strong_geo", "strong_pixel" ]
     eu_method: ["dropout"]
     seed: [ "120" ]
@@ -27,13 +60,7 @@ SINGLE_RATER_AUG_SWEEP:
   exp_name: "single_rater_chaksu"
   naming_scheme_version: "aug:{aug}_{pred_model}_{eu_method}_{seed1}/e{epochs}_ema"
   aggregations: [ "all" ]
-  fold: 0
-  rank: 5
-  image_ending: ".png"
-  unc_ending: ".tif"
   n_reference_segs: null
-  only_pu: false
-  evaluate_training_data: ${evaluate_training_data}
 
 SINGLE_RATER_DROPOUT_AUG:
   iter_params:
@@ -50,13 +77,7 @@ SINGLE_RATER_DROPOUT_AUG:
   exp_name: "single_rater_chaksu"
   naming_scheme_version: "aug{aug}_{pred_model}_{eu_method}_{seed1}/e{epochs}_ema"
   aggregations: [ "all" ]
-  fold: 0
-  rank: 5
-  image_ending: ".png"
-  unc_ending: ".tif"
   n_reference_segs: null
-  only_pu: false
-  evaluate_training_data: ${evaluate_training_data}
 
 SINGLE_RATER_ENSEMBLE:
   iter_params:
@@ -71,13 +92,7 @@ SINGLE_RATER_ENSEMBLE:
   exp_name: "single_rater_chaksu"
   naming_scheme_version: "{pred_model}_ens_0[0,1,2,3,4]/e{epochs}_ema"
   aggregations: [ "all" ]
-  fold: 0
-  rank: 5
-  image_ending: ".png"
-  unc_ending: ".tif"
   n_reference_segs: null
-  only_pu: false
-  evaluate_training_data: ${evaluate_training_data}
 
 CLEANUP_ALL:
   iter_params:
@@ -92,13 +107,7 @@ CLEANUP_ALL:
   exp_name: "chaksu128"
   naming_scheme_version: "{name}"
   aggregations: [ "all" ]
-  fold: 0
-  rank: 5
-  image_ending: ".png"
-  unc_ending: ".tif"
   n_reference_segs: null
-  only_pu: false
-  evaluate_training_data: ${evaluate_training_data}
 
 SINGLE_RATER_DROPOUT:
   iter_params:
@@ -115,13 +124,7 @@ SINGLE_RATER_DROPOUT:
   exp_name: "single_rater_chaksu"
   naming_scheme_version: "{pred_model}_{eu}_{seed1}/e{epochs}{ema}"
   aggregations: [ "all" ]
-  fold: 0
-  rank: 5
-  image_ending: ".png"
-  unc_ending: ".tif"
   n_reference_segs: null
-  only_pu: false
-  evaluate_training_data: ${evaluate_training_data}
 
 EPOCHS:
   iter_params:
@@ -137,13 +140,7 @@ EPOCHS:
   exp_name: "chaksu128"
   naming_scheme_version: "epochs_{pred_model}_{eu}_{seed1}/e{epochs}_ema"
   aggregations: [ "all" ]
-  fold: 0
-  rank: 5
-  image_ending: ".png"
-  unc_ending: ".tif"
   n_reference_segs: null
-  only_pu: false
-  evaluate_training_data: ${evaluate_training_data}
 
 
 SAME_DROPOUT:
@@ -159,13 +156,7 @@ SAME_DROPOUT:
   exp_name: "chaksu128"
   naming_scheme_version: "{pred_model}_{eu}_{seed1}_sd/e500_ema"
   aggregations: [ "all" ]
-  fold: 0
-  rank: 5
-  image_ending: ".png"
-  unc_ending: ".tif"
   n_reference_segs: null
-  only_pu: false
-  evaluate_training_data: ${evaluate_training_data}
 
 N_PRED_SWEEP_ALL:
   iter_params:
@@ -181,13 +172,7 @@ N_PRED_SWEEP_ALL:
   exp_name: "chaksu128"
   naming_scheme_version: "{pred_model}_{eu}_{seed1}_n{n2_pred}/e500_ema"
   aggregations: [ "all" ]
-  fold: 0
-  rank: 5
-  image_ending: ".png"
-  unc_ending: ".tif"
   n_reference_segs: null
-  only_pu: false
-  evaluate_training_data: ${evaluate_training_data}
 
 
 DROPOUT_SSN:
@@ -202,13 +187,7 @@ DROPOUT_SSN:
   exp_name: "chaksu128"
   naming_scheme_version: "{pred_model}_{eu}_{seed1}/e500_ema"
   aggregations: [ "all" ]
-  fold: 0
-  rank: 5
-  image_ending: ".png"
-  unc_ending: ".tif"
   n_reference_segs: null
-  only_pu: false
-  evaluate_training_data: ${evaluate_training_data}
 
 EXTRACT_DROPOUT:
   iter_params:
@@ -222,13 +201,7 @@ EXTRACT_DROPOUT:
   exp_name: "extract_chaksu"
   naming_scheme_version: "{pred_model}10_{name}_olap/e320_ema"
   aggregations: [ "all" ]
-  fold: 0
-  rank: 5
-  image_ending: ".png"
-  unc_ending: ".tif"
   n_reference_segs: null
-  only_pu: false
-  evaluate_training_data: ${evaluate_training_data}
 
 EXTRACT_SOFTMAX:
   iter_params:
@@ -245,13 +218,7 @@ EXTRACT_SOFTMAX:
   exp_name: "extract_chaksu"
   naming_scheme_version: "{pred_model}10_frac{name}_olap/e500_ema"
   aggregations: [ "all" ]
-  fold: 0
-  rank: 5
-  image_ending: ".png"
-  unc_ending: ".tif"
   n_reference_segs: null
-  only_pu: false
-  evaluate_training_data: ${evaluate_training_data}
 
 TTA_TESTS:
   iter_params:
@@ -267,13 +234,7 @@ TTA_TESTS:
   exp_name: "tta_tests"
   naming_scheme_version: "chaksu_{aug}_{eu}_tta_{aug_tta}/e320_ema"
   aggregations: [ "all" ]
-  fold: 0
-  rank: 5
-  image_ending: ".png"
-  unc_ending: ".tif"
   n_reference_segs: null
-  only_pu: false
-  evaluate_training_data: ${evaluate_training_data}
 
 DROPOUT_CHAKSU_SWEEP:
   iter_params:
@@ -289,13 +250,7 @@ DROPOUT_CHAKSU_SWEEP:
   exp_name: "dropout_chaksu_sweep"
   naming_scheme_version: "{name}/e320_ema"
   aggregations: [ "all" ]
-  fold: 0
-  rank: 5
-  image_ending: ".png"
-  unc_ending: ".tif"
   n_reference_segs: null
-  only_pu: false
-  evaluate_training_data: ${evaluate_training_data}
 
 SUBENS:
   iter_params:
@@ -309,13 +264,7 @@ SUBENS:
   exp_name: "chaksu128"
   naming_scheme_version: "{pred_model}_subens_00_n{n}s{s}/e500_ema"
   aggregations: [ "all" ]
-  fold: 0
-  rank: 5
-  image_ending: ".png"
-  unc_ending: ".tif"
   n_reference_segs: null
-  only_pu: false
-  evaluate_training_data: ${evaluate_training_data}
 
 DROPOUT_SWEEP:
   iter_params:
@@ -330,13 +279,7 @@ DROPOUT_SWEEP:
   exp_name: "chaksu128_dropoutsweep"
   naming_scheme_version: "{pred_model}_{eu}_{d_rate}/e500_ema"
   aggregations: [ "all" ]
-  fold: 0
-  rank: 5
-  image_ending: ".png"
-  unc_ending: ".tif"
   n_reference_segs: null
-  only_pu: false
-  evaluate_training_data: ${evaluate_training_data}
 
 
 SWEEP_NONE:
@@ -351,13 +294,7 @@ SWEEP_NONE:
   exp_name: "chaksu128"
   naming_scheme_version: "{pred_model}_{eu}_{seed1}/e500_ema"
   aggregations: [ "all" ]
-  fold: 0
-  rank: 5
-  image_ending: ".png"
-  unc_ending: ".tif"
   n_reference_segs: null
-  only_pu: false
-  evaluate_training_data: ${evaluate_training_data}
 
 
 SWEEP_ALL:
@@ -372,10 +309,4 @@ SWEEP_ALL:
   exp_name: "chaksu128"
   naming_scheme_version: "{pred_model}_{eu}_{seed1}/e500_ema"
   aggregations: [ "all" ]
-  fold: 0
-  rank: 5
-  image_ending: ".png"
-  unc_ending: ".tif"
   n_reference_segs: null
-  only_pu: false
-  evaluate_training_data: ${evaluate_training_data}

@@ -15,4 +15,4 @@ TOY_SEED123:
     TTA:
       naming_scheme_version: "epochs{epochs}"
     SSN:
-      naming_scheme_version: "epochs{epochs}_rank{rank}_pretrain{pretrain}"
+      naming_scheme_version: "epochs{epochs}_pretrain{pretrain}"

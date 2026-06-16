@@ -11,9 +11,6 @@ experiments:
 
 tasks: ["al_improvement"]
 
-# Use only predictive uncertainty when True. For Softmax models, this must be True.
-only_pu: false
-
 task_params:
   aggregation: ${AGG_PATCH_IMAGE}
   second_cycle_splits:

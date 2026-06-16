@@ -22,12 +22,6 @@ LIDC:
   naming_scheme_pred_model: "lidc-small-ssn-OF-mini"
   naming_scheme_version: "{version}/e{epochs}{ema}"
   aggregations: [ "patch_level", "threshold" ]
-  fold: 0
-  rank: 5
-  image_ending: ".png"
-  unc_ending: ".tif"
   n_reference_segs: null
-  only_pu: false
-  evaluate_training_data: ${evaluate_training_data}
   datamodule_config:
     data_input_dir: ${data_input_dir}

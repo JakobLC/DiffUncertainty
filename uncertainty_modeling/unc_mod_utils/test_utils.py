@@ -247,6 +247,24 @@ def test_cli(
         ),
     )
 
+    parser.add_argument(
+        "--include_eval",
+        action="store_true",
+        default=False,
+        help=(
+            "After completing testing, automatically run evaluation (eval_experiments) on the generated results. "
+            "This uses the model's hparams to construct an evaluation config automatically."
+        ),
+    )
+    parser.add_argument(
+        "--ssn_allow_failed_cov",
+        action="store_true",
+        default=False,
+        help=(
+            "Apply a covariance correction when evaluating SSN models, to address cov_failed_flag (not positive definite) "
+        ),
+    )
+
     if extra_args_fn is not None:
         extra_args_fn(parser)
 

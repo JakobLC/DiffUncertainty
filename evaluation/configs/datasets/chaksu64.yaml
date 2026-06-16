@@ -23,5 +23,3 @@ FIRST_SWEEP:
   naming_scheme_version: "{pred_model}_{eu}/e640_ema"
   aggregations: [ "all" ]
   n_reference_segs: null
-  only_pu: false
-  evaluate_training_data: ${evaluate_training_data}

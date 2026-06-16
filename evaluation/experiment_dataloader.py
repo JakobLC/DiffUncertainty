@@ -7,7 +7,13 @@ from pathlib import Path
 
 from evaluation.utils.set_seed import set_seed
 from uncertainty_modeling.data.lidc2d_dataset import infer_num_raters_from_dataset_name
-from experiment_version import ExperimentVersion
+
+# Support both direct execution and module import
+try:
+    from .experiment_version import ExperimentVersion
+except ImportError:
+    from experiment_version import ExperimentVersion
+
 from medpy.io import load, save
 
 

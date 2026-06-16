@@ -32,13 +32,7 @@ N_PRED_SWEEP_ALL:
   exp_name: "origlidc128"
   naming_scheme_version: "{pred_model}_{eu}_{seed1}_n{n2_pred}/e{epochs}_ema"
   aggregations: [ "all" ]
-  fold: 0
-  rank: 5
-  image_ending: ".png"
-  unc_ending: ".tif"
   n_reference_segs: null
-  only_pu: false
-  evaluate_training_data: ${evaluate_training_data}
 
 SAME_DROPOUT:
   iter_params:
@@ -54,13 +48,7 @@ SAME_DROPOUT:
   exp_name: "origlidc128"
   naming_scheme_version: "{pred_model}_{eu}_{seed1}_sd/e{epochs}_ema"
   aggregations: [ "all" ]
-  fold: 0
-  rank: 5
-  image_ending: ".png"
-  unc_ending: ".tif"
   n_reference_segs: null
-  only_pu: false
-  evaluate_training_data: ${evaluate_training_data}
 
 ALL_SWEEP4:
   iter_params:
@@ -76,13 +64,7 @@ ALL_SWEEP4:
   exp_name: "origlidc128"
   naming_scheme_version: "{pred_model}_{eu}_{seed1}/e{epochs}_ema"
   aggregations: [ "all" ]
-  fold: 0
-  rank: 5
-  image_ending: ".png"
-  unc_ending: ".tif"
   n_reference_segs: null
-  only_pu: false
-  evaluate_training_data: ${evaluate_training_data}
 
 
 ALL_SWEEP3:
@@ -99,13 +81,7 @@ ALL_SWEEP3:
   exp_name: "origlidc128"
   naming_scheme_version: "{pred_model}_{eu}_{seed1}/e{epochs}_ema"
   aggregations: [ "all" ]
-  fold: 0
-  rank: 5
-  image_ending: ".png"
-  unc_ending: ".tif"
   n_reference_segs: null
-  only_pu: false
-  evaluate_training_data: ${evaluate_training_data}
 
 
 ALL_SWEEP2:
@@ -122,13 +98,7 @@ ALL_SWEEP2:
   exp_name: "origlidc128"
   naming_scheme_version: "{pred_model}_{eu}_{seed1}/e{epochs}_ema"
   aggregations: [ "all" ]
-  fold: 0
-  rank: 5
-  image_ending: ".png"
-  unc_ending: ".tif"
   n_reference_segs: null
-  only_pu: false
-  evaluate_training_data: ${evaluate_training_data}
 
 
 ALL_SWEEP1:
@@ -145,13 +115,7 @@ ALL_SWEEP1:
   exp_name: "origlidc128"
   naming_scheme_version: "{pred_model}_{eu}_{seed1}/e{epochs}_ema"
   aggregations: [ "all" ]
-  fold: 0
-  rank: 5
-  image_ending: ".png"
-  unc_ending: ".tif"
   n_reference_segs: null
-  only_pu: false
-  evaluate_training_data: ${evaluate_training_data}
 
 
 ALL_SWEEP0:
@@ -168,13 +132,7 @@ ALL_SWEEP0:
   exp_name: "origlidc128"
   naming_scheme_version: "{pred_model}_{eu}_{seed1}/e{epochs}_ema"
   aggregations: [ "all" ]
-  fold: 0
-  rank: 5
-  image_ending: ".png"
-  unc_ending: ".tif"
   n_reference_segs: null
-  only_pu: false
-  evaluate_training_data: ${evaluate_training_data}
 
 EXTRACT_SOFTMAX:
   iter_params:
@@ -190,13 +148,7 @@ EXTRACT_SOFTMAX:
   exp_name: "extract_lidc"
   naming_scheme_version: "softmax5_frac{name}_olap/e1000_ema"
   aggregations: [ "all" ]
-  fold: 0
-  rank: 5
-  image_ending: ".png"
-  unc_ending: ".tif"
   n_reference_segs: null
-  only_pu: false
-  evaluate_training_data: ${evaluate_training_data}
 
 SUBENS:
   iter_params:
@@ -210,13 +162,7 @@ SUBENS:
   exp_name: "origlidc128"
   naming_scheme_version: "{pred_model}_{eu}_00_{setup}/e1000_ema"
   aggregations: [ "all" ]
-  fold: 0
-  rank: 5
-  image_ending: ".png"
-  unc_ending: ".tif"
   n_reference_segs: null
-  only_pu: false
-  evaluate_training_data: ${evaluate_training_data}
 
 
 SKIP:
@@ -234,13 +180,7 @@ SKIP:
   exp_name: "origlidc128"
   naming_scheme_version: "{pred_model}_{eu}_{seed1}/e{epochs}_ema"
   aggregations: [ "all" ]
-  fold: 0
-  rank: 5
-  image_ending: ".png"
-  unc_ending: ".tif"
   n_reference_segs: null
-  only_pu: false
-  evaluate_training_data: ${evaluate_training_data}
 
 PROB_UNET2:
   iter_params:
@@ -255,8 +195,6 @@ PROB_UNET2:
   naming_scheme_version: "{pred_model}_{eu}_{seed1}/e500_ema"
   aggregations: [ "all" ]
   n_reference_segs: null
-  only_pu: false
-  evaluate_training_data: ${evaluate_training_data}
 
 ENS_SWEEP:
   iter_params:
@@ -270,13 +208,7 @@ ENS_SWEEP:
   exp_name: "origlidc128"
   naming_scheme_version: "{pred_model}_{eu}_{seed1}/e1000_ema"
   aggregations: [ "all" ]
-  fold: 0
-  rank: 5
-  image_ending: ".png"
-  unc_ending: ".tif"
   n_reference_segs: null
-  only_pu: false
-  evaluate_training_data: ${evaluate_training_data}
 
 NONE_SWEEP:
   iter_params:
@@ -290,13 +222,7 @@ NONE_SWEEP:
   exp_name: "origlidc128"
   naming_scheme_version: "{pred_model}_{eu}_{seed1}/e500_ema"
   aggregations: [ "all" ]
-  fold: 0
-  rank: 5
-  image_ending: ".png"
-  unc_ending: ".tif"
   n_reference_segs: null
-  only_pu: false
-  evaluate_training_data: ${evaluate_training_data}
 
 ALL_SWEEP:
   iter_params:
@@ -310,10 +236,4 @@ ALL_SWEEP:
   exp_name: "origlidc128"
   naming_scheme_version: "{pred_model}_{eu}_{seed1}/e500_ema"
   aggregations: [ "all" ]
-  fold: 0
-  rank: 5
-  image_ending: ".png"
-  unc_ending: ".tif"
   n_reference_segs: null
-  only_pu: false
-  evaluate_training_data: ${evaluate_training_data}

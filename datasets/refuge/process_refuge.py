@@ -6,10 +6,11 @@ layout: each case lives in a single folder containing one fundus image,
 
 Processing strategy:
 1. Gather every case across Training-400, Validation-400, and Test-400.
-2. Build dataset-wide and split-specific mean disc diameters from the union
-    of the seven disc annotations per case, using a combined val/test split.
-3. Crop each image around the center of the disc bounding box using a square
-    with side length equal to twice the selected mean diameter.
+2. Build dataset-wide and split-specific mean disc diameters from individual
+    annotator discs (not unions), computing the mean across all 7 annotators
+    and all cases per split. Uses a combined val/test split for valtest.
+3. Crop each image around the center of the disc union bounding box using a
+    square with side length equal to twice the selected mean diameter.
 4. Pad outside-image regions with black.
 5. Save the resized image and a single class mask with labels:
    0 = background, 1 = disc, 2 = cup.
@@ -17,6 +18,10 @@ Processing strategy:
 
 No metadata file is written because REFUGE does not expose any meaningful
 dataset-level provenance worth preserving here.
+
+NOTE: Mean diameters are computed from individual annotator discs to match
+Chaksu's approach, not from unions. This produces consistent crop sizing
+across both datasets.
 """
 
 from __future__ import annotations
@@ -237,6 +242,10 @@ def load_annotation_sets(case: CaseSpec) -> Tuple[List[np.ndarray], List[np.ndar
         cup_mask = keep_largest_component(
             load_binary_mask(find_case_file(case.folder, CASE_CUP_ANNOTATION.format(stem=stem, idx=idx)))
         )
+        # Ensure disc includes all cup pixels, matching Chaksu's approach
+        disc_mask = np.logical_or(disc_mask, cup_mask)
+        cup_mask = np.logical_and(cup_mask, disc_mask)
+        
         disc_masks.append(disc_mask.astype(bool))
         cup_masks.append(cup_mask.astype(bool))
 
@@ -246,17 +255,27 @@ def load_annotation_sets(case: CaseSpec) -> Tuple[List[np.ndarray], List[np.ndar
     return disc_masks, cup_masks
 
 
-def collect_case_statistics(case: CaseSpec) -> Tuple[float, Path, str]:
+def collect_case_statistics(case: CaseSpec) -> Tuple[List[float], Path, str]:
+    """Compute individual disc diameters for all 7 annotators.
+    
+    Returns a list of 7 diameters (one per annotator), not the union.
+    This matches Chaksu's approach of averaging individual measurements.
+    """
     disc_masks, _ = load_annotation_sets(case)
-    disc_union = np.any(np.stack(disc_masks, axis=0), axis=0)
-
-    if not disc_union.any():
-        raise ValueError(f"Empty disc union for case {case.folder}")
-
-    diameter = get_bbox_diameter(disc_union)
+    
+    # Compute diameter for each individual annotator
+    diameters: List[float] = []
+    for disc_mask in disc_masks:
+        if disc_mask.any():
+            diameter = get_bbox_diameter(disc_mask)
+            diameters.append(diameter)
+    
+    if not diameters:
+        raise ValueError(f"No disc measurements for case {case.folder}")
+    
     stem = case.folder.name
     image_path = find_case_file(case.folder, CASE_IMAGE_NAME.format(stem=stem))
-    return diameter, image_path, stem
+    return diameters, image_path, stem
 
 
 def build_labels_from_annotations(case: CaseSpec) -> List[np.ndarray]:
@@ -273,6 +292,11 @@ def build_labels_from_annotations(case: CaseSpec) -> List[np.ndarray]:
 
 
 def load_or_compute_mean_diameters(cases: Sequence[CaseSpec], cache_path: Path) -> dict:
+    """Compute mean disc diameters from individual annotator measurements.
+    
+    For each case, we get 7 measurements (one per annotator). We then flatten
+    all measurements across all cases and compute the mean per split.
+    """
     required_keys = {"all", "train", "valtest"}
     if cache_path.exists():
         with cache_path.open("r", encoding="utf-8") as handle:
@@ -283,10 +307,11 @@ def load_or_compute_mean_diameters(cases: Sequence[CaseSpec], cache_path: Path) 
 
     diameters_by_split: dict[str, List[float]] = {"all": [], "train": [], "valtest": []}
     for case in tqdm(cases, desc="Measuring discs", unit="case"):
-        diameter, _, _ = collect_case_statistics(case)
+        case_diameters, _, _ = collect_case_statistics(case)
         split_key = "train" if case.split == "train" else "valtest"
-        diameters_by_split[split_key].append(diameter)
-        diameters_by_split["all"].append(diameter)
+        # Flatten: add all 7 individual measurements
+        diameters_by_split[split_key].extend(case_diameters)
+        diameters_by_split["all"].extend(case_diameters)
 
     if not diameters_by_split["all"]:
         raise ValueError("No disc diameters could be computed")

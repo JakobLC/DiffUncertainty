@@ -5,6 +5,7 @@ import pickle
 from argparse import Namespace
 from contextlib import contextmanager
 from pathlib import Path
+from typing import Optional
 
 import cv2
 import hydra
@@ -316,6 +317,7 @@ class Tester:
         args.test_split = normalized_split
         self.test_batch_size = args.test_batch_size
         self.tta = bool(args.tta)
+        self.ssn_allow_failed_cov = args.ssn_allow_failed_cov
         self.tta_yaml = getattr(args, "tta_yaml", "") or None
         self.discretize = args.discretize
         self.direct_au = bool(getattr(args, "direct_au", False))
@@ -1202,7 +1204,11 @@ class Tester:
             au_type = getattr(model, "AU_type", "softmax")
             if au_type == "ssn":
                 distribution, cov_failed_flag = model.forward(batch["data"].to(self.device))
-                assert not cov_failed_flag, "Covariance matrix was not positive definite"
+                if self.ssn_allow_failed_cov:
+                    if cov_failed_flag:
+                        print("Warning: SSN model encountered failed covariance matrix.")
+                else:
+                    assert not cov_failed_flag, "Covariance matrix was not positive definite"
                 output_samples = distribution.sample([self.n_pred])
                 output_samples = output_samples.view(
                     [
@@ -1494,19 +1500,181 @@ class Tester:
         self.save_likelihood_dict()
 
 
-def run_test(args: Namespace) -> None:
+def run_evaluation_after_testing(tester: "Tester", args: Namespace) -> None:
     """
-    Run test and save the results in the end
+    Run evaluation (eval_experiments) after testing completes.
+    
+    This function constructs an evaluation config from the tester's hparams
+    and runs EvalExperiments directly without using Hydra CLI.
+    
     Args:
-        args: Arguments for testing, including checkpoint_path, test_data_dir and subject_ids.
-              test_data_dir and subject_ids might be None.
+        tester: The Tester instance that contains model hparams and test results info.
+        args: The test CLI arguments.
+        
+    Raises:
+        RuntimeError: If required config files or parameters cannot be found.
+    """
+    from evaluation.eval_experiments import EvalExperiments
+    
+    hparams = tester.all_checkpoints[0]["hyper_parameters"]
+    dataset_name = hparams.get("data", {}).get("name")
+    if not dataset_name:
+        raise RuntimeError(
+            "Cannot determine dataset name from hparams['data']['name']. "
+            "This parameter is required for evaluation setup."
+        )
+    
+    # Find the matching eval_config_*.yaml based on dataset family name
+    eval_config_dir = Path(__file__).parent.parent / "evaluation" / "configs"
+    eval_config_files = sorted(eval_config_dir.glob("eval_config_*.yaml"))
+    
+    # Extract dataset family names from config filenames (e.g., "chaksu" from "eval_config_chaksu.yaml")
+    matching_eval_configs = [
+        cf for cf in eval_config_files
+        if cf.stem.replace("eval_config_", "").lower() in dataset_name.lower()
+    ]
+    
+    if len(matching_eval_configs) != 1:
+        available = [cf.stem.replace("eval_config_", "") for cf in eval_config_files]
+        raise RuntimeError(
+            f"Found {len(matching_eval_configs)} eval_config matches for dataset '{dataset_name}'. "
+            f"Expected exactly 1. Available dataset families: {available}. "
+            f"Dataset family name should be a substring of dataset name '{dataset_name}' and match exactly one eval_config_*.yaml file."
+        )
+    
+    eval_config_path = matching_eval_configs[0]
+    
+    # Find the dataset-specific config (must be exact match)
+    dataset_config_path = eval_config_dir / "datasets" / f"{dataset_name}.yaml"
+    if not dataset_config_path.exists():
+        raise RuntimeError(
+            f"Dataset config not found: {dataset_config_path}. "
+            f"Expected exact match for dataset name '{dataset_name}'."
+        )
+    
+    # Get required hparams for evaluation config
+    data_input_dir = hparams.get("data", {}).get("data_input_dir")
+    if not data_input_dir:
+        raise RuntimeError(
+            "Cannot find 'data_input_dir' in hparams['data']. "
+            "This is required to construct the evaluation config."
+        )
+    
+    split_name = hparams.get("data", {}).get("split_name")
+    if not split_name:
+        raise RuntimeError(
+            "Cannot find 'split_name' in hparams['data']. "
+            "This is required to construct the evaluation config."
+        )
+    
+    seed = hparams.get("seed")
+    if seed is None:
+        raise RuntimeError(
+            "Cannot find 'seed' in hparams. "
+            "This is required to construct the evaluation config."
+        )
+    
+    # Glob for epoch/ema pairs in test_results
+    test_results_base = Path(tester.save_root_dir) / tester.exp_name / "test_results" / tester.version
+    
+    if not test_results_base.exists():
+        raise RuntimeError(
+            f"Test results directory not found: {test_results_base}. "
+            f"Ensure testing has completed before running evaluation."
+        )
+    
+    # Infer epoch/ema pairs based on what was actually tested
+    # Extract the ema_mode to determine which ema variants were tested
+    ema_mode = getattr(args, "ema_mode", "ema").lower()
+    epoch = tester.checkpoint_epoch
+    
+    epoch_ema_dirs = []
+    if ema_mode == "normal":
+        epoch_ema_dirs = [f"e{epoch}"]
+    elif ema_mode == "ema":
+        epoch_ema_dirs = [f"e{epoch}_ema"]
+    elif ema_mode == "both":
+        epoch_ema_dirs = [f"e{epoch}", f"e{epoch}_ema"]
+    else:
+        raise RuntimeError(
+            f"Invalid ema_mode '{ema_mode}'. Expected 'normal', 'ema', or 'both'."
+        )
+    
+    if not epoch_ema_dirs:
+        raise RuntimeError(
+            f"No epoch/ema variants determined from ema_mode='{ema_mode}'."
+        )
+    
+    # Create the INCLUDE_EVAL experiment config
+    include_eval_config = {
+        "iter_params": {
+            "epoch_ema": epoch_ema_dirs,
+        },
+        "skip_missing": False,
+        "skip_finished": False,
+        "exp_name": tester.exp_name,
+        "naming_scheme_version": f"{tester.version}/{{epoch_ema}}",
+        "aggregations": ["all"],
+        "n_reference_segs": None,
+        "data": dataset_name,
+        "shift": split_name,
+        "seed": str(seed),
+    }
+    
+    # Load eval_config with Hydra to properly resolve defaults and interpolations
+    from hydra import initialize_config_dir, compose
+    
+    eval_config_name = eval_config_path.stem  # e.g., "eval_config_chaksu"
+    config_dir = str(eval_config_dir)
+    
+    try:
+        with initialize_config_dir(config_dir=config_dir, version_base=None):
+            eval_config = compose(config_name=eval_config_name)
+    except Exception as e:
+        raise RuntimeError(
+            f"Failed to load eval config '{eval_config_name}' with Hydra: {e}. "
+            f"Ensure the config file and all its defaults are valid."
+        )
+    
+    # Override base_path and key paths from model hparams
+    eval_config.base_path = tester.save_root_dir
+    eval_config.data_input_dir = data_input_dir
+    eval_config.base_splits_path = str(Path(data_input_dir) / "splits")
+    
+    # Set experiments to include only our INCLUDE_EVAL experiment
+    eval_config.experiments = [OmegaConf.create(include_eval_config)]
+    
+    print(f"[include_eval] Running evaluation with config constructed from hparams...")
+    print(f"  - exp_name: {include_eval_config['exp_name']}")
+    print(f"  - data: {include_eval_config['data']}")
+    print(f"  - shift: {include_eval_config['shift']}")
+    print(f"  - seed: {include_eval_config['seed']}")
+    print(f"  - epoch_ema variants: {epoch_ema_dirs}")
+    
+    try:
+        evaluator = EvalExperiments(eval_config)
+        evaluator.analyse()
+        print(f"[include_eval] Evaluation completed successfully.")
+    except Exception as e:
+        print(f"[include_eval] Evaluation failed with error: {e}")
+        raise
+
+
+def run_test(args: Namespace) -> Optional["Tester"]:
+    """
+    Run test and save the results in the end.
+    
+    Returns:
+        The Tester instance if tests ran, or None if tests were skipped.
     """
     torch.set_grad_enabled(False)
     tester = Tester(args)
     if tester.should_skip():
-        print(f"[skip_existing] All expected outputs already exist for split='{tester.test_split}' (version={tester.version}, ckpt_tag={tester.checkpoint_subdir}). Skipping evaluation.")
-        return
+        print(f"[skip_existing] All expected outputs already exist for split='{tester.test_split}' (version={tester.version}, ckpt_tag={tester.checkpoint_subdir}). Skipping test.")
+        # Still return tester for evaluation purposes
+        return tester
     tester.predict_cases()
+    return tester
 
 
 def collect_raw_predictions_from_args(
@@ -1533,6 +1701,7 @@ if __name__ == "__main__":
     if not jobs:
         raise ValueError("No evaluation jobs were generated. Check your checkpoint paths.")
     total_jobs = len(jobs)
+    first_tester = None
     for idx, job in enumerate(jobs, start=1):
         ema_label = getattr(job, "current_ema_label", "normal")
         ckpt_summary = ", ".join(Path(p).name for p in job.checkpoint_paths)
@@ -1540,4 +1709,16 @@ if __name__ == "__main__":
             f"[{idx}/{total_jobs}] Evaluating split='{job.test_split}' "
             f"ema='{ema_label}' with checkpoints: {ckpt_summary}"
         )
-        run_test(job)
+        tester = run_test(job)
+        if first_tester is None and tester is not None:
+            first_tester = tester
+    
+    # Run evaluation if requested (after all test jobs complete)
+    include_eval = bool(getattr(arguments, "include_eval", False))
+    if include_eval and first_tester is not None:
+        try:
+            run_evaluation_after_testing(first_tester, arguments)
+        except Exception as e:
+            print(f"[include_eval] Error during evaluation: {e}")
+            raise
+

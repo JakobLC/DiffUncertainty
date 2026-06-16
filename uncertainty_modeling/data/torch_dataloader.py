@@ -19,6 +19,8 @@ import cv2
 import torch
 import random
 
+from .lidc2d_dataset import collate_multirater_batch
+
 import uncertainty_modeling.augmentations as custom_augmentations
 
 # set number of Threads to 0 for opencv and albumentations
@@ -441,6 +443,7 @@ class BaseDataModule(LightningDataModule):
             drop_last=True,
             persistent_workers=True if self.num_workers > 0 else False,
             worker_init_fn=seed_worker,
+            collate_fn=collate_multirater_batch,
         )
 
     def val_dataloader(self) -> DataLoader:
@@ -456,6 +459,7 @@ class BaseDataModule(LightningDataModule):
             batch_size=self.val_batch_size,
             num_workers=self.num_workers,
             persistent_workers=True if self.num_workers > 0 else False,
+            collate_fn=collate_multirater_batch,
         )
 
         if self.evaluate_training_data and self.DS_train_eval is not None:
@@ -465,6 +469,7 @@ class BaseDataModule(LightningDataModule):
                 batch_size=self.val_batch_size,
                 num_workers=self.num_workers,
                 persistent_workers=True if self.num_workers > 0 else False,
+                collate_fn=collate_multirater_batch,
             )
             return [val_loader, train_eval_loader]
 
@@ -483,4 +488,5 @@ class BaseDataModule(LightningDataModule):
             batch_size=self.val_batch_size,
             num_workers=self.num_workers,
             persistent_workers=True if self.num_workers > 0 else False,
+            collate_fn=collate_multirater_batch,
         )

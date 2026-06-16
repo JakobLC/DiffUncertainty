@@ -10,8 +10,15 @@ import sys
 sys.path.append(Path(__file__).parent.parent.as_posix())
 
 from uncertainty_modeling.data.lidc2d_dataset import infer_num_raters_from_dataset_name
-from experiment_version import ExperimentVersion
-from experiment_dataloader import ExperimentDataloader
+
+# Support both direct execution and module import
+try:
+    from .experiment_version import ExperimentVersion
+    from .experiment_dataloader import ExperimentDataloader
+except ImportError:
+    from experiment_version import ExperimentVersion
+    from experiment_dataloader import ExperimentDataloader
+
 from pydantic.utils import deep_update
 
 
@@ -79,6 +86,10 @@ class EvalExperiments:
                         )
                     else:
                         infer_num_raters_from_dataset_name(dataset_name)
+                version_params.setdefault("only_pu", getattr(config, "only_pu", False))
+                version_params.setdefault(
+                    "evaluate_training_data", getattr(config, "evaluate_training_data", False)
+                )
                 # Merge model-dependent settings from config if present (naming schemes, aggregations)
                 # but DO NOT trust unc_types from config; we derive it from only_pu below.
                 if "prediction_models" in experiment and version_params.get("pred_model") in experiment.prediction_models:
@@ -91,12 +102,7 @@ class EvalExperiments:
                 # Derive uncertainty types from per-experiment only_pu if present,
                 # otherwise fall back to top-level config.only_pu for backward compatibility
                 only_pu = bool(version_params.get("only_pu", getattr(config, "only_pu", False)))
-                pred_model_name = str(version_params.get("pred_model"))
-                # Consistency checks as requested
-                if pred_model_name == "Softmax" and not only_pu:
-                    raise ValueError("only_pu must be True when pred_model is 'Softmax'.")
-                if pred_model_name != "Softmax" and only_pu:
-                    raise ValueError("only_pu must be False when pred_model is not 'Softmax'.")
+                pred_model_name = str(version_params.get("pred_model", ""))
                 # Set unc_types based on only_pu
                 version_params["unc_types"] = (
                     ["TU"]

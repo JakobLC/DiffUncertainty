@@ -9,7 +9,8 @@ defaults:
 
 base_path: "/home/jloch/Desktop/diff/luzern/values/saves"
 second_cycle_path: "/home/jloch/Desktop/diff/luzern/values/experiments/SecondCycle"
-evaluate_training_data: null
+only_pu: false
+evaluate_training_data: false
 evaluate_all_raters: true
 
 tasks: ["threshold", "area","aggregation","ood_detection","ambiguity_modeling","calibration", "cleanup_finished"]

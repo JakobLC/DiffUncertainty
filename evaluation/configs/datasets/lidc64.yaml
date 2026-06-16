@@ -23,8 +23,6 @@ FIRST_SWEEP:
   naming_scheme_version: "{pred_model}_{eu}/e1000_ema"
   aggregations: [ "all" ]
   n_reference_segs: null
-  only_pu: false
-  evaluate_training_data: ${evaluate_training_data}
 
 
 OOD_AUG:
@@ -40,8 +38,6 @@ OOD_AUG:
   naming_scheme_version: "{eu}_{pred_model}_{network}_lidc_2d_small/e320_ema"
   aggregations: [ "patch_level", "threshold" ]
   n_reference_segs: null
-  only_pu: false
-  evaluate_training_data: ${evaluate_training_data}
 
 EU_FIX:
   iter_params:
@@ -55,8 +51,6 @@ EU_FIX:
   naming_scheme_version: "swag_diag_diffusion_standard_lidc_2d_small/e320_ema"
   aggregations: [ "patch_level", "threshold" ]
   n_reference_segs: null
-  only_pu: false
-  evaluate_training_data: ${evaluate_training_data}
 
 EU_TESTS:
   iter_params:
@@ -69,13 +63,7 @@ EU_TESTS:
   exp_name: "eu_tests"
   naming_scheme_version: "{eu}_{pred_model}_{cfg}_{data}/e320_ema"
   aggregations: [ "patch_level", "threshold" ]
-  fold: 0
-  rank: 5
-  image_ending: ".png"
-  unc_ending: ".tif"
   n_reference_segs: null
-  only_pu: false
-  evaluate_training_data: ${evaluate_training_data}
 
 BIG_SSN:
   iter_params:
@@ -88,13 +76,7 @@ BIG_SSN:
   exp_name: "lidc-small-ssn-OF"
   naming_scheme_version: "{version}/e{epochs}{ema}"
   aggregations: [ "patch_level", "threshold" ]
-  fold: 0
-  rank: 5
-  image_ending: ".png"
-  unc_ending: ".tif"
   n_reference_segs: null
-  only_pu: false
-  evaluate_training_data: ${evaluate_training_data}
 
 AUG_SSN_ENSEMBLE:
   iter_params:
@@ -107,13 +89,7 @@ AUG_SSN_ENSEMBLE:
   exp_name: "lidc-small-ssn-OF-mini"
   naming_scheme_version: "{version}/e{epochs}{ema}"
   aggregations: [ "patch_level", "threshold" ]
-  fold: 0
-  rank: 5
-  image_ending: ".png"
-  unc_ending: ".tif"
   n_reference_segs: null
-  only_pu: false
-  evaluate_training_data: ${evaluate_training_data}
 
 SSN_ENSEMBLE:
   iter_params:
@@ -126,13 +102,7 @@ SSN_ENSEMBLE:
   exp_name: "lidc-small-ssn-OF-mini"
   naming_scheme_version: "{version}/e{epochs}{ema}"
   aggregations: [ "patch_level", "threshold" ]
-  fold: 0
-  rank: 5
-  image_ending: ".png"
-  unc_ending: ".tif"
   n_reference_segs: null
-  only_pu: false
-  evaluate_training_data: ${evaluate_training_data}
 
 SOFTMAX_ENSEMBLE:
   iter_params:
@@ -145,13 +115,7 @@ SOFTMAX_ENSEMBLE:
   naming_scheme_version: "{version}/e{epochs}{ema}"
   exp_name: "lidc-small-softmax-OF-mini"
   aggregations: [ "patch_level", "threshold" ]
-  fold: 0
-  rank: 5
-  image_ending: ".png"
-  unc_ending: ".tif"
   n_reference_segs: null
-  only_pu: false
-  evaluate_training_data: ${evaluate_training_data}
 
 AUG_SSN:
   iter_params:
@@ -164,10 +128,4 @@ AUG_SSN:
   exp_name: "lidc-small-ssn-OF"
   naming_scheme_version: "{version}/e{epochs}{ema}"
   aggregations: [ "patch_level", "threshold" ]
-  fold: 0
-  rank: 5
-  image_ending: ".png"
-  unc_ending: ".tif"
   n_reference_segs: null
-  only_pu: false
-  evaluate_training_data: ${evaluate_training_data}

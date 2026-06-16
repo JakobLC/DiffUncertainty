@@ -2,9 +2,7 @@ iter_params:
   pred_model: [ "Softmax", "Dropout", "Ensemble", "TTA", "SSN"]
   seed: [ "128", "158" ]
 case: 3
-fold: 0
 epochs: 150
-rank: 5
 pretrain: 5
 image_ending: ".nii.gz"
 unc_ending: ".nii.gz"
@@ -33,6 +31,6 @@ prediction_models:
     aggregations: ["patch_level", "threshold"]
   SSN:
     naming_scheme_pred_model: "{pred_model}-Case-{case}-gradient-clip"
-    naming_scheme_version: "epochs{epochs}_rank{rank}_pretrain{pretrain}_seed{seed}"
+    naming_scheme_version: "epochs{epochs}_pretrain{pretrain}_seed{seed}"
     unc_types: [ "predictive_uncertainty", "aleatoric_uncertainty", "epistemic_uncertainty" ]
     aggregations: ["patch_level", "threshold"]

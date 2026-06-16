@@ -13,9 +13,6 @@ experiments:
 
 tasks: ["al_improvement"]
 
-# Use only predictive uncertainty when True. For Softmax models, this must be True.
-only_pu: false
-
 task_params:
   threshold:
     - ${QUANTILE}

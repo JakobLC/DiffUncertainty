@@ -36,13 +36,8 @@ EU_TESTS:
   exp_name: "eu_tests"
   naming_scheme_version: "{eu}_{pred_model}_{cfg}_{data}/e{epochs}{ema}"
   aggregations: [ "image_level", "patch_level" ]
-  fold: 0
-  rank: 10
   n_classes: 19
-  image_ending: ".png"
-  unc_ending: ".tif"
   n_reference_segs: 5
-  only_pu: false
   pred_seg_loading:
     _target_: evaluation.utils.gta.pred_seg_loading
   gt_unc_map_loading:

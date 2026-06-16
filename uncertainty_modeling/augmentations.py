@@ -227,3 +227,248 @@ class MaskOnlyElasticTransform(A.DualTransform):
 
     def get_transform_init_args_names(self):
         return self._elastic.get_transform_init_args_names()
+
+
+class FieldOfViewCircularMask(A.ImageOnlyTransform):
+    """
+    Simulates the field-of-view of a retina camera by applying a circular mask with edge blurring.
+    
+    Parameters:
+    - radius: radius of the circular mask as a fraction of sidelength. 
+              If tuple/list, random uniform value from interval. Default: 0.5
+    - edge_blur: width of edge blurring as a fraction of sidelength.
+                 If tuple/list, random uniform value from interval. Default: 0.02
+    - circle_dist: distance from image center to the circle perimeter as a fraction of sidelength.
+                   Positive = circle boundary is inside image, Negative = image center is inside circle.
+                   If tuple/list, random uniform value from interval. Default: 0.2
+    """
+    
+    def __init__(
+        self,
+        radius=0.5,
+        edge_blur=0.02,
+        circle_dist=0.2,
+        always_apply=False,
+        p=1.0,
+    ):
+        super().__init__(always_apply=always_apply, p=p)
+        self.radius = radius
+        self.edge_blur = edge_blur
+        self.circle_dist = circle_dist
+    
+    def _sample_param(self, param):
+        """Sample a parameter which can be a scalar or a (min, max) tuple."""
+        if isinstance(param, (list, tuple)) and len(param) == 2:
+            return np.random.uniform(param[0], param[1])
+        return param
+    
+    def _get_interval(self, param):
+        """Get min/max interval from parameter (scalar or tuple)."""
+        if isinstance(param, (list, tuple)) and len(param) == 2:
+            return param[0], param[1]
+        return param, param
+    
+    def apply(self, img, **params):
+        orig_dtype = img.dtype
+        img = img.astype(np.float32, copy=True)
+        height, width = img.shape[:2]
+        
+        # Sample parameters
+        radius_px = self._sample_param(self.radius) * height
+        edge_blur_px = self._sample_param(self.edge_blur) * height
+        circle_dist_px = self._sample_param(self.circle_dist) * height
+        
+        # Calculate the distance of circle center from image center
+        # circle_dist = radius - shift_dist, so shift_dist = radius - circle_dist
+        shift_dist = radius_px - circle_dist_px
+        
+        # Create center with random shift
+        center_y = height / 2.0
+        center_x = width / 2.0
+        
+        # Random angle for center shift
+        angle = np.random.uniform(0, 2 * np.pi)
+        center_y += shift_dist * np.sin(angle)
+        center_x += shift_dist * np.cos(angle)
+        
+        # Create coordinate grids normalized to [-0.5, 0.5]
+        y = np.arange(height, dtype=np.float32) / height - 0.5
+        x = np.arange(width, dtype=np.float32) / width - 0.5
+        yy, xx = np.meshgrid(y, x, indexing='ij')
+        
+        # Normalize center coordinates
+        center_y_norm = center_y / height - 0.5
+        center_x_norm = center_x / width - 0.5
+        
+        # Distance from center
+        dist = np.sqrt((yy - center_y_norm)**2 + (xx - center_x_norm)**2)
+        
+        # Create cone-shaped mask using clipped linear function
+        radius_norm = radius_px / height
+        edge_blur_norm = edge_blur_px / height
+        
+        # Mask starts falling off at (radius - edge_blur) and reaches 0 at (radius + edge_blur)
+        mask = np.ones_like(dist)
+        
+        # Linear falloff in edge region
+        edge_start = radius_norm - edge_blur_norm
+        edge_end = radius_norm + edge_blur_norm
+        
+        # Pixels beyond the edge_end become 0, linearly interpolate in between
+        mask = np.clip((edge_end - dist) / (2 * edge_blur_norm), 0, 1)
+        
+        # Expand mask to match image channels
+        if img.ndim == 3:
+            mask = mask[..., np.newaxis]
+        
+        result = img * mask
+        result = np.clip(result, 0, 255.0)
+        return result.astype(orig_dtype)
+    
+    def get_transform_init_args_names(self):
+        return ("radius", "edge_blur", "circle_dist")
+
+
+class FlashArtifact(A.ImageOnlyTransform):
+    """
+    Simulates a flash artifact in retina images by applying a soft oval-shaped bright spot.
+    
+    Parameters:
+    - additive: whether to add flash on top of image (True) or multiply (False). Default: False
+    - additive_range: tuple of (min, max) values to add when additive=True. Default: (-0.3, 1)
+    - multiplicative_range: tuple of (min, max) values to multiply when additive=False. Default: (0.2, 2)
+    - size: (a+b)/2 value of the ellipse shape. Default: 0.3
+    - sharpness: sharpness of the flash (c parameter). Default: 5
+    - eccentricity: eccentricity of ellipse, between 0 and 1.
+                    If tuple/list, random uniform value from interval. Default: 0.7
+    - center_shift: distance from center to shift flash center as a fraction of sidelength.
+                    If tuple/list, random uniform value from interval. Default: [0, 0.25]
+    """
+    
+    def __init__(
+        self,
+        additive=False,
+        additive_range=(-0.3, 1.0),
+        multiplicative_range=(0.2, 2.0),
+        size=0.3,
+        sharpness=5,
+        eccentricity=0.7,
+        center_shift=(0, 0.25),
+        always_apply=False,
+        p=1.0,
+    ):
+        super().__init__(always_apply=always_apply, p=p)
+        self.additive = additive
+        self.additive_range = additive_range
+        self.multiplicative_range = multiplicative_range
+        self.size = size
+        self.sharpness = sharpness
+        self.eccentricity = eccentricity
+        self.center_shift = center_shift
+    
+    def _sample_param(self, param):
+        """Sample a parameter which can be a scalar or a (min, max) tuple."""
+        if isinstance(param, (list, tuple)) and len(param) == 2:
+            return np.random.uniform(param[0], param[1])
+        return param
+    
+    def _get_interval(self, param):
+        """Get min/max interval from parameter (scalar or tuple)."""
+        if isinstance(param, (list, tuple)) and len(param) == 2:
+            return param[0], param[1]
+        return param, param
+    
+    def apply(self, img, **params):
+        orig_dtype = img.dtype
+        img = img.astype(np.float32, copy=True)
+        height, width = img.shape[:2]
+        
+        # Sample parameters
+        eccentricity = self._sample_param(self.eccentricity)
+        
+        # Sample distance from center shift interval
+        shift_min, shift_max = self._get_interval(self.center_shift)
+        shift_dist = np.random.uniform(shift_min * height, shift_max * height)
+        
+        # Random rotation angle for ellipse
+        rotation_angle = np.random.uniform(0, 2 * np.pi)
+        
+        # Ellipse semi-axes
+        size_px = self.size * height
+        a = size_px
+        b = size_px * (1 - eccentricity)  # b <= a
+        
+        # Create center with random shift
+        center_y = height / 2.0
+        center_x = width / 2.0
+        
+        # Random angle for center shift
+        shift_angle = np.random.uniform(0, 2 * np.pi)
+        center_y += shift_dist * np.sin(shift_angle)
+        center_x += shift_dist * np.cos(shift_angle)
+        
+        # Create coordinate grids normalized to [-0.5, 0.5]
+        y = np.arange(height, dtype=np.float32) / height - 0.5
+        x = np.arange(width, dtype=np.float32) / width - 0.5
+        yy, xx = np.meshgrid(y, x, indexing='ij')
+        
+        # Normalize center coordinates
+        center_y_norm = center_y / height - 0.5
+        center_x_norm = center_x / width - 0.5
+        
+        # Translate to center
+        dx = xx - center_x_norm
+        dy = yy - center_y_norm
+        
+        # Rotate coordinates by rotation_angle
+        cos_a = np.cos(rotation_angle)
+        sin_a = np.sin(rotation_angle)
+        dx_rot = dx * cos_a + dy * sin_a
+        dy_rot = -dx * sin_a + dy * cos_a
+        
+        # Normalize axes
+        a_norm = a / height
+        b_norm = b / height
+        
+        # Compute rotated ellipse levelset
+        ellipse_level = self.sharpness * (
+            (dx_rot / a_norm)**2 +
+            (dy_rot / b_norm)**2 -
+            1.0
+        )
+        
+        # Clip to avoid overflow in exp
+        ellipse_level = np.clip(ellipse_level, -50, 50)
+        
+        # Apply sigmoid to get smooth falloff
+        sigmoid_mask = 1.0 / (1.0 + np.exp(ellipse_level))
+        
+        # Scale mask to appropriate range (working in [0, 255] space for uint8 images)
+        if self.additive:
+            val_min, val_max = self.additive_range
+            # Convert from [0, 1] range to [0, 255] range for uint8 images
+            intensity_mask = val_min + sigmoid_mask * (val_max - val_min)
+            intensity_mask = intensity_mask * 255.0
+        else:
+            val_min, val_max = self.multiplicative_range
+            # Multiplicative range stays as-is for scaling
+            intensity_mask = val_min + sigmoid_mask * (val_max - val_min)
+        
+        # Expand mask to match image channels
+        if img.ndim == 3:
+            intensity_mask = intensity_mask[..., np.newaxis]
+        
+        # Apply the flash
+        if self.additive:
+            result = img + intensity_mask
+        else:
+            result = img * intensity_mask
+        
+        # Clip to valid range [0, 255]
+        result = np.clip(result, 0, 255.0)
+        
+        return result.astype(orig_dtype)
+    
+    def get_transform_init_args_names(self):
+        return ("additive", "additive_range", "multiplicative_range", "size", 
+                "sharpness", "eccentricity", "center_shift")
