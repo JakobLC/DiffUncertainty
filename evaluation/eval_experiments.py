@@ -25,6 +25,7 @@ from pydantic.utils import deep_update
 class EvalExperiments:
     LIDC_SPLITS = ["id", "val", "ood_noise", "ood_blur", "ood_jpeg", "ood_contrast"]
     CHAKSU_SPLITS = ["id", "val", "ood"]
+    RETINA_SPLITS = ["id", "val", "ood_fov", "ood_flash", "ood_blur"]
 
     @staticmethod
     def _dataset_name_for_version(version_params):
@@ -145,6 +146,8 @@ class EvalExperiments:
             return list(self.LIDC_SPLITS)
         if "chaksu" in combined_key:
             return list(self.CHAKSU_SPLITS)
+        if "retina" in combined_key:
+            return list(self.RETINA_SPLITS)
         return None
 
     def _all_expected_dataset_dirs(self, version):

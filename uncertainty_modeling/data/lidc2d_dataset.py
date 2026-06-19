@@ -14,7 +14,7 @@ AUGMENTED_SPLITS = {
 }
 
 NUM_RATERS_TO_DATASET = {
-    4: ["lidc64", "lidc128", "origlidc64", "origlidc128"],
+    4: ["lidc64", "lidc128", "origlidc64", "origlidc128","npc64", "npc128"],
     5: ["chaksu64", "chaksu128"],
     6: ["riga64", "riga128"],
     7: ["refuge64", "refuge128"],

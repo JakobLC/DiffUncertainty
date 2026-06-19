@@ -472,3 +472,68 @@ class FlashArtifact(A.ImageOnlyTransform):
     def get_transform_init_args_names(self):
         return ("additive", "additive_range", "multiplicative_range", "size", 
                 "sharpness", "eccentricity", "center_shift")
+
+
+class FilteredImageNoise(A.ImageOnlyTransform):
+	"""
+	Apply spatially-filtered Gaussian noise to an image, modulated by image intensities.
+	
+	Parameters:
+	- noise_scale: multiplicative factor applied to the filtered noise. Default: 0.125
+	- sigma: standard deviation of the Gaussian filter applied spatially. Default: 2.3
+	"""
+	
+	def __init__(
+		self,
+		noise_scale: float = 0.125,
+		sigma: float = 2.3,
+		p: float = 1.0,
+	):
+		super().__init__(p=p)
+		self.noise_scale = float(noise_scale)
+		self.sigma = float(sigma)
+	
+	def apply(self, img, **params):
+		orig_dtype = img.dtype
+		img = img.astype(np.float32, copy=True)
+		height, width = img.shape[:2]
+		n_channels = img.shape[2] if img.ndim == 3 else 1
+		
+		# Generate Gaussian noise in spatial dimensions only (H, W)
+		noise_spatial = np.random.normal(0.0, 1.0, size=(height, width)).astype(np.float32)
+		
+		# Apply Gaussian filter in spatial dimensions only
+		noise_filtered = nd.gaussian_filter(noise_spatial, sigma=self.sigma)
+		
+		# Normalize: (noise - mean) / std
+		noise_mean = float(np.mean(noise_filtered))
+		noise_std = float(np.std(noise_filtered))
+		if noise_std > 1e-6:
+			noise_normalized = (noise_filtered - noise_mean) / noise_std
+		else:
+			noise_normalized = noise_filtered
+		
+		# Scale by noise_scale factor
+		noise_scaled = self.noise_scale * noise_normalized
+		
+		# Expand to match image channels (H, W) -> (H, W, C)
+		# Each channel gets the same spatial noise pattern
+		if img.ndim == 3:
+			noise_expanded = noise_scaled[..., np.newaxis]  # (H, W, 1)
+			noise_expanded = np.repeat(noise_expanded, n_channels, axis=2)  # (H, W, C)
+		else:
+			noise_expanded = noise_scaled
+		
+		# Multiply noise by image intensities
+		noise_modulated = noise_expanded * img
+		
+		# Add to image
+		result = img + noise_modulated
+		
+		# Clip to valid range [0, 1] for float images
+		result = np.clip(result, 0.0, 1.0)
+		
+		return result.astype(orig_dtype)
+	
+	def get_transform_init_args_names(self):
+		return ("noise_scale", "sigma")
