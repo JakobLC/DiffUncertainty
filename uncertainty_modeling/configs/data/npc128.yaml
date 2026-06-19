@@ -7,8 +7,8 @@ data:
   num_classes: 3
   ignore_index: -1
   num_workers: 8
-  batch_size: 64
-  val_batch_size: 64
+  batch_size: 32
+  val_batch_size: 32
   data_fold_id: 0
   evaluate_training_data: true
   evaluate_all_raters: true
