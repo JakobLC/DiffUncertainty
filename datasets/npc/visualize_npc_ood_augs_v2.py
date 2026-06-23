@@ -18,7 +18,7 @@ from monai.transforms import (
 	RandHistogramShift,
 	RandGibbsNoise,
 	RandKSpaceSpikeNoise,
-	HistogramNormalize,
+	RandRicianNoise,
 )
 
 
@@ -40,7 +40,7 @@ BIAS_FIELD_PARAMS = {
 
 CONTRAST_PARAMS = {
 	"prob": 1.0,
-	"gamma": (1.5, 2.0),
+	"gamma": (1.8, 2.2),
 }
 
 HISTOGRAM_SHIFT_PARAMS = {
@@ -56,6 +56,11 @@ GIBBS_NOISE_PARAMS = {
 KSPACE_SPIKE_PARAMS = {
 	"prob": 1.0,
 	"intensity_range": (6, 8),
+}
+
+RICIAN_NOISE_PARAMS = {
+	"std": 0.2,
+	"prob": 1.0,
 }
 
 
@@ -220,7 +225,7 @@ def main():
 	histogram_shift_transform = RandHistogramShift(**HISTOGRAM_SHIFT_PARAMS)
 	gibbs_noise_transform = RandGibbsNoise(**GIBBS_NOISE_PARAMS)
 	kspace_spike_transform = RandKSpaceSpikeNoise(**KSPACE_SPIKE_PARAMS)
-	histogram_norm_transform = HistogramNormalize(num_bins=256)
+	rician_noise_transform = RandRicianNoise(**RICIAN_NOISE_PARAMS)
 	
 	# Load and transform images
 	original_images = []
@@ -229,7 +234,7 @@ def main():
 	histogram_shift_images = []
 	gibbs_noise_images = []
 	kspace_spike_images = []
-	histogram_norm_images = []
+	rician_noise_images = []
 	
 	for img_float in images:
 		# img_float is (H, W, C) from numpy
@@ -276,11 +281,11 @@ def main():
 			kspace_spike_images.append(original_images[-1])
 		
 		try:
-			histogram_norm_result = histogram_norm_transform(img_chw)
-			histogram_norm_images.append(_normalize_channels_individually(histogram_norm_result.permute(1, 2, 0).numpy()))
+			rician_result = apply_transform_per_channel(img_chw, rician_noise_transform)
+			rician_noise_images.append(_normalize_channels_individually(rician_result.permute(1, 2, 0).numpy()))
 		except Exception as e:
-			print(f"Error in histogram normalize: {e}")
-			histogram_norm_images.append(original_images[-1])
+			print(f"Error in Rician noise: {e}")
+			rician_noise_images.append(original_images[-1])
 	
 	# Create visualization grid
 	n_cols = len(images) * 2  # Double columns: RGB + T1c grayscale
@@ -299,7 +304,7 @@ def main():
 		("RandHistogramShift", histogram_shift_images),
 		("RandGibbsNoise", gibbs_noise_images),
 		("RandKSpaceSpikeNoise", kspace_spike_images),
-		("HistogramNormalize", histogram_norm_images),
+		("RandRicianNoise", rician_noise_images),
 	]
 	
 	for r, (row_name, row_images) in enumerate(row_data):

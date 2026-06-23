@@ -1,0 +1,59 @@
+#@package _global_
+defaults:
+  - _self_
+  - datasets: npc128
+  - tasks/threshold
+  - tasks/area
+  - tasks/aggregation_all
+  - tasks/failure_detection
+
+base_path: "/home/jloch/Desktop/diff/luzern/values/saves"
+second_cycle_path: "/home/jloch/Desktop/diff/luzern/values/experiments/SecondCycle"
+only_pu: false
+evaluate_training_data: false
+evaluate_all_raters: true
+
+tasks: ["threshold", "area", "aggregation","ood_detection","ambiguity_modeling","calibration"] #,"cleanup"
+#tasks: ["ood_detection","ambiguity_modeling","calibration"]
+#tasks: ["cleanup_finished"]
+#tasks: ["calibration"] #, "ambiguity_modeling"]
+
+task_params:
+  threshold:
+    - ${QUANTILE}
+    - ${THRESHOLD}
+  area: ${AREA_STATS}
+  aggregation: ${AGG_ALL}
+  second_cycle_splits:
+    datasets: ["unlabeled"]
+    function:
+      _target_: evaluation.split_file_generation.split_files_second_cycle.generate_split_file
+      base_splits_path: ${base_splits_path}
+  second_cycle_splits_random:
+    datasets: [ "unlabeled" ]
+    function:
+      _target_: evaluation.split_file_generation.split_files_second_cycle_random.generate_split_file
+      base_splits_path: ${base_splits_path}
+      random_types: ["random", "best", "worst"]
+  ood_detection:
+    #datasets: ["unlabeled"]
+    datasets: ["id&ood_noise", "id&ood_gibbs", "id&ood_hist"]
+    function:
+      _target_: evaluation.metrics.auroc.ood_detection
+      base_splits_path: ${base_splits_path}
+  failure_detection: ${FAILURE_DETECTION}
+  calibration:
+    #datasets: [ "id", "ood" ]
+    datasets: [ "id", "ood_noise", "ood_gibbs", "ood_hist" ]
+    function:
+      _target_: evaluation.metrics.ace.main
+  ambiguity_modeling:
+    #datasets: [ "id", "ood" ]
+    datasets: [ "id", "ood_noise", "ood_gibbs", "ood_hist" ]
+    function:
+      _target_: evaluation.metrics.ncc.main
+  al_improvement:
+    datasets: ["ood"]
+    function:
+      _target_: evaluation.metrics.al_improvement.main
+

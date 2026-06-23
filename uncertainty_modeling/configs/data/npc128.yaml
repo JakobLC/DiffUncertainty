@@ -4,7 +4,7 @@ data:
   name: "npc128"
   nickname: "npc128"
   data_input_dir: "/home/jloch/Desktop/diff/luzern/values_datasets/npc128"
-  num_classes: 3
+  num_classes: 2
   ignore_index: -1
   num_workers: 8
   batch_size: 32

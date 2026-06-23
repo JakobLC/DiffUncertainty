@@ -1,0 +1,27 @@
+#@package _global_
+defaults:
+  - /../../uncertainty_modeling/configs/data/npc128
+  - _self_
+
+data_input_dir: "/home/jloch/Desktop/diff/luzern/values_datasets/npc128"
+datamodule_config: ${data}
+data:
+  data_input_dir: ${data_input_dir}
+base_splits_path: "/home/jloch/Desktop/diff/luzern/values_datasets/npc128/splits"
+experiments:
+  - ${CLEAN_ALL_NPC}
+
+CLEAN_ALL_NPC:
+  iter_params:
+    shift: [ "scanner" ]
+    name: [ "aug:4GT_aug_strong_prob_unet_dropout_0", "aug0.8_diffusion_dropout_0", "aug:4GT_aug_bonkers_prob_unet_dropout_0", "aug0.4_softmax_dropout_0", "aug0.1_diffusion_dropout_0", "aug0.8_prob_unet_dropout_0", "aug0.4_prob_unet_dropout_0", "aug:4GT_aug_weak_ssn_dropout_0", "aug:deform_mask_ssn_dropout_0", "aug:4GT_aug_strong_diffusion_dropout_0", "diffusion_dropout_0", "aug:_aug_bonkers_ssn_dropout_0", "aug:strong_geo_ssn_dropout_0", "aug:4GT_aug_weak_softmax_dropout_0", "aug:strong_prob_unet_dropout_0", "aug:deform_mask_prob_unet_dropout_0", "aug0.8_ssn_dropout_0", "aug0.4_diffusion_dropout_0", "aug:4GT_aug_weak_prob_unet_dropout_0", "softmax_dropout_0", "aug0.1_prob_unet_dropout_0", "aug:_aug_bonkers_prob_unet_dropout_0", "aug:deform_both_diffusion_dropout_0", "aug:4GT_aug_bonkers_diffusion_dropout_0", "aug0.2_softmax_dropout_0", "diffusion_ens_0[0,1,2,3,4]", "aug:4GT_aug_bonkers_ssn_dropout_0", "prob_unet_ens_0[0,1,2,3,4]", "aug0.1_ssn_dropout_0", "aug:4GT_aug_strong_softmax_dropout_0", "aug:deform_mask_diffusion_dropout_0", "aug:strong_geo_prob_unet_dropout_0", "aug:4GT_aug_weak_diffusion_dropout_0", "aug1.0_softmax_dropout_0", "aug:strong_ssn_dropout_0", "aug:_aug_bonkers_diffusion_dropout_0", "aug:deform_bright_ssn_dropout_0", "aug:strong_geo_softmax_dropout_0", "ssn_dropout_0", "aug:strong_pixel_softmax_dropout_0", "aug:_aug_bonkers_softmax_dropout_0", "aug0.4_ssn_dropout_0", "aug:deform_both_prob_unet_dropout_0", "aug:deform_bright_softmax_dropout_0", "aug:deform_both_ssn_dropout_0", "aug:strong_diffusion_dropout_0", "aug:strong_pixel_prob_unet_dropout_0", "aug0.6_softmax_dropout_0", "aug0.1_softmax_dropout_0", "aug0.6_prob_unet_dropout_0", "prob_unet_dropout_0", "aug:4GT_aug_bonkers_softmax_dropout_0", "aug:deform_mask_softmax_dropout_0", "ssn_ens_0[0,1,2,3,4]", "aug:strong_softmax_dropout_0", "aug1.0_ssn_dropout_0", "aug:strong_pixel_diffusion_dropout_0", "aug1.0_prob_unet_dropout_0", "aug0.2_prob_unet_dropout_0", "aug:deform_both_softmax_dropout_0", "aug:strong_geo_diffusion_dropout_0", "aug1.0_diffusion_dropout_0", "aug0.2_ssn_dropout_0", "softmax_ens_0[0,1,2,3,4]", "aug0.6_diffusion_dropout_0", "aug0.8_softmax_dropout_0", "aug0.6_ssn_dropout_0", "aug:deform_bright_prob_unet_dropout_0", "aug:deform_bright_diffusion_dropout_0", "aug0.2_diffusion_dropout_0", "aug:4GT_aug_strong_ssn_dropout_0", "aug:strong_pixel_ssn_dropout_0" ]
+    seed: [ "120" ]
+    cfg: [ "standard" ]
+    data: [ "npc128" ]
+    epochs: [ "10", "20", "40", "80", "160", "320" ]
+  skip_missing: true
+  skip_finished: false
+  exp_name: "single_rater_npc"
+  naming_scheme_version: "{name}/e{epochs}_ema"
+  aggregations: [ "all" ]
+  n_reference_segs: null
