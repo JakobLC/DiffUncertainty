@@ -1,7 +1,7 @@
 """Create augmented OOD samples for NPC dataset using MONAI transforms.
 
 This script generates augmented out-of-distribution samples by applying
-three MONAI augmentations (Rician noise, Histogram shift, Gibbs noise) to id_test images:
+three MONAI augmentations (Rician noise, Histogram shift, Gibbs noise) to id images:
 - ood_noise: RandRicianNoise
 - ood_hist: RandHistogramShift
 - ood_gibbs: RandGibbsNoise
@@ -57,7 +57,7 @@ HISTOGRAM_SHIFT_PARAMS = {
 }
 
 GIBBS_NOISE_PARAMS = {
-	"alpha": (0.6, 0.7),
+	"alpha": (0.75, 0.75),
 	"prob": 1.0,
 }
 
@@ -189,21 +189,21 @@ def process_dataset(
 	transforms: Dict,
 	num_augmentations: int = 1,
 ) -> None:
-	"""Process all id_test images and create augmented versions.
+	"""Process all id images and create augmented versions.
 	
-	For each image path in id_test split, apply augmentations and save to augmented folders.
+	For each image path in id split, apply augmentations and save to augmented folders.
 	"""
 	image_dir = dataset_root / "preprocessed" / "images"
 	aug_dirs = ensure_augmented_dirs(dataset_root)
 	
-	id_test_paths = splits["id_test"]
-	total_images = len(id_test_paths)
+	id_paths = splits["id"]
+	total_images = len(id_paths)
 	processed = 0
 	skipped = 0
 	
-	logging.info(f"Processing {total_images} id_test images")
+	logging.info(f"Processing {total_images} id images")
 	
-	for rel_path in id_test_paths:
+	for rel_path in id_paths:
 		# Parse path: "images/filename.npy"
 		parts = Path(rel_path).parts
 		if len(parts) >= 2:
@@ -275,8 +275,8 @@ def main() -> None:
 	# Load splits
 	logging.info("Loading splits...")
 	splits = load_splits(dataset_root)
-	id_test_count = len(splits["id_test"])
-	logging.info(f"Found {id_test_count} id_test images")
+	id_count = len(splits["id"])
+	logging.info(f"Found {id_count} id images")
 	
 	# Create transforms
 	logging.info("Creating augmentation transforms...")

@@ -352,14 +352,9 @@ class BaseDataModule(LightningDataModule):
         if stage in (None, "test"):
             transforms_test = get_augmentations_from_config(self.augmentations.TEST)[0]
 
-            if self.test_split in {"id", "ood"}:
-                test_split = f"{self.test_split}_test"
-            else:
-                test_split = self.test_split
-            
             test_kwargs = dict(
                 base_dir=self.data_input_dir,
-                split=test_split,
+                split=self.test_split,
                 transforms=transforms_test,
                 tta=self.tta,
             )

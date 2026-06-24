@@ -63,6 +63,11 @@ def parse_args() -> argparse.Namespace:
         help="Random seed used for shuffling the folds",
     )
     parser.add_argument(
+        "--overwrite-splits",
+        action="store_true",
+        help="Overwrite splits pickle file if it already exists. If False, show comparison of old vs new.",
+    )
+    parser.add_argument(
         "--verbose",
         action="store_true",
         help="Increase logging verbosity",
@@ -149,17 +154,35 @@ def build_folds(remidio_samples: Sequence[str], num_splits: int, seed: int) -> L
 
 def attach_common_sets(
     folds: List[dict],
-    id_test: Sequence[str],
-    ood_test: Sequence[str],
+    id: Sequence[str],
+    ood: Sequence[str],
 ) -> None:
-    id_test_arr = np.array(id_test)
-    ood_test_arr = np.array(ood_test)
-    empty = np.array([], dtype=object)
+    id_arr = np.array(id, dtype=object)
+    ood_arr = np.array(ood, dtype=object)
     for fold in folds:
-        fold["id_test"] = id_test_arr
-        fold["ood_test"] = ood_test_arr
-        fold["id_unlabeled_pool"] = empty
-        fold["ood_unlabeled_pool"] = empty
+        fold["id"] = id_arr
+        fold["ood"] = ood_arr
+
+
+def _format_split_preview(folds: List[dict]) -> str:
+    """Format first/last 2 entries from each key in the first fold for comparison."""
+    if not folds:
+        return "<empty>"
+    fold = folds[0]
+    lines = []
+    for key in sorted(fold.keys()):
+        if key.startswith("_"):
+            continue
+        values = fold[key]
+        if len(values) == 0:
+            lines.append(f"{key}: []")
+        elif len(values) <= 4:
+            lines.append(f"{key}: {list(values)}")
+        else:
+            first_two = list(values[:2])
+            last_two = list(values[-2:])
+            lines.append(f"{key}: [{first_two[0]}, {first_two[1]}, {last_two[0]}, {last_two[1]}]")
+    return "\n  ".join(lines)
 
 
 def main() -> None:
@@ -196,9 +219,25 @@ def main() -> None:
     folds = build_folds(remidio_train, args.num_splits, args.seed)
     attach_common_sets(folds, remidio_test, ood_test)
 
-    with output_path.open("wb") as handle:
-        pickle.dump(folds, handle)
-    logging.info("Saved %d folds to %s", len(folds), output_path)
+    # Check if file exists and overwrite_splits is False
+    if output_path.exists() and not args.overwrite_splits:
+        print(f"\n[SKIPPED] Splits file already exists: {output_path}")
+        print("  To proceed, rerun with --overwrite-splits\n")
+        
+        # Load old splits
+        with output_path.open("rb") as handle:
+            old_splits = pickle.load(handle)
+        
+        print("OLD splits (first 2 and last 2 entries per key):")
+        print(f"  {_format_split_preview(old_splits)}\n")
+        
+        print("NEW splits (first 2 and last 2 entries per key):")
+        print(f"  {_format_split_preview(folds)}\n")
+    else:
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        with output_path.open("wb") as handle:
+            pickle.dump(folds, handle)
+        logging.info("Saved %d folds to %s", len(folds), output_path)
 
 
 if __name__ == "__main__":

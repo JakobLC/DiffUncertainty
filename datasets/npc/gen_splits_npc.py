@@ -76,6 +76,11 @@ def parse_args() -> argparse.Namespace:
         help="Random seed for shuffling patients",
     )
     parser.add_argument(
+        "--overwrite-splits",
+        action="store_true",
+        help="Overwrite splits pickle file if it already exists. If False, show comparison of old vs new.",
+    )
+    parser.add_argument(
         "--verbose",
         action="store_true",
         help="Increase logging verbosity",
@@ -240,6 +245,27 @@ def ensure_output_path(output_path: Path) -> Path:
     return output_path
 
 
+def _format_split_preview(splits: list) -> str:
+    """Format first/last 2 entries from each key in the first fold for comparison."""
+    if not splits:
+        return "<empty>"
+    fold = splits[0]
+    lines = []
+    for key in sorted(fold.keys()):
+        if key.startswith("_"):
+            continue
+        values = fold[key]
+        if len(values) == 0:
+            lines.append(f"{key}: []")
+        elif len(values) <= 4:
+            lines.append(f"{key}: {list(values)}")
+        else:
+            first_two = list(values[:2])
+            last_two = list(values[-2:])
+            lines.append(f"{key}: [{first_two[0]}, {first_two[1]}, {last_two[0]}, {last_two[1]}]")
+    return "\n  ".join(lines)
+
+
 def main() -> None:
     args = parse_args()
     setup_logging(args.verbose)
@@ -281,25 +307,37 @@ def main() -> None:
     
     # Create split structure (single fold, not cross-validation)
     empty = np.array([], dtype=object)
-    test_images_array = np.array(test_images, dtype=object)
+    id_array = np.array(test_images, dtype=object)
     splits = [
         {
             "train": np.array(train_images, dtype=object),
             "val": np.array(val_images, dtype=object),
-            "id_test": test_images_array,
-            "ood_noise": test_images_array,
-            "ood_hist": test_images_array,
-            "ood_gibbs": test_images_array,
-            "id_unlabeled_pool": empty,
-            "ood_unlabeled_pool": empty,
+            "id": id_array,
+            "ood_noise": np.array([f"augmented/ood_noise/{p}" for p in id_array], dtype=object),
+            "ood_hist": np.array([f"augmented/ood_hist/{p}" for p in id_array], dtype=object),
+            "ood_gibbs": np.array([f"augmented/ood_gibbs/{p}" for p in id_array], dtype=object),
         }
     ]
     
-    # Save splits
-    with output_path.open("wb") as handle:
-        pickle.dump(splits, handle)
-    
-    logging.info("Saved splits to %s", output_path)
+    # Check if file exists and overwrite_splits is False
+    if output_path.exists() and not args.overwrite_splits:
+        print(f"\n[SKIPPED] Splits file already exists: {output_path}")
+        print("  To proceed, rerun with --overwrite-splits\n")
+        
+        # Load old splits
+        with output_path.open("rb") as handle:
+            old_splits = pickle.load(handle)
+        
+        print("OLD splits (first 2 and last 2 entries per key):")
+        print(f"  {_format_split_preview(old_splits)}\n")
+        
+        print("NEW splits (first 2 and last 2 entries per key):")
+        print(f"  {_format_split_preview(splits)}\n")
+    else:
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        with output_path.open("wb") as handle:
+            pickle.dump(splits, handle)
+        logging.info("Saved splits to %s", output_path)
 
 
 if __name__ == "__main__":

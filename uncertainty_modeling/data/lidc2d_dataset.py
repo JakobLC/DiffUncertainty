@@ -8,11 +8,6 @@ from typing import List
 import numpy as np
 import torch
 
-AUGMENTED_SPLITS = {
-    "ood_noise", "ood_blur", "ood_contrast", "ood_jpeg",  # LIDC augmented OOD splits
-    "ood_fov",  # Retina augmented OOD split (FOV-based augmentation)
-}
-
 NUM_RATERS_TO_DATASET = {
     4: ["lidc64", "lidc128", "origlidc64", "origlidc128","npc64", "npc128"],
     5: ["chaksu64", "chaksu128"],
@@ -93,15 +88,13 @@ def collate_multirater_batch(batch: List[dict]) -> dict:
 
 
 class MultiRater2DDataset(torch.utils.data.Dataset):
-    """Multi-rater 2D segmentation dataset (supports LIDC & Chaksu).
+    """Multi-rater 2D segmentation dataset (supports LIDC, Chaksu, NPC, Retina).
 
-    Mirrors how the Cityscapes dataset plugs into ``BaseDataModule`` while
-    reading from ``preprocessed/images`` & ``preprocessed/labels`` plus split
-    definitions stored in ``splits.pkl``. Images can be grayscale (LIDC) or RGB
-    (Chaksu) and every base image has multiple rater masks following a format
-    such as ``{base_id}_{rater:02d}_mask.npy``. ``_meta`` inside ``splits.pkl``
-    can optionally define ``dataset_name``, ``num_raters`` or ``rater_pattern``
-    so configs only need to override the pieces that differ from LIDC defaults.
+    Reads from ``preprocessed/images`` & ``preprocessed/labels`` plus split
+    definitions stored in ``splits.pkl``. Images can be grayscale (LIDC/NPC) or RGB
+    (Chaksu/Retina) and every base image has multiple rater masks following a format
+    such as ``{base_id}_{rater:02d}_mask.npy``. Supports augmented OOD splits where
+    image paths are prefixed with the augmented directory (e.g., ``augmented/ood_noise/images/file.npy``).
     """
 
     def __init__(
@@ -169,11 +162,12 @@ class MultiRater2DDataset(torch.utils.data.Dataset):
         subject_ids = self._resolve_subject_ids(fold_entry, split)
         # Directory that contains the preprocessed images/labels folders
         proc_dir = os.path.join(base_dir, "preprocessed")
-        image_dir = self._resolve_image_dir(proc_dir, split)
         label_dir = os.path.join(proc_dir, "labels")
 
+        # With the new format, subject_ids contain full paths relative to proc_dir
+        # (e.g., "images/file.npy" or "augmented/ood_noise/images/file.npy")
         self.samples = load_multirater_samples(
-            image_dir=image_dir,
+            proc_dir=proc_dir,
             label_dir=label_dir,
             pattern=self.file_pattern,
             subject_ids=subject_ids,
@@ -213,21 +207,16 @@ class MultiRater2DDataset(torch.utils.data.Dataset):
         # Get parent directory of the combined dataset
         parent_dir = os.path.dirname(os.path.normpath(base_dir))
         
-        # Determine if this is an augmented split and map to the actual split in metadata
-        actual_split_for_meta = split
-        if split in AUGMENTED_SPLITS and split not in fold_entry:
-            # For augmented splits like ood_fov, ood_noise, etc., they reference id_test in metadata
-            actual_split_for_meta = "id_test"
+        # With new format, subject_ids contain full paths with explicit augmented directory info
+        subject_ids = self._resolve_subject_ids(fold_entry, split)
         
-        subject_ids = self._resolve_subject_ids(fold_entry, actual_split_for_meta)
-        
-        # Load samples from multiple source directories, passing the split for augmented path resolution
+        # Load samples from multiple source directories
         samples = load_combined_multirater_samples(
             parent_dir=parent_dir,
             subject_ids=subject_ids,
             dataset_num_raters=self.dataset_num_raters,
             pattern=self.file_pattern,
-            split=split,  # Pass the original split name for augmented directory resolution
+            split=split,
         )
         
         self.samples = samples
@@ -248,35 +237,10 @@ class MultiRater2DDataset(torch.utils.data.Dataset):
         return len(self.imgs)
 
     def _resolve_subject_ids(self, fold_entry, split):
-        if split == "unlabeled":
-            id_pool = np.asarray(fold_entry.get("id_unlabeled_pool", []), dtype=object)
-            ood_pool = np.asarray(fold_entry.get("ood_unlabeled_pool", []), dtype=object)
-            return np.concatenate((id_pool, ood_pool)).tolist()
-        
-        # Map split aliases to actual keys in fold_entry
+        # The split should now be directly in fold_entry (renamed from id_test -> id, ood_test -> ood)
         key = split
-        if split == "id":
-            key = "id_test"
-        elif split == "ood":
-            # Try "ood_test" first (old format), then "ood_fov" (new format for augmentation-based OOD)
-            if "ood_test" in fold_entry:
-                key = "ood_test"
-            elif "ood_fov" in fold_entry:
-                key = "ood_fov"
-        elif split == "ood_test":
-            # If explicitly requesting "ood_test", but it doesn't exist, try "ood_fov"
-            if split not in fold_entry and "ood_fov" in fold_entry:
-                key = "ood_fov"
         
         if key not in fold_entry:
-            if split in {"ood", "ood_test"} and any(name in fold_entry for name in AUGMENTED_SPLITS):
-                available = ", ".join(sorted(name for name in AUGMENTED_SPLITS if name in fold_entry)) or "<none>"
-                raise ValueError(
-                    "Requested split '" + split + "' is not available for schema '"
-                    + str(self.split_schema or "unknown")
-                    + "'. Pick one of: "
-                    + available
-                )
             available = sorted(k for k in fold_entry.keys() if not k.startswith("_"))
             raise ValueError(
                 f"Unknown split '{split}'. Available options: {', '.join(available)}"
@@ -285,17 +249,6 @@ class MultiRater2DDataset(torch.utils.data.Dataset):
         if isinstance(values, np.ndarray):
             return values.tolist()
         return list(values)
-
-    def _resolve_image_dir(self, proc_dir: str, split: str) -> str:
-        if split in AUGMENTED_SPLITS:
-            candidate = os.path.join(proc_dir, "augmented", split, "images")
-        else:
-            candidate = os.path.join(proc_dir, "images")
-        if not os.path.isdir(candidate):
-            raise FileNotFoundError(
-                f"Expected directory '{candidate}' for split '{split}', but it does not exist."
-            )
-        return candidate
 
     def _load_image(self, path: str) -> np.ndarray:
         img = np.load(path)
@@ -410,32 +363,39 @@ class MultiRater2DDataset(torch.utils.data.Dataset):
 LIDC2DDataset = MultiRater2DDataset  # Backward compatibility alias
 
 def load_multirater_samples(
-    image_dir: str,
+    proc_dir: str,
     label_dir: str,
     pattern: str = "*.npy",
     subject_ids=None,
     num_raters: int = 4,
     rater_pattern: str = "{base_id}_{rater:02d}_mask.npy",
 ):
+    """Load multi-rater samples with paths relative to proc_dir.
+    
+    With the new standardized format:
+    - subject_ids contain full paths relative to proc_dir (e.g., "images/file.npy" or "augmented/ood_noise/images/file.npy")
+    - Labels are always in label_dir with the standard rater pattern
+    """
     samples = []
-    (_, _, image_filenames) = next(os.walk(image_dir))
-    subject_filter = None
-    if subject_ids is not None:
-        subject_filter = set()
-        for sid in subject_ids:
-            sid_str = str(sid)
-            if not sid_str:
-                continue
-            subject_filter.add(sid_str)
-            basename = os.path.basename(sid_str)
-            if basename:
-                subject_filter.add(basename)
-                subject_filter.add(os.path.splitext(basename)[0])
-    for image_filename in sorted(fnmatch.filter(image_filenames, pattern)):
-        base_id = os.path.splitext(image_filename)[0]
-        if subject_filter is not None and image_filename not in subject_filter and base_id not in subject_filter:
+    
+    if subject_ids is None:
+        subject_ids = []
+    
+    for image_relpath in subject_ids:
+        image_relpath_str = str(image_relpath).strip()
+        if not image_relpath_str:
             continue
-        image_path = os.path.join(image_dir, image_filename)
+        
+        # Full path to the image file
+        image_path = os.path.join(proc_dir, image_relpath_str)
+        if not os.path.exists(image_path):
+            raise FileNotFoundError(f"Expected image file not found: {image_path}")
+        
+        # Extract base_id from the filename for constructing label paths
+        image_filename = os.path.basename(image_relpath_str)
+        base_id = os.path.splitext(image_filename)[0]
+        
+        # Construct label paths
         label_paths = []
         for rater in range(num_raters):
             label_name = rater_pattern.format(
@@ -443,13 +403,17 @@ def load_multirater_samples(
                 filename=image_filename,
                 rater=rater,
             )
-            label_paths.append(os.path.join(label_dir, label_name))
+            label_path = os.path.join(label_dir, label_name)
+            label_paths.append(label_path)
+        
+        # Verify all labels exist
         missing = [path for path in label_paths if not os.path.exists(path)]
         if missing:
             missing_rel = ", ".join(os.path.basename(p) for p in missing)
             raise FileNotFoundError(
                 f"Missing expected rater masks [{missing_rel}] for image '{image_filename}'"
             )
+        
         samples.append(
             {
                 "image_path": image_path,
@@ -457,6 +421,7 @@ def load_multirater_samples(
                 "image_id": base_id,
             }
         )
+    
     return samples
 
 
@@ -471,25 +436,23 @@ def load_combined_multirater_samples(
     """Load samples from multiple datasets with prefixed paths and variable rater counts.
     
     This function handles combined datasets where samples have prefixed paths like
-    "chaksu64/t_000000.npy" and different datasets have different numbers of raters.
-    Supports augmented splits (e.g., ood_fov, ood_noise) which reference the same
-    samples as id_test but from an augmented image directory.
+    "dataset_name/images/file.npy" or "dataset_name/augmented/ood_noise/images/file.npy"
+    and different datasets have different numbers of raters.
     
     Parameters:
     -----------
     parent_dir : str
         Parent directory containing source datasets (e.g., /path/to/values_datasets)
     subject_ids : list, optional
-        List of subject IDs with dataset prefixes (e.g., ["chaksu64/t_000000.npy", ...])
+        List of subject IDs with full paths relative to each dataset (e.g., ["chaksu64/images/file.npy", ...])
     dataset_num_raters : dict
-        Mapping of dataset name -> number of raters (e.g., {"chaksu64": 5, "refuge64": 7})
+        Mapping of dataset name -> number of raters
     pattern : str
         File pattern to match (default: "*.npy")
     rater_pattern : str
         Pattern for rater mask filenames
     split : str, optional
-        The split name (e.g., "train", "ood_fov", "ood_noise"). If an augmented split,
-        the image directory will be looked up in augmented/<split>/images instead of images.
+        The split name (for informational purposes)
     
     Returns:
     --------
@@ -500,95 +463,64 @@ def load_combined_multirater_samples(
     if subject_ids is None:
         subject_ids = []
     
-    # Determine if this is an augmented split
-    is_augmented_split = split in AUGMENTED_SPLITS
-    
-    # Build a set of (dataset_name, image_filename) tuples from subject_ids
-    subject_filter = {}
-    for sid in subject_ids:
-        sid_str = str(sid)
-        if not sid_str:
+    for subject_id in subject_ids:
+        subject_id_str = str(subject_id).strip()
+        if not subject_id_str:
             continue
         
-        # Parse the prefixed path: "dataset_name/image_file.npy"
-        if "/" in sid_str:
-            parts = sid_str.split("/", 1)
-            dataset_name = parts[0]
-            image_spec = parts[1]
-        else:
+        # Parse the prefixed path: "dataset_name/path/to/image.npy"
+        if "/" not in subject_id_str:
             continue
         
-        if dataset_name not in subject_filter:
-            subject_filter[dataset_name] = set()
+        parts = subject_id_str.split("/", 1)
+        dataset_name = parts[0]
+        image_relpath = parts[1]  # e.g., "images/file.npy" or "augmented/ood_noise/images/file.npy"
         
-        subject_filter[dataset_name].add(image_spec)
-        # Also add basename and base without extension
-        basename = os.path.basename(image_spec)
-        subject_filter[dataset_name].add(basename)
-        subject_filter[dataset_name].add(os.path.splitext(basename)[0])
-    
-    # Process each dataset
-    for dataset_name in sorted(dataset_num_raters.keys()):
+        if dataset_name not in dataset_num_raters:
+            continue
+        
         num_raters = dataset_num_raters[dataset_name]
         dataset_root = os.path.join(parent_dir, dataset_name)
         
-        if not os.path.isdir(dataset_root):
-            raise FileNotFoundError(f"Dataset directory not found: {dataset_root}")
+        # Full path to the image
+        image_path = os.path.join(dataset_root, "preprocessed", image_relpath)
+        if not os.path.exists(image_path):
+            raise FileNotFoundError(f"Expected image file not found: {image_path}")
         
-        # Resolve image directory (may be in augmented/ subdirectory for augmented splits)
-        if is_augmented_split:
-            image_dir = os.path.join(dataset_root, "preprocessed", "augmented", split, "images")
-        else:
-            image_dir = os.path.join(dataset_root, "preprocessed", "images")
+        # Extract base_id from filename for constructing label paths
+        image_filename = os.path.basename(image_relpath)
+        base_id = os.path.splitext(image_filename)[0]
         
         # Labels are always in the main labels directory
         label_dir = os.path.join(dataset_root, "preprocessed", "labels")
         
-        if not os.path.isdir(image_dir):
-            raise FileNotFoundError(f"Image directory not found: {image_dir}")
-        if not os.path.isdir(label_dir):
-            raise FileNotFoundError(f"Label directory not found: {label_dir}")
-        
-        dataset_filter = subject_filter.get(dataset_name)
-        
-        try:
-            (_, _, image_filenames) = next(os.walk(image_dir))
-        except StopIteration:
-            continue
-        
-        for image_filename in sorted(fnmatch.filter(image_filenames, pattern)):
-            base_id = os.path.splitext(image_filename)[0]
-            
-            # Check if this image should be included
-            if dataset_filter is not None:
-                if image_filename not in dataset_filter and base_id not in dataset_filter:
-                    continue
-            
-            image_path = os.path.join(image_dir, image_filename)
-            
-            # Build label paths
-            label_paths = []
-            for rater in range(num_raters):
-                label_name = rater_pattern.format(
-                    base_id=base_id,
-                    filename=image_filename,
-                    rater=rater,
-                )
-                label_path = os.path.join(label_dir, label_name)
-                if not os.path.exists(label_path):
-                    raise FileNotFoundError(
-                        f"Missing rater mask: {label_path} for dataset {dataset_name}"
-                    )
-                label_paths.append(label_path)
-            
-            samples.append(
-                {
-                    "image_path": image_path,
-                    "label_paths": label_paths,
-                    "image_id": base_id,
-                    "dataset_prefix": dataset_name,
-                    "num_raters": num_raters,
-                }
+        # Build label paths
+        label_paths = []
+        for rater in range(num_raters):
+            label_name = rater_pattern.format(
+                base_id=base_id,
+                filename=image_filename,
+                rater=rater,
             )
+            label_path = os.path.join(label_dir, label_name)
+            label_paths.append(label_path)
+        
+        # Verify all labels exist
+        missing = [path for path in label_paths if not os.path.exists(path)]
+        if missing:
+            missing_rel = ", ".join(os.path.basename(p) for p in missing)
+            raise FileNotFoundError(
+                f"Missing expected rater masks [{missing_rel}] for image '{image_filename}' in dataset '{dataset_name}'"
+            )
+        
+        samples.append(
+            {
+                "image_path": image_path,
+                "label_paths": label_paths,
+                "image_id": base_id,
+                "dataset_prefix": dataset_name,
+                "num_raters": num_raters,
+            }
+        )
     
     return samples

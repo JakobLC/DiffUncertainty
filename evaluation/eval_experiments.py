@@ -23,10 +23,6 @@ from pydantic.utils import deep_update
 
 
 class EvalExperiments:
-    LIDC_SPLITS = ["id", "val", "ood_noise", "ood_blur", "ood_jpeg", "ood_contrast"]
-    CHAKSU_SPLITS = ["id", "val", "ood"]
-    RETINA_SPLITS = ["id", "val", "ood_fov", "ood_flash", "ood_blur"]
-    NPC_SPLITS = ["id", "val", "ood_noise", "ood_hist", "ood_gibbs"]
 
     @staticmethod
     def _dataset_name_for_version(version_params):
@@ -139,25 +135,8 @@ class EvalExperiments:
             return [exp_path]
         return children if children else [exp_path]
 
-    def _expected_dataset_splits(self, version):
-        data_key = str(version.version_params.get("data", "")).lower()
-        exp_name_key = str(getattr(version, "exp_name", "")).lower()
-        combined_key = f"{data_key} {exp_name_key}"
-        if "lidc" in combined_key:
-            return list(self.LIDC_SPLITS)
-        if "chaksu" in combined_key:
-            return list(self.CHAKSU_SPLITS)
-        if "retina" in combined_key:
-            return list(self.RETINA_SPLITS)
-        if "npc" in combined_key:
-            return list(self.NPC_SPLITS)
-        return None
-
     def _all_expected_dataset_dirs(self, version):
         exp_path = Path(version.exp_path)
-        expected_splits = self._expected_dataset_splits(version)
-        if expected_splits is not None:
-            return [exp_path / split for split in expected_splits]
         return self._candidate_dataset_dirs(exp_path)
 
     def _get_task_params(self, task_name):

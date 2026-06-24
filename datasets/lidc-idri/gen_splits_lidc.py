@@ -21,11 +21,16 @@ from vis_ood_aug import (
     read_metadata,
 )
 
-SCHEMA_NAME = "lidc_patient_aug_cv_v1"
 OOD_SPLITS = ("ood_noise", "ood_blur", "ood_contrast", "ood_jpeg")
 
 def parse_args() -> argparse.Namespace:
     parser = build_shared_parser(__doc__, default_root=DEFAULT_ROOT, default_seed=7)
+    parser.add_argument(
+        "--dataset-name",
+        type=str,
+        default="",
+        help="Optional dataset name to overwrite the inhereted base_dir last name (e.g., 'origlidc128').",
+    )
     parser.add_argument(
         "--split-name",
         type=str,
@@ -56,6 +61,11 @@ def parse_args() -> argparse.Namespace:
         help="Re-create augmented files even if they already exist.",
     )
     parser.add_argument(
+        "--overwrite-splits",
+        action="store_true",
+        help="Overwrite splits pickle file if it already exists. If False, show comparison of old vs new.",
+    )
+    parser.add_argument(
         "--no-only-splits",
         action="store_false",
         dest="only_splits",
@@ -63,6 +73,8 @@ def parse_args() -> argparse.Namespace:
     )
     args = parser.parse_args()
     args = finalize_shared_args(args)
+    if args.dataset_name:
+        args.base_dir = args.base_dir.parent / args.dataset_name
     if not (0.0 < args.test_ratio < 1.0):
         parser.error("--test-ratio must be within (0, 1).")
     if args.num_splits < 2:
@@ -78,7 +90,8 @@ def _collect_patient_images(
         if patient not in patient_to_images:
             raise KeyError(f"Patient '{patient}' missing from metadata map.")
         images.extend(patient_to_images[patient])
-    return sorted(images)
+    # Add images/ prefix to paths (relative to preprocessed/)
+    return sorted([f"images/{img}" for img in images])
 
 def split_patients(
     patient_to_images: Dict[str, List[str]],
@@ -141,26 +154,44 @@ def build_fold_entries(
     test_images: List[str],
     seed: int,
 ) -> List[Dict[str, np.ndarray]]:
-    test_array = np.array(sorted(test_images), dtype=object)
+    id_array = np.array(sorted(test_images), dtype=object)
     folds: List[Dict[str, np.ndarray]] = []
     for fold_id, (train_ids, val_ids) in enumerate(train_val_pairs):
         fold_entry: Dict[str, np.ndarray] = {
             "train": np.array(train_ids, dtype=object),
             "val": np.array(val_ids, dtype=object),
-            "id_test": test_array,
-            "id_unlabeled_pool": np.array([], dtype=object),
-            "ood_unlabeled_pool": np.array([], dtype=object),
-            "_meta": {
-                "schema": SCHEMA_NAME,
-                "seed": seed,
-                "fold_id": fold_id,
-                "ood_variants": list(OOD_SPLITS),
-            },
+            "id": id_array,
         }
+        # Add augmented OOD splits - prefix with augmented/[split_name]/
         for split_name in OOD_SPLITS:
-            fold_entry[split_name] = test_array
+            augmented_paths = np.array(
+                [f"augmented/{split_name}/{path}" for path in id_array],
+                dtype=object,
+            )
+            fold_entry[split_name] = augmented_paths
         folds.append(fold_entry)
     return folds
+
+
+def _format_split_preview(fold_entries: Sequence[Dict[str, np.ndarray]]) -> str:
+    """Format first/last 2 entries from each key in the first fold for comparison."""
+    if not fold_entries:
+        return "<empty>"
+    fold = fold_entries[0]
+    lines = []
+    for key in sorted(fold.keys()):
+        if key.startswith("_"):
+            continue
+        values = fold[key]
+        if len(values) == 0:
+            lines.append(f"{key}: []")
+        elif len(values) <= 4:
+            lines.append(f"{key}: {list(values)}")
+        else:
+            first_two = list(values[:2])
+            last_two = list(values[-2:])
+            lines.append(f"{key}: [{first_two[0]}, {first_two[1]}, {last_two[0]}, {last_two[1]}]")
+    return "\n  ".join(lines)
 
 
 def save_splits(
@@ -168,23 +199,38 @@ def save_splits(
     split_name: str,
     cycle_name: str,
     fold_entries: Sequence[Dict[str, np.ndarray]],
+    overwrite_splits: bool = False,
 ) -> Path:
-    #print first 5 filenames in each group of the split. only first fold
-    for group in ["train","val","id_test"]:
-        print(f"{group} examples: {fold_entries[0][group][:5]}")
-
     split_path = base_dir / "splits" / split_name / cycle_name / "splits.pkl"
+    
+    # Check if file exists and overwrite is False
+    if split_path.exists() and not overwrite_splits:
+        print(f"\n[SKIPPED] Splits file already exists: {split_path}")
+        print("  To proceed, rerun with --overwrite-splits\n")
+        
+        # Load old splits
+        with split_path.open("rb") as handle:
+            old_splits = pickle.load(handle)
+        
+        print("OLD splits (first 2 and last 2 entries per key):")
+        print(f"  {_format_split_preview(old_splits)}\n")
+        
+        print("NEW splits (first 2 and last 2 entries per key):")
+        print(f"  {_format_split_preview(fold_entries)}\n")
+        
+        return split_path
+    
     split_path.parent.mkdir(parents=True, exist_ok=True)
     with split_path.open("wb") as handle:
         pickle.dump(list(fold_entries), handle)
     print(
-        f"Saved {len(fold_entries)} fold(s) to {split_path} for cycle '{cycle_name}' (schema={SCHEMA_NAME})."
+        f"Saved {len(fold_entries)} fold(s) to {split_path} for cycle '{cycle_name}'."
     )
     return split_path
 
 
 def generate_augmentations(
-    image_names: Iterable[str],
+    image_paths: Iterable[str],
     base_dir: Path,
     specs: Dict[str, AugmentationSpec],
     overwrite: bool,
@@ -194,6 +240,9 @@ def generate_augmentations(
     aug_root = proc_dir / "augmented"
     for split_name in specs.keys():
         (aug_root / split_name / "images").mkdir(parents=True, exist_ok=True)
+    
+    # Strip "images/" prefix from paths for loading
+    image_names = [p.replace("images/", "") for p in image_paths]
     missing = [name for name in image_names if not (src_dir / name).exists()]
     if missing:
         raise FileNotFoundError(
@@ -221,7 +270,7 @@ def main() -> None:
     test_images = _collect_patient_images(patient_map, test_patients)
     train_val_pairs = build_train_val_pairs(pool_patients, patient_map, args.num_splits, args.seed)
     fold_entries = build_fold_entries(train_val_pairs, test_images, args.seed)
-    save_splits(args.base_dir, args.split_name, args.cycle_name, fold_entries)
+    save_splits(args.base_dir, args.split_name, args.cycle_name, fold_entries, args.overwrite_splits)
 
     if args.only_splits:
         return

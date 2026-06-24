@@ -49,7 +49,7 @@ HISTOGRAM_SHIFT_PARAMS = {
 }
 
 GIBBS_NOISE_PARAMS = {
-	"alpha": (0.6, 0.7),
+	"alpha": (0.75, 0.75),
 	"prob": 1.0,
 }
 

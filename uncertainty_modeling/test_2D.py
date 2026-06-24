@@ -53,7 +53,6 @@ warnings.filterwarnings(
 )
 
 LIDC_PATIENT_AUG_SCHEMA = "lidc_patient_aug_v1"
-AUGMENTED_TEST_SPLITS = {"ood_noise", "ood_blur", "ood_contrast", "ood_jpeg"}
 SUPPORTED_TTA_GEOMETRIC_TRANSFORMS = {"HorizontalFlip", "Rotate", "RandomScale", "Affine"}
 # Explicit inventory of geometric transforms that this TTA implementation does not invert yet.
 UNSUPPORTED_TTA_GEOMETRIC_TRANSFORMS = [
@@ -310,7 +309,6 @@ class Tester:
         (
             self.split_schema,
             self.available_splits,
-            self.has_unlabeled_pool,
         ) = self._inspect_splits_file(splits_path)
         normalized_split = self._normalize_split_name(args.test_split)
         self._ensure_split_is_supported(args.test_split, normalized_split)
@@ -581,61 +579,22 @@ class Tester:
         schema = meta.get("schema")
         available = {k for k in entry.keys() if not k.startswith("_")}
 
-        id_pool = entry.get("id_unlabeled_pool")
-        if id_pool is None:
-            id_count = 0
-        elif isinstance(id_pool, np.ndarray):
-            id_count = int(id_pool.size)
-        else:
-            id_count = len(id_pool)
-
-        ood_pool = entry.get("ood_unlabeled_pool")
-        if ood_pool is None:
-            ood_count = 0
-        elif isinstance(ood_pool, np.ndarray):
-            ood_count = int(ood_pool.size)
-        else:
-            ood_count = len(ood_pool)
-
-        unlabeled_pool_nonempty = (id_count + ood_count) > 0
-        return schema, available, unlabeled_pool_nonempty
+        # New format: no unlabeled pools
+        return schema, available
 
     def _normalize_split_name(self, split_name):
-        available = self.available_splits or set()
-        if split_name == "id" and "id_test" in available:
-            return "id_test"
-        if split_name == "ood" and "ood_test" in available:
-            return "ood_test"
+        # No normalization needed with new standardized split format
         return split_name
 
     @staticmethod
     def _format_split_for_output(split_name):
-        if split_name in ["ood_test", "id_test"]:
-            return split_name.replace("_test", "")
+        # No formatting needed with new standardized split format
         return split_name
 
     def _ensure_split_is_supported(self, requested_split, normalized_split):
         if not requested_split:
             raise ValueError("Test split must be provided.")
         available = self.available_splits or set()
-
-        if requested_split == "unlabeled":
-            if self.has_unlabeled_pool:
-                return
-            raise ValueError(
-                "Requested split 'unlabeled' but both id/ood unlabeled pools are empty in the splits file."
-            )
-
-        if (
-            self.split_schema == LIDC_PATIENT_AUG_SCHEMA
-            and requested_split in {"ood", "ood_test"}
-            and any(name in available for name in AUGMENTED_TEST_SPLITS)
-        ):
-            options = ", ".join(sorted(name for name in AUGMENTED_TEST_SPLITS if name in available))
-            raise ValueError(
-                "This LIDC schema stores OOD variants separately. Use one of: "
-                + (options or "<none>")
-            )
 
         if available and normalized_split not in available:
             choices = ", ".join(sorted(available))
